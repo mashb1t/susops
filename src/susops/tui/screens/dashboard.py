@@ -114,7 +114,7 @@ class DashboardScreen(Screen):
         self.query_one("#pac-info", Static).border_title = "PAC Server"
         self.query_one("#shares-info", Static).border_title = "Active Shares"
         self.query_one("#fwd-table", DataTable).add_columns(
-            "Dir", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label"
+            "Direction", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label"
         )
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
@@ -356,16 +356,16 @@ class DashboardScreen(Screen):
         fwd_table.clear()
         for fw in forwards_local:
             fwd_table.add_row(
-                "L",
-                str(fw.src_port), fw.src_addr or "localhost",
-                str(fw.dst_port), fw.dst_addr or "localhost",
+                "local",
+                str(fw.src_port), fw.src_addr,
+                str(fw.dst_port), fw.dst_addr,
                 fw.tag or "",
             )
         for fw in forwards_remote:
             fwd_table.add_row(
-                "R",
-                str(fw.src_port), fw.src_addr or "localhost",
-                str(fw.dst_port), fw.dst_addr or "localhost",
+                "remote",
+                str(fw.src_port), fw.src_addr,
+                str(fw.dst_port), fw.dst_addr,
                 fw.tag or "",
             )
 
