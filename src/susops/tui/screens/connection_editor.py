@@ -173,6 +173,7 @@ class ConnectionEditorScreen(Screen):
         self.query_one("#detail-preview", Static).border_title = "Details"
         self._setup_tables()
         self._reload()
+        self.set_interval(5.0, self._bg_reload)
 
     def _setup_tables(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
@@ -199,7 +200,7 @@ class ConnectionEditorScreen(Screen):
         self.app.call_from_thread(self._reload, status_map)
 
     def _reload(self, status_map: dict | None = None) -> None:
-        """Repopulate all tables. Pass a pre-fetched status_map to avoid blocking."""
+        """Repopulate all tables, preserving each table's cursor position."""
         if status_map is None:
             try:
                 status_result = self.app.manager.status()  # type: ignore[attr-defined]
@@ -210,6 +211,7 @@ class ConnectionEditorScreen(Screen):
         config = self.app.manager.list_config()  # type: ignore[attr-defined]
 
         tbl = self.query_one("#tbl-connections", DataTable)
+        cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
             running = status_map.get(conn.tag, False)
@@ -223,14 +225,20 @@ class ConnectionEditorScreen(Screen):
                 str(len(conn.forwards.local) + len(conn.forwards.remote)),
                 key=conn.tag,
             )
+        if tbl.row_count:
+            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
 
         tbl = self.query_one("#tbl-pac", DataTable)
+        cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
             for host in conn.pac_hosts:
                 tbl.add_row(host, conn.tag, key=f"{conn.tag}:{host}")
+        if tbl.row_count:
+            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
 
         tbl = self.query_one("#tbl-local", DataTable)
+        cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
             for fw in conn.forwards.local:
@@ -238,8 +246,11 @@ class ConnectionEditorScreen(Screen):
                     conn.tag, str(fw.src_port), str(fw.dst_port), fw.tag or "",
                     key=f"{conn.tag}:L:{fw.src_port}",
                 )
+        if tbl.row_count:
+            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
 
         tbl = self.query_one("#tbl-remote", DataTable)
+        cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
             for fw in conn.forwards.remote:
@@ -247,6 +258,8 @@ class ConnectionEditorScreen(Screen):
                     conn.tag, str(fw.src_port), str(fw.dst_port), fw.tag or "",
                     key=f"{conn.tag}:R:{fw.src_port}",
                 )
+        if tbl.row_count:
+            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
 
     def _conn_tags(self) -> list[str]:
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
