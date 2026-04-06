@@ -61,7 +61,7 @@ class _AddShareDialog(ModalScreen):
             error_label.update(f"Port {port} is already in use.")
             return
         conn_val = self.query_one("#conn", Select).value
-        conn = conn_val if conn_val is not Select.BLANK else None
+        conn = conn_val if isinstance(conn_val, str) else None
         self.dismiss({"path": path, "password": pw, "port": port, "conn": conn})
 
 
@@ -108,7 +108,7 @@ class _FetchDialog(ModalScreen):
             return
         conn_val = self.query_one("#conn", Select).value
         host = "localhost"
-        if conn_val is not Select.BLANK:
+        if isinstance(conn_val, str):
             raw = self._conn_hosts.get(conn_val, conn_val)
             host = raw.split("@")[-1]
         outfile = self.query_one("#outfile", Input).value.strip() or None

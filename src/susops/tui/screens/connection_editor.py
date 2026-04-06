@@ -93,7 +93,7 @@ class _AddPacHostDialog(ModalScreen):
             return
         host = self.query_one("#host", Input).value.strip()
         conn_val = self.query_one("#conn", Select).value
-        conn = conn_val if conn_val is not Select.BLANK else None
+        conn = conn_val if isinstance(conn_val, str) else None
         if not host:
             self.query_one(".modal-error", Label).update("Host pattern is required.")
             return
@@ -136,11 +136,11 @@ class _AddForwardDialog(ModalScreen):
             self.dismiss(None)
             return
         conn_val = self.query_one("#conn", Select).value
-        conn = conn_val if conn_val is not Select.BLANK else ""
+        conn = conn_val if isinstance(conn_val, str) else ""
         src_addr_val = self.query_one("#src-addr", Select).value
-        src_addr = src_addr_val if src_addr_val is not Select.BLANK else "localhost"
+        src_addr = src_addr_val if isinstance(src_addr_val, str) else "localhost"
         dst_addr_val = self.query_one("#dst-addr", Select).value
-        dst_addr = dst_addr_val if dst_addr_val is not Select.BLANK else "localhost"
+        dst_addr = dst_addr_val if isinstance(dst_addr_val, str) else "localhost"
         tag = self.query_one("#tag", Input).value.strip()
         error_label = self.query_one(".modal-error", Label)
         try:
