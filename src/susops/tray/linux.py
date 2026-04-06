@@ -704,6 +704,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
             conn_combo.append_text(t)
         if tags:
             conn_combo.set_active(0)
+        src_addr_combo = Gtk.ComboBoxText(has_entry=True)
+        for addr in BIND_ADDRESSES:
+            src_addr_combo.append_text(addr)
+        src_addr_combo.get_child().set_text("localhost")
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
         src_port_entry = Gtk.Entry(placeholder_text="e.g. 8080", activates_default=True)
         dst_host_entry = Gtk.Entry(placeholder_text="e.g. internal.host", activates_default=True)
@@ -712,6 +716,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
+            ("src_addr", "Local Bind *:", src_addr_combo),
             ("src", "Local Port *:", src_port_entry),
             ("dst_host", "Remote Host *:", dst_host_entry),
             ("dst", "Remote Port *:", dst_port_entry),
@@ -725,6 +730,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if resp != Gtk.ResponseType.OK:
                 break
             conn_tag = conn_combo.get_active_text() or ""
+            src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             tag = tag_entry.get_text().strip()
             src = src_port_entry.get_text().strip()
             dst_host = dst_host_entry.get_text().strip()
@@ -743,7 +749,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Invalid Port", "Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_port=int(src), dst_addr=dst_host, dst_port=int(dst), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_host, dst_port=int(dst), tag=tag or None)
             dlg.destroy()
             self.do_add_local_forward(conn_tag, fw)
             return False
@@ -761,12 +767,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
         dlg.set_default_response(Gtk.ResponseType.OK)
         dlg.set_default_size(420, -1)
 
+        BIND_ADDRESSES = ["localhost", "0.0.0.0"]
         conn_combo = Gtk.ComboBoxText()
         tags = [c.tag for c in self.manager.list_config().connections]
         for t in tags:
             conn_combo.append_text(t)
         if tags:
             conn_combo.set_active(0)
+        src_addr_combo = Gtk.ComboBoxText(has_entry=True)
+        for addr in BIND_ADDRESSES:
+            src_addr_combo.append_text(addr)
+        src_addr_combo.get_child().set_text("localhost")
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
         remote_port_entry = Gtk.Entry(placeholder_text="e.g. 8080", activates_default=True)
         local_host_entry = Gtk.Entry(placeholder_text="e.g. localhost", activates_default=True)
@@ -775,6 +786,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
+            ("src_addr", "Remote Bind *:", src_addr_combo),
             ("rport", "Remote Port *:", remote_port_entry),
             ("lhost", "Local Host *:", local_host_entry),
             ("lport", "Local Port *:", local_port_entry),
@@ -788,6 +800,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if resp != Gtk.ResponseType.OK:
                 break
             conn_tag = conn_combo.get_active_text() or ""
+            src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             tag = tag_entry.get_text().strip()
             rport = remote_port_entry.get_text().strip()
             lhost = local_host_entry.get_text().strip()
@@ -806,7 +819,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Invalid Port", "Local Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_port=int(rport), dst_addr=lhost, dst_port=int(lport), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=lhost, dst_port=int(lport), tag=tag or None)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
             return False
