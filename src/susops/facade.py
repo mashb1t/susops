@@ -44,19 +44,25 @@ _WORKSPACE_DEFAULT = Path.home() / ".susops"
 
 
 class _BandwidthSampler:
-    """Background thread that samples system-wide network I/O every 2 seconds.
+    """Background thread that samples per-connection bandwidth every 2 seconds.
 
-    Uses psutil.net_io_counters() bytes_recv/bytes_sent which provide true
-    directional bandwidth (RX vs TX) unlike /proc/pid/io which mirrors both
-    directions equally for SSH tunnel processes.
+    Strategy: combine system-wide net_io_counters() for true RX/TX direction
+    with per-process read_chars deltas as activity weights. Each SSH connection
+    is attributed a fraction of system-wide RX and TX proportional to its share
+    of total SSH process I/O activity in the sampling interval.
+
+    With a single connection it gets 100% of system traffic. With multiple
+    connections, traffic is split by relative activity. Direction is always
+    accurate (bytes_recv vs bytes_sent).
     """
 
     INTERVAL = 2.0
 
     def __init__(self, process_mgr: ProcessManager) -> None:
         self._mgr = process_mgr
-        self._rate: tuple[float, float] = (0.0, 0.0)  # (rx_bps, tx_bps)
-        self._prev: tuple[float, float, float] | None = None  # (rx, tx, t)
+        self._rates: dict[str, tuple[float, float]] = {}  # tag -> (rx_bps, tx_bps)
+        self._prev_net: tuple[float, float, float] | None = None  # (rx, tx, t)
+        self._prev_chars: dict[str, float] = {}  # tag -> read_chars snapshot
         self._lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="susops-bw-sampler"
@@ -77,28 +83,65 @@ class _BandwidthSampler:
         except ImportError:
             return
 
-        counters = psutil.net_io_counters()
-        if counters is None:
-            return
-        rx = float(counters.bytes_recv)
-        tx = float(counters.bytes_sent)
         now = time.monotonic()
 
+        # System-wide directional counters
+        net = psutil.net_io_counters()
+        if net is None:
+            return
+        sys_rx = float(net.bytes_recv)
+        sys_tx = float(net.bytes_sent)
+
+        # Per-process I/O activity (read_chars as activity proxy)
+        proc_chars: dict[str, float] = {}
+        for key, _running in self._mgr.status_all().items():
+            if not key.startswith(SSH_PROCESS_PREFIX):
+                continue
+            tag = key[len(SSH_PROCESS_PREFIX) + 1:]
+            pid = self._mgr.get_pid(key)
+            if pid is None:
+                continue
+            try:
+                proc = psutil.Process(pid)
+                all_procs = [proc] + proc.children(recursive=True)
+                chars = sum(
+                    getattr(p.io_counters(), "read_chars", 0)
+                    for p in all_procs
+                    if p.is_running()
+                )
+                proc_chars[tag] = float(chars)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                pass
+
         with self._lock:
-            if self._prev is not None:
-                prev_rx, prev_tx, prev_t = self._prev
+            if self._prev_net is not None:
+                prev_rx, prev_tx, prev_t = self._prev_net
                 dt = now - prev_t
                 if dt > 0:
-                    self._rate = (
-                        max(0.0, (rx - prev_rx) / dt),
-                        max(0.0, (tx - prev_tx) / dt),
-                    )
-            self._prev = (rx, tx, now)
+                    delta_rx = max(0.0, sys_rx - prev_rx) / dt
+                    delta_tx = max(0.0, sys_tx - prev_tx) / dt
+
+                    # Compute per-connection activity deltas
+                    deltas: dict[str, float] = {}
+                    for tag, chars in proc_chars.items():
+                        prev = self._prev_chars.get(tag, chars)
+                        deltas[tag] = max(0.0, chars - prev)
+                    total_delta = sum(deltas.values()) or 1.0
+
+                    # Attribute system traffic by each connection's share
+                    new_rates: dict[str, tuple[float, float]] = {}
+                    for tag in proc_chars:
+                        weight = deltas.get(tag, 0.0) / total_delta
+                        new_rates[tag] = (delta_rx * weight, delta_tx * weight)
+                    self._rates = new_rates
+
+            self._prev_net = (sys_rx, sys_tx, now)
+            self._prev_chars = dict(proc_chars)
 
     def get_rate(self, tag: str) -> tuple[float, float]:
-        """Return (rx_bps, tx_bps). Tag is ignored — rates are system-wide."""
+        """Return (rx_bps, tx_bps) attributed to this connection."""
         with self._lock:
-            return self._rate
+            return self._rates.get(tag, (0.0, 0.0))
 
 
 class SusOpsManager:
