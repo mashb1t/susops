@@ -218,6 +218,19 @@ def cmd_reset(args, m) -> int:
     return 0
 
 
+def cmd_config(args, m) -> int:
+    import subprocess, shutil, os
+    config_path = m.workspace / "config.yaml"
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+    for candidate in (editor, "nano", "vim", "vi"):
+        if shutil.which(candidate):
+            subprocess.call([candidate, str(config_path)])
+            return 0
+    print(f"Config file: {config_path}", file=sys.stderr)
+    print("Error: no editor found (set $EDITOR)", file=sys.stderr)
+    return 1
+
+
 def cmd_chrome(args, m) -> int:
     import subprocess, shutil
     pac_url = m.get_pac_url()
@@ -227,6 +240,17 @@ def cmd_chrome(args, m) -> int:
     for browser in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave-browser"):
         if shutil.which(browser):
             subprocess.Popen([browser, f"--proxy-pac-url={pac_url}"])
+            return 0
+    print("Error: No Chrome/Chromium browser found", file=sys.stderr)
+    return 1
+
+
+def cmd_chrome_proxy_settings(args, m) -> int:
+    import subprocess, shutil
+    url = "chrome://settings/system"
+    for browser in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave-browser"):
+        if shutil.which(browser):
+            subprocess.Popen([browser, url])
             return 0
     print("Error: No Chrome/Chromium browser found", file=sys.stderr)
     return 1
@@ -344,8 +368,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="Skip confirmation prompt")
     p.set_defaults(func=cmd_reset)
 
+    # config
+    sub.add_parser("config", help="Open config file in $EDITOR").set_defaults(func=cmd_config)
+
     # chrome / firefox
     sub.add_parser("chrome", help="Launch Chrome with PAC proxy").set_defaults(func=cmd_chrome)
+    sub.add_parser("chrome-proxy-settings", help="Open Chrome proxy settings").set_defaults(func=cmd_chrome_proxy_settings)
     sub.add_parser("firefox", help="Launch Firefox with PAC proxy").set_defaults(func=cmd_firefox)
 
     return parser
