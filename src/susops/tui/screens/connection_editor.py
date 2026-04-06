@@ -1,12 +1,12 @@
 """Connection editor screen — CRUD for connections, PAC hosts, port forwards."""
 from __future__ import annotations
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
-    Button,
     DataTable,
     Footer,
     Header,
@@ -17,35 +17,37 @@ from textual.widgets import (
     TabPane,
 )
 from susops.core.config import PortForward
-from susops.core.types import ProcessState
+
+
+_DIALOG_CSS = """
+#dialog {
+    width: 56;
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    background: $surface;
+}
+#dialog Label { margin-top: 1; }
+#dialog #error {
+    height: 1;
+    color: $error;
+    margin-top: 1;
+}
+#dialog #btn-row {
+    height: auto;
+    margin-top: 1;
+}
+#dialog #btn-row Button { margin-right: 1; }
+"""
 
 
 class _AddConnectionDialog(ModalScreen):
     """Modal for adding a new SSH connection."""
 
-    DEFAULT_CSS = """
-    #dialog {
-        width: 50;
-        height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label {
-        margin-top: 1;
-    }
-    #dialog Button {
-        margin-top: 1;
-        margin-right: 1;
-    }
-    #error {
-        height: 1;
-        color: $error;
-        margin-top: 1;
-    }
-    """
+    DEFAULT_CSS = _DIALOG_CSS
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Button
         yield Container(
             Label("[bold]Add Connection[/bold]"),
             Label("Tag:"),
@@ -55,12 +57,16 @@ class _AddConnectionDialog(ModalScreen):
             Label("SOCKS port (0 = auto):"),
             Input(placeholder="0", id="socks-port", value="0"),
             Label("", id="error"),
-            Button("Add", id="btn-add", variant="success"),
-            Button("Cancel", id="btn-cancel"),
+            Horizontal(
+                Button("Add", id="btn-add", variant="success"),
+                Button("Cancel", id="btn-cancel"),
+                id="btn-row",
+            ),
             id="dialog",
         )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def on_button_pressed(self, event) -> None:
+        from textual.widgets import Button
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
@@ -85,28 +91,14 @@ class _AddConnectionDialog(ModalScreen):
 class _AddPacHostDialog(ModalScreen):
     """Modal for adding a PAC host."""
 
-    DEFAULT_CSS = """
-    #dialog {
-        width: 50;
-        height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label { margin-top: 1; }
-    #dialog Button { margin-top: 1; margin-right: 1; }
-    #error {
-        height: 1;
-        color: $error;
-        margin-top: 1;
-    }
-    """
+    DEFAULT_CSS = _DIALOG_CSS
 
     def __init__(self, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
         self._connections = connections
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Button
         yield Container(
             Label("[bold]Add PAC Host[/bold]"),
             Label("Host / wildcard / CIDR:"),
@@ -114,20 +106,22 @@ class _AddPacHostDialog(ModalScreen):
             Label("Connection (leave blank for default):"),
             Input(placeholder=self._connections[0] if self._connections else "", id="conn"),
             Label("", id="error"),
-            Button("Add", id="btn-add", variant="success"),
-            Button("Cancel", id="btn-cancel"),
+            Horizontal(
+                Button("Add", id="btn-add", variant="success"),
+                Button("Cancel", id="btn-cancel"),
+                id="btn-row",
+            ),
             id="dialog",
         )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
         host = self.query_one("#host", Input).value.strip()
         conn = self.query_one("#conn", Input).value.strip() or None
-        error_label = self.query_one("#error", Label)
         if not host:
-            error_label.update("Host pattern is required.")
+            self.query_one("#error", Label).update("Host pattern is required.")
             return
         self.dismiss({"host": host, "conn": conn})
 
@@ -135,22 +129,7 @@ class _AddPacHostDialog(ModalScreen):
 class _AddForwardDialog(ModalScreen):
     """Modal for adding a local or remote port forward."""
 
-    DEFAULT_CSS = """
-    #dialog {
-        width: 50;
-        height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label { margin-top: 1; }
-    #dialog Button { margin-top: 1; margin-right: 1; }
-    #error {
-        height: 1;
-        color: $error;
-        margin-top: 1;
-    }
-    """
+    DEFAULT_CSS = _DIALOG_CSS
 
     def __init__(self, direction: str, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -158,23 +137,28 @@ class _AddForwardDialog(ModalScreen):
         self._connections = connections
 
     def compose(self) -> ComposeResult:
+        from textual.widgets import Button
+        d = self._direction
         yield Container(
-            Label(f"[bold]Add {self._direction.capitalize()} Forward[/bold]"),
+            Label(f"[bold]Add {d.capitalize()} Forward[/bold]"),
             Label("Connection tag:"),
             Input(placeholder=self._connections[0] if self._connections else "", id="conn"),
-            Label("Local port:" if self._direction == "local" else "Remote port:"),
+            Label("Local port:" if d == "local" else "Remote port:"),
             Input(placeholder="8080", id="src-port"),
-            Label("Remote port:" if self._direction == "local" else "Local port:"),
+            Label("Remote port:" if d == "local" else "Local port:"),
             Input(placeholder="8080", id="dst-port"),
             Label("Label (optional):"),
             Input(placeholder="", id="tag"),
             Label("", id="error"),
-            Button("Add", id="btn-add", variant="success"),
-            Button("Cancel", id="btn-cancel"),
+            Horizontal(
+                Button("Add", id="btn-add", variant="success"),
+                Button("Cancel", id="btn-cancel"),
+                id="btn-row",
+            ),
             id="dialog",
         )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
@@ -200,23 +184,9 @@ class ConnectionEditorScreen(Screen):
     ]
 
     DEFAULT_CSS = """
-    ConnectionEditorScreen {
-        layout: vertical;
-    }
-    #editor-tabs {
-        height: 1fr;
-    }
-    DataTable {
-        height: 1fr;
-    }
-    .tab-actions {
-        height: 3;
-        layout: horizontal;
-        padding: 0 1;
-    }
-    .tab-actions Button {
-        margin-right: 1;
-    }
+    ConnectionEditorScreen { layout: vertical; }
+    #editor-tabs { height: 1fr; }
+    DataTable { height: 1fr; }
     #detail-preview {
         height: 6;
         border: round $primary-darken-1;
@@ -231,37 +201,21 @@ class ConnectionEditorScreen(Screen):
         yield Header()
         with TabbedContent(id="editor-tabs"):
             with TabPane("Connections", id="tab-connections"):
-                with Vertical():
-                    with Container(classes="tab-actions"):
-                        yield Button("+ Add", id="btn-add-conn", variant="success")
-                        yield Button("- Remove", id="btn-rm-conn", variant="error")
-                    yield DataTable(id="tbl-connections", cursor_type="row")
+                yield DataTable(id="tbl-connections", cursor_type="row")
             with TabPane("PAC Hosts", id="tab-pac"):
-                with Vertical():
-                    with Container(classes="tab-actions"):
-                        yield Button("+ Add", id="btn-add-pac", variant="success")
-                        yield Button("- Remove", id="btn-rm-pac", variant="error")
-                    yield DataTable(id="tbl-pac", cursor_type="row")
+                yield DataTable(id="tbl-pac", cursor_type="row")
             with TabPane("Local Forwards", id="tab-local"):
-                with Vertical():
-                    with Container(classes="tab-actions"):
-                        yield Button("+ Add", id="btn-add-local", variant="success")
-                        yield Button("- Remove", id="btn-rm-local", variant="error")
-                    yield DataTable(id="tbl-local", cursor_type="row")
+                yield DataTable(id="tbl-local", cursor_type="row")
             with TabPane("Remote Forwards", id="tab-remote"):
-                with Vertical():
-                    with Container(classes="tab-actions"):
-                        yield Button("+ Add", id="btn-add-remote", variant="success")
-                        yield Button("- Remove", id="btn-rm-remote", variant="error")
-                    yield DataTable(id="tbl-remote", cursor_type="row")
+                yield DataTable(id="tbl-remote", cursor_type="row")
         yield Static("", id="detail-preview")
         yield Footer()
 
     def on_mount(self) -> None:
-        preview = self.query_one("#detail-preview", Static)
-        preview.border_title = "Details"
+        self.query_one("#detail-preview", Static).border_title = "Details"
         self._setup_tables()
         self._reload()
+        self.set_interval(5.0, self._bg_reload)
 
     def _setup_tables(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
@@ -276,15 +230,27 @@ class ConnectionEditorScreen(Screen):
         tbl = self.query_one("#tbl-remote", DataTable)
         tbl.add_columns("Connection", "Remote Port", "Local Port", "Label")
 
-    def _reload(self) -> None:
-        config = self.app.manager.list_config()  # type: ignore[attr-defined]
-
-        # Get running status for connections
+    @work(thread=True)
+    def _bg_reload(self) -> None:
+        """Background status refresh — fetches live tunnel state then updates UI."""
+        mgr = self.app.manager  # type: ignore[attr-defined]
         try:
-            status_result = self.app.manager.status()  # type: ignore[attr-defined]
+            status_result = mgr.status()
             status_map = {cs.tag: cs.running for cs in status_result.connection_statuses}
         except Exception:
             status_map = {}
+        self.app.call_from_thread(self._reload, status_map)
+
+    def _reload(self, status_map: dict | None = None) -> None:
+        """Repopulate all tables. Pass a pre-fetched status_map to avoid blocking."""
+        if status_map is None:
+            try:
+                status_result = self.app.manager.status()  # type: ignore[attr-defined]
+                status_map = {cs.tag: cs.running for cs in status_result.connection_statuses}
+            except Exception:
+                status_map = {}
+
+        config = self.app.manager.list_config()  # type: ignore[attr-defined]
 
         tbl = self.query_one("#tbl-connections", DataTable)
         tbl.clear()
@@ -329,7 +295,6 @@ class ConnectionEditorScreen(Screen):
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        """Update the detail preview when a row is highlighted."""
         active = self.query_one("#editor-tabs", TabbedContent).active
         preview = self.query_one("#detail-preview", Static)
 
@@ -347,15 +312,13 @@ class ConnectionEditorScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                # row[0]=dot, row[1]=tag, row[2]=ssh_host, row[3]=socks_port, row[4]=pac_hosts, row[5]=forwards
                 tag = str(row[1])
                 conn = conn_map.get(tag)
                 if conn:
-                    pac_count = len(conn.pac_hosts)
-                    fwd_count = len(conn.forwards.local) + len(conn.forwards.remote)
                     preview.update(
                         f"SSH host: {conn.ssh_host}  |  Port: {conn.socks_proxy_port or 'auto'}"
-                        f"  |  PAC hosts: {pac_count}  |  Forwards: {fwd_count}"
+                        f"  |  PAC hosts: {len(conn.pac_hosts)}"
+                        f"  |  Forwards: {len(conn.forwards.local) + len(conn.forwards.remote)}"
                     )
                 else:
                     preview.update(f"Tag: {tag}")
@@ -369,9 +332,7 @@ class ConnectionEditorScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                host = str(row[0])
-                conn_tag = str(row[1])
-                preview.update(f"Pattern: {host}  |  Connection: {conn_tag}")
+                preview.update(f"Pattern: {row[0]}  |  Connection: {row[1]}")
             except Exception:
                 preview.update("")
 
@@ -383,12 +344,9 @@ class ConnectionEditorScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                conn_tag = str(row[0])
-                port = str(row[1])
-                preview.update(f"Connection: {conn_tag}  |  Port: {port}")
+                preview.update(f"Connection: {row[0]}  |  Port: {row[1]}")
             except Exception:
                 preview.update("")
-
         else:
             preview.update("")
 
@@ -414,21 +372,6 @@ class ConnectionEditorScreen(Screen):
         elif active == "tab-remote":
             self._do_rm_forward("remote")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        mapping = {
-            "btn-add-conn": self._do_add_connection,
-            "btn-rm-conn": self._do_rm_connection,
-            "btn-add-pac": self._do_add_pac,
-            "btn-rm-pac": self._do_rm_pac,
-            "btn-add-local": lambda: self._do_add_forward("local"),
-            "btn-rm-local": lambda: self._do_rm_forward("local"),
-            "btn-add-remote": lambda: self._do_add_forward("remote"),
-            "btn-rm-remote": lambda: self._do_rm_forward("remote"),
-        }
-        fn = mapping.get(event.button.id or "")
-        if fn:
-            fn()
-
     # --- Connection CRUD ---
 
     def _do_add_connection(self) -> None:
@@ -437,7 +380,7 @@ class ConnectionEditorScreen(Screen):
                 return
             try:
                 self.app.manager.add_connection(data["tag"], data["host"], data["port"])  # type: ignore[attr-defined]
-                self._reload()
+                self._bg_reload()
             except ValueError as e:
                 self.app.notify(str(e), severity="error")
 
@@ -448,10 +391,10 @@ class ConnectionEditorScreen(Screen):
         if tbl.row_count == 0:
             return
         row = tbl.get_row_at(tbl.cursor_row)
-        tag = str(row[1])  # col 0 is status dot, col 1 is tag
+        tag = str(row[1])
         try:
             self.app.manager.remove_connection(tag)  # type: ignore[attr-defined]
-            self._reload()
+            self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), severity="error")
 
@@ -463,7 +406,7 @@ class ConnectionEditorScreen(Screen):
                 return
             try:
                 self.app.manager.add_pac_host(data["host"], conn_tag=data["conn"])  # type: ignore[attr-defined]
-                self._reload()
+                self._bg_reload()
             except ValueError as e:
                 self.app.notify(str(e), severity="error")
 
@@ -477,7 +420,7 @@ class ConnectionEditorScreen(Screen):
         host = str(row[0])
         try:
             self.app.manager.remove_pac_host(host)  # type: ignore[attr-defined]
-            self._reload()
+            self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), severity="error")
 
@@ -487,17 +430,13 @@ class ConnectionEditorScreen(Screen):
         def _on_result(data) -> None:
             if not data:
                 return
-            fw = PortForward(
-                src_port=data["src"],
-                dst_port=data["dst"],
-                tag=data["tag"],
-            )
+            fw = PortForward(src_port=data["src"], dst_port=data["dst"], tag=data["tag"])
             try:
                 if direction == "local":
                     self.app.manager.add_local_forward(data["conn"], fw)  # type: ignore[attr-defined]
                 else:
                     self.app.manager.add_remote_forward(data["conn"], fw)  # type: ignore[attr-defined]
-                self._reload()
+                self._bg_reload()
             except ValueError as e:
                 self.app.notify(str(e), severity="error")
 
@@ -515,6 +454,6 @@ class ConnectionEditorScreen(Screen):
                 self.app.manager.remove_local_forward(port)  # type: ignore[attr-defined]
             else:
                 self.app.manager.remove_remote_forward(port)  # type: ignore[attr-defined]
-            self._reload()
+            self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), severity="error")

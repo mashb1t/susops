@@ -95,11 +95,6 @@ class ShareScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="share-toolbar"):
-            yield Button("+ Share file", id="btn-add", variant="success")
-            yield Button("↓ Fetch file", id="btn-fetch", variant="primary")
-            yield Button("■ Stop share", id="btn-stop", variant="error")
-            yield Button("↺ Refresh", id="btn-refresh")
         with Horizontal(id="share-split"):
             with Vertical(id="share-list-panel"):
                 yield ListView(id="share-list")
@@ -149,17 +144,6 @@ class ShareScreen(Screen):
         idx = event.list_view.index
         if idx is not None and 0 <= idx < len(self._shares):
             self._show_detail(self._shares[idx])
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        mapping = {
-            "btn-add": self.action_add_share,
-            "btn-fetch": self.action_fetch_file,
-            "btn-stop": self.action_stop_share,
-            "btn-refresh": self.action_refresh,
-        }
-        fn = mapping.get(event.button.id or "")
-        if fn:
-            fn()
 
     def action_add_share(self) -> None:
         def _on_result(data) -> None:

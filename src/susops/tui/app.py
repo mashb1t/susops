@@ -41,8 +41,8 @@ class _SusOpsCommands(Provider):
 class SusOpsTuiApp(App):
     """SusOps Textual TUI — SSH tunnel + PAC proxy manager."""
 
-    TITLE = "SusOps"
-    SUB_TITLE = "SSH Tunnel & PAC Manager"
+    #TITLE = "SusOps"
+    #SUB_TITLE = "SSH Tunnel & PAC Manager"
 
     CSS_PATH = "app.tcss"
 

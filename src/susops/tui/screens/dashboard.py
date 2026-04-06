@@ -54,8 +54,8 @@ class DashboardScreen(Screen):
     #shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
     #detail-tabs { width: 1fr; }
     #bw-container { height: 1fr; }
-    #rx-chart { height: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
-    #tx-chart { height: 1fr; border: round $primary-darken-1; margin: 0 1; }
+    #rx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
+    #tx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 0; }
     #stats-content { height: auto; padding: 1 2; }
     #fwd-table { height: 1fr; margin: 1; }
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
@@ -69,6 +69,7 @@ class DashboardScreen(Screen):
         self._conn_data: dict = {}
         self._rx_history: dict = {}
         self._tx_history: dict = {}
+        self._idle_ticks: int = 0  # ticks since last active connection
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -82,7 +83,7 @@ class DashboardScreen(Screen):
                 with TabPane("Stats", id="tab-stats"):
                     yield Static("Select a connection.", id="stats-content")
                 with TabPane("Bandwidth", id="tab-bw"):
-                    with Vertical(id="bw-container"):
+                    with Horizontal(id="bw-container"):
                         yield PlotextPlot(id="rx-chart")
                         yield PlotextPlot(id="tx-chart")
                 with TabPane("Forwards", id="tab-fwd"):
@@ -101,12 +102,24 @@ class DashboardScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log
-        self.set_interval(3.0, self.refresh_status)
+        self.set_interval(2.0, self._tick_refresh)
         self.refresh_status()
 
     def on_unmount(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         mgr.on_log = self._prev_on_log
+
+    def _tick_refresh(self) -> None:
+        """Adaptive refresh: every 2s when connections are active, every 10s when idle."""
+        has_active = any(d["cs"].running for d in self._conn_data.values())
+        if not has_active:
+            self._idle_ticks += 1
+            if self._idle_ticks < 5:  # skip 4 ticks → refresh every 10s when idle
+                return
+            self._idle_ticks = 0
+        else:
+            self._idle_ticks = 0
+        self.refresh_status()
 
     def _on_new_log(self, msg: str) -> None:
         try:
