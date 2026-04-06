@@ -15,9 +15,23 @@ from susops.core.types import ProcessState
 from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
 
+def _is_dark_theme() -> bool:
+    """Return True when macOS is using Dark Mode."""
+    try:
+        from AppKit import NSApplication  # type: ignore[import]
+        appearance = NSApplication.sharedApplication().effectiveAppearance().name()
+        return "dark" in appearance.lower()
+    except Exception:
+        return False
+
+
 def _get_icon_path(state: ProcessState) -> str | None:
-    """Return icon path for state (macOS: PNG preferred, dark variant)."""
-    return get_icon_path(state, prefer_png=True)
+    """Return icon path for state, respecting macOS light/dark appearance.
+
+    Appearance is inverted: dark desktop → light icons (visible on dark menu bar).
+    """
+    variant = "light" if _is_dark_theme() else "dark"
+    return get_icon_path(state, variant=variant, prefer_png=True)
 
 
 class SusOpsMacTray(AbstractTrayApp):
@@ -36,6 +50,27 @@ class SusOpsMacTray(AbstractTrayApp):
             quit_button=None,
         )
         self._build_menu()
+        self._register_appearance_observer()
+
+    def _register_appearance_observer(self) -> None:
+        """Register for macOS theme-change notifications to update icon immediately."""
+        try:
+            from Foundation import NSDistributedNotificationCenter  # type: ignore[import]
+            import objc  # type: ignore[import]
+
+            def _on_appearance_changed(_notification):
+                self.update_icon(self.state)
+
+            self._appearance_observer = _on_appearance_changed
+            center = NSDistributedNotificationCenter.defaultCenter()
+            center.addObserverForName_object_queue_usingBlock_(
+                "AppleInterfaceThemeChangedNotification",
+                None,
+                None,
+                _on_appearance_changed,
+            )
+        except Exception:
+            pass  # PyObjC not available or older macOS
 
     # ------------------------------------------------------------------ #
     # AbstractTrayApp implementation
