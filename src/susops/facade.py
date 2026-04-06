@@ -1,11 +1,8 @@
-"""SusOpsManager — the single public API for all SusOps frontends.
-
-Both the TUI and the tray apps (Linux/Mac) use this facade exclusively.
-No frontend should import from susops.core directly; use this module instead.
-"""
+"""SusOpsManager — the single public API for all SusOps frontends."""
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -46,12 +43,82 @@ __all__ = ["SusOpsManager"]
 _WORKSPACE_DEFAULT = Path.home() / ".susops"
 
 
-class SusOpsManager:
-    """Unified manager for SSH tunnels, PAC server, and file sharing.
+class _BandwidthSampler:
+    """Background thread that samples SSH process IO every 2 seconds.
 
-    Frontends (TUI, Linux tray, Mac tray) instantiate this once and call
-    its methods. Event callbacks allow reactive UI updates.
+    Uses read_chars/write_chars from /proc/pid/io which include socket I/O,
+    making this suitable for measuring SSH tunnel throughput.
     """
+
+    INTERVAL = 2.0
+
+    def __init__(self, process_mgr: ProcessManager) -> None:
+        self._mgr = process_mgr
+        self._rates: dict[str, tuple[float, float]] = {}   # tag -> (rx_bps, tx_bps)
+        self._prev: dict[str, tuple[float, float, float]] = {}  # tag -> (rx, tx, t)
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="susops-bw-sampler"
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                self._sample()
+            except Exception:
+                pass
+            time.sleep(self.INTERVAL)
+
+    def _sample(self) -> None:
+        try:
+            import psutil
+        except ImportError:
+            return
+
+        now = time.monotonic()
+        for key, running in self._mgr.status_all().items():
+            if not key.startswith(SSH_PROCESS_PREFIX):
+                continue
+            tag = key[len(SSH_PROCESS_PREFIX) + 1:]
+            pid = self._mgr.get_pid(key)
+            if pid is None:
+                continue
+            try:
+                proc = psutil.Process(pid)
+                # Include all child processes (autossh -> ssh)
+                all_procs = [proc] + proc.children(recursive=True)
+                rx = sum(
+                    getattr(p.io_counters(), "read_chars", 0)
+                    for p in all_procs
+                    if p.is_running()
+                )
+                tx = sum(
+                    getattr(p.io_counters(), "write_chars", 0)
+                    for p in all_procs
+                    if p.is_running()
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                continue
+
+            with self._lock:
+                if tag in self._prev:
+                    prev_rx, prev_tx, prev_t = self._prev[tag]
+                    dt = now - prev_t
+                    if dt > 0:
+                        self._rates[tag] = (
+                            max(0.0, (rx - prev_rx) / dt),
+                            max(0.0, (tx - prev_tx) / dt),
+                        )
+                self._prev[tag] = (rx, tx, now)
+
+    def get_rate(self, tag: str) -> tuple[float, float]:
+        with self._lock:
+            return self._rates.get(tag, (0.0, 0.0))
+
+
+class SusOpsManager:
+    """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
     def __init__(self, workspace: Path = _WORKSPACE_DEFAULT) -> None:
         self.workspace = workspace
@@ -60,10 +127,10 @@ class SusOpsManager:
         self.config: SusOpsConfig = load_config(workspace)
         self._process_mgr = ProcessManager(workspace)
         self._pac_server = PacServer()
-        self._share_server: ShareServer | None = None
+        self._share_servers: dict[int, tuple[ShareServer, ShareInfo]] = {}
         self._log_buffer: deque[str] = deque(maxlen=500)
+        self._bw_sampler = _BandwidthSampler(self._process_mgr)
 
-        # Event callbacks — set by the frontend
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
 
@@ -97,7 +164,6 @@ class SusOpsManager:
         )
 
     def _ensure_socks_port(self, conn: Connection) -> Connection:
-        """Assign a random SOCKS port if the connection has port=0."""
         if conn.socks_proxy_port != 0:
             return conn
         port = get_random_free_port()
@@ -143,7 +209,6 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def start(self, tag: str | None = None) -> StartResult:
-        """Start SSH tunnel(s) and the PAC server."""
         self._reload_config()
         connections = (
             [get_connection(self.config, tag)] if tag
@@ -194,7 +259,6 @@ class SusOpsManager:
         )
 
     def stop(self, keep_ports: bool = False, force: bool = False) -> StopResult:
-        """Stop all SSH tunnels and the PAC server."""
         self._reload_config()
         errors = []
 
@@ -229,13 +293,11 @@ class SusOpsManager:
         )
 
     def restart(self, tag: str | None = None) -> StartResult:
-        """Stop and restart tunnel(s), preserving port assignments."""
         self.stop(keep_ports=True)
         time.sleep(0.5)
         return self.start(tag)
 
     def status(self) -> StatusResult:
-        """Return current state for all connections and the PAC server."""
         self._reload_config()
         statuses = tuple(self._connection_status(c) for c in self.config.connections)
         pac_running = self._pac_server.is_running()
@@ -252,7 +314,6 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0) -> Connection:
-        """Add a new SSH connection profile."""
         self._reload_config()
         if get_connection(self.config, tag) is not None:
             raise ValueError(f"Connection '{tag}' already exists")
@@ -265,7 +326,6 @@ class SusOpsManager:
         return conn
 
     def remove_connection(self, tag: str) -> None:
-        """Remove a connection, stopping its tunnel if running."""
         self._reload_config()
         if get_connection(self.config, tag) is None:
             raise ValueError(f"Connection '{tag}' not found")
@@ -277,7 +337,6 @@ class SusOpsManager:
         self._log(f"Removed connection '{tag}'")
 
     def test_ssh(self, ssh_host: str) -> bool:
-        """Test SSH connectivity to a host."""
         return test_ssh_connectivity(ssh_host)
 
     # ------------------------------------------------------------------ #
@@ -285,7 +344,6 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_pac_host(self, host: str, conn_tag: str | None = None) -> None:
-        """Add a PAC host entry. Reloads PAC server if running."""
         self._reload_config()
         default = get_default_connection(self.config)
         tag = conn_tag or (default.tag if default else None)
@@ -306,7 +364,6 @@ class SusOpsManager:
         self._log(f"[{tag}] Added PAC host '{host}'")
 
     def remove_pac_host(self, host: str) -> None:
-        """Remove a PAC host from whichever connection has it."""
         self._reload_config()
         found = False
         new_conns = []
@@ -355,11 +412,9 @@ class SusOpsManager:
         self._log(f"[{conn_tag}] Added {direction} forward {fw.src_port}→{fw.dst_port}")
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
-        """Add a local port forward (-L) to a connection."""
         self._add_forward(conn_tag, fw, "local")
 
     def add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
-        """Add a remote port forward (-R) to a connection."""
         self._add_forward(conn_tag, fw, "remote")
 
     def _remove_forward(self, src_port: int, direction: str) -> None:
@@ -389,43 +444,54 @@ class SusOpsManager:
         self._remove_forward(src_port, "remote")
 
     # ------------------------------------------------------------------ #
-    # File sharing
+    # File sharing — multiple concurrent shares
     # ------------------------------------------------------------------ #
 
     def share(self, file: Path, password: str | None = None, port: int | None = None) -> ShareInfo:
-        """Start serving an encrypted file share."""
-        if self._share_server is not None and self._share_server.is_running():
-            raise RuntimeError("A file share is already active. Stop it first.")
+        """Start serving an encrypted file share. Multiple simultaneous shares are supported."""
         if not file.exists():
             raise FileNotFoundError(f"File not found: {file}")
         pw = password or generate_password()
-        self._share_server = ShareServer()
-        info = self._share_server.start(file_path=file, password=pw, port=port or 0, workspace=self.workspace)
+        server = ShareServer()
+        info = server.start(file_path=file, password=pw, port=port or 0, workspace=self.workspace)
+        self._share_servers[info.port] = (server, info)
         self._log(f"Sharing '{file.name}' on port {info.port}")
         return info
 
-    def stop_share(self) -> None:
-        """Stop the active file share."""
-        if self._share_server is not None:
-            self._share_server.stop()
-            self._share_server = None
-            self._log("File share stopped")
+    def stop_share(self, port: int | None = None) -> None:
+        """Stop a specific share by port, or all shares if port is None."""
+        if port is not None:
+            entry = self._share_servers.pop(port, None)
+            if entry:
+                entry[0].stop()
+                self._log(f"File share on port {port} stopped")
+        else:
+            for p, (server, _) in list(self._share_servers.items()):
+                server.stop()
+                self._log(f"File share on port {p} stopped")
+            self._share_servers.clear()
+
+    def list_shares(self) -> list[ShareInfo]:
+        """Return info for all currently active file shares."""
+        # Clean up any shares whose server has stopped
+        dead = [p for p, (s, _) in self._share_servers.items() if not s.is_running()]
+        for p in dead:
+            del self._share_servers[p]
+        return [info for _, info in self._share_servers.values()]
+
+    def share_is_running(self) -> bool:
+        return bool(self.list_shares())
 
     def fetch(self, port: int, password: str, host: str = "localhost", outfile: Path | None = None) -> Path:
-        """Download and decrypt a shared file."""
         result = fetch_file(host=host, port=port, password=password, outfile=outfile)
         self._log(f"Fetched file to {result}")
         return result
-
-    def share_is_running(self) -> bool:
-        return self._share_server is not None and self._share_server.is_running()
 
     # ------------------------------------------------------------------ #
     # Testing
     # ------------------------------------------------------------------ #
 
     def test(self, target: str) -> TestResult:
-        """Test connectivity through the SOCKS proxy to a hostname."""
         conn = get_default_connection(self.config)
         if conn is None or conn.socks_proxy_port == 0:
             return TestResult(target=target, success=False, message="No active SOCKS proxy")
@@ -448,7 +514,6 @@ class SusOpsManager:
             return TestResult(target=target, success=False, message=str(exc))
 
     def test_all(self) -> list[TestResult]:
-        """Test all PAC hosts across all connections."""
         return [self.test(host) for conn in self.config.connections for host in conn.pac_hosts]
 
     # ------------------------------------------------------------------ #
@@ -456,13 +521,12 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def list_config(self) -> SusOpsConfig:
-        """Return the current config, reloaded from disk."""
         self._reload_config()
         return self.config
 
     def reset(self) -> None:
-        """Kill all processes and wipe the workspace. Irreversible."""
         self.stop(force=True)
+        self.stop_share()
         import shutil
         shutil.rmtree(self.workspace, ignore_errors=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -471,33 +535,49 @@ class SusOpsManager:
         self._log("Workspace reset")
 
     def get_logs(self, n: int = 100) -> list[str]:
-        """Return the last n log entries."""
         return list(self._log_buffer)[-n:]
 
     def get_bandwidth(self, tag: str) -> tuple[float, float]:
-        """Return (rx_bytes_per_sec, tx_bytes_per_sec) for a connection's SSH tunnel.
+        """Return (rx_bps, tx_bps) instantly from the background sampler."""
+        return self._bw_sampler.get_rate(tag)
 
-        Samples psutil io_counters over 1 second. Returns (0.0, 0.0) on error.
+    def get_process_info(self, tag: str) -> dict:
+        """Return CPU%, memory (MB), and active SOCKS connection count for a tunnel.
+
+        Returns empty dict if the process is not running or psutil is unavailable.
         """
         try:
             import psutil
         except ImportError:
-            return (0.0, 0.0)
+            return {}
+
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}")
         if pid is None:
-            return (0.0, 0.0)
+            return {}
+
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        socks_port = conn.socks_proxy_port if conn else 0
+
         try:
             proc = psutil.Process(pid)
-            c1 = proc.io_counters()
-            time.sleep(1.0)
-            c2 = proc.io_counters()
-            return (max(0.0, c2.read_bytes - c1.read_bytes),
-                    max(0.0, c2.write_bytes - c1.write_bytes))
-        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
-            return (0.0, 0.0)
+            all_procs = [proc] + proc.children(recursive=True)
+            cpu = sum(p.cpu_percent(interval=None) for p in all_procs if p.is_running())
+            mem_mb = sum(p.memory_info().rss for p in all_procs if p.is_running()) / 1_048_576
+            active_conns = 0
+            if socks_port:
+                try:
+                    active_conns = sum(
+                        1 for c in psutil.net_connections("tcp")
+                        if c.laddr.port == socks_port and c.status == "ESTABLISHED"
+                    )
+                except (psutil.AccessDenied, OSError):
+                    pass
+            return {"cpu": cpu, "mem_mb": mem_mb, "conns": active_conns}
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return {}
 
     def get_pac_url(self) -> str:
-        """Return the PAC server URL, or empty string if not running."""
         port = self._pac_server.get_port() or self.config.pac_server_port
         return f"http://localhost:{port}/susops.pac" if port else ""
 
@@ -506,7 +586,6 @@ class SusOpsManager:
         return self.config.susops_app
 
     def update_app_config(self, **kwargs) -> None:
-        """Update app-level settings (stop_on_quit, ephemeral_ports, logo_style)."""
         self._reload_config()
         self.config = self.config.model_copy(
             update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}

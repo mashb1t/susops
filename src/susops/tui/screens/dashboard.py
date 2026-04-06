@@ -1,9 +1,9 @@
-"""Dashboard screen — live status overview with per-connection bandwidth sparklines."""
+"""Dashboard screen — htop-style live overview with per-process metrics."""
 from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import ScrollableContainer, Vertical
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, Static
 from textual import work
@@ -23,19 +23,26 @@ class _PacCard(Static):
     """
 
     def compose(self) -> ComposeResult:
-        yield Label("", id="pac-status")
+        yield Label("", id="pac-label")
+        yield Label("", id="pac-hosts")
 
-    def refresh_status(self, running: bool, port: int) -> None:
+    def refresh_status(self, running: bool, port: int, host_count: int) -> None:
         dot = "[green]●[/green]" if running else "[red]○[/red]"
-        port_str = f" :{port}" if port else ""
-        self.query_one("#pac-status", Label).update(
+        port_str = f"  :{port}" if port else ""
+        self.query_one("#pac-label", Label).update(
             f"{dot} PAC server{port_str}"
         )
+        if running:
+            self.query_one("#pac-hosts", Label).update(
+                f"[dim]  Routing {host_count} host pattern(s)[/dim]"
+            )
+        else:
+            self.query_one("#pac-hosts", Label).update("")
 
 
-class _ShareCard(Static):
+class _SharesSummary(Static):
     DEFAULT_CSS = """
-    _ShareCard {
+    _SharesSummary {
         height: auto;
         border: round $surface-darken-1;
         padding: 0 1;
@@ -44,20 +51,23 @@ class _ShareCard(Static):
     """
 
     def compose(self) -> ComposeResult:
-        yield Label("", id="share-status")
+        yield Label("", id="shares-label")
 
-    def refresh_status(self, running: bool, url: str = "") -> None:
-        if running:
-            self.display = True
-            self.query_one("#share-status", Label).update(
-                f"[green]●[/green] Share active — {url}"
-            )
-        else:
+    def refresh_status(self, shares: list) -> None:
+        if not shares:
             self.display = False
+            return
+        self.display = True
+        lines = ["[bold]File shares[/bold]"]
+        for info in shares:
+            from pathlib import Path
+            name = Path(info.file_path).name
+            lines.append(f"  [green]●[/green] {name}  :{info.port}  [dim]pw: {info.password[:8]}…[/dim]")
+        self.query_one("#shares-label", Label).update("\n".join(lines))
 
 
 class DashboardScreen(Screen):
-    """Main dashboard with live connection status and bandwidth sparklines."""
+    """Htop-style dashboard: per-connection process metrics + bandwidth sparklines."""
 
     BINDINGS = [
         Binding("s", "start_all", "Start"),
@@ -69,57 +79,62 @@ class DashboardScreen(Screen):
     ]
 
     DEFAULT_CSS = """
-    DashboardScreen {
-        layout: vertical;
-    }
+    DashboardScreen { layout: vertical; }
     #toolbar {
         height: 3;
         layout: horizontal;
         padding: 0 1;
         background: $surface-darken-1;
     }
-    #toolbar Button {
-        margin: 0 1 0 0;
-        min-width: 10;
-    }
-    #cards-area {
-        height: 1fr;
-        padding: 1;
-    }
-    #state-label {
+    #toolbar Button { margin: 0 1 0 0; min-width: 10; }
+    #state-bar {
         height: 1;
-        margin-bottom: 1;
-        text-align: center;
+        padding: 0 1;
+        background: $surface-darken-2;
         color: $text-muted;
     }
+    #cards-area { height: 1fr; padding: 1; }
     """
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical(id="toolbar"):
+        with Horizontal(id="toolbar"):
             yield Button("▶ Start", id="btn-start", variant="success")
             yield Button("■ Stop", id="btn-stop", variant="error")
             yield Button("↺ Restart", id="btn-restart", variant="warning")
+        yield Label("", id="state-bar")
         with ScrollableContainer(id="cards-area"):
-            yield Label("", id="state-label")
             yield _PacCard(id="pac-card")
-            yield _ShareCard(id="share-card")
+            yield _SharesSummary(id="shares-card")
         yield Footer()
 
     def on_mount(self) -> None:
         self._cards: dict[str, ConnectionCard] = {}
         self.refresh_status()
         self.set_interval(3.0, self.refresh_status)
-        self.set_interval(5.0, self._refresh_bandwidth)
 
     @work(thread=True)
     def refresh_status(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         result: StatusResult = mgr.status()
-        self.app.call_from_thread(self._apply_status, result)
 
-    def _apply_status(self, result: StatusResult) -> None:
-        # Update global state label
+        # Gather per-connection extras in the worker thread (no blocking sleep)
+        extras: dict[str, dict] = {}
+        bw: dict[str, tuple[float, float]] = {}
+        for cs in result.connection_statuses:
+            extras[cs.tag] = mgr.get_process_info(cs.tag)
+            bw[cs.tag] = mgr.get_bandwidth(cs.tag)
+
+        shares = mgr.list_shares()
+        self.app.call_from_thread(self._apply_status, result, extras, bw, shares)
+
+    def _apply_status(
+        self,
+        result: StatusResult,
+        extras: dict,
+        bw: dict,
+        shares: list,
+    ) -> None:
         state_colors = {
             ProcessState.RUNNING: "green",
             ProcessState.STOPPED_PARTIALLY: "yellow",
@@ -128,21 +143,40 @@ class DashboardScreen(Screen):
             ProcessState.INITIAL: "dim",
         }
         color = state_colors.get(result.state, "dim")
-        self.query_one("#state-label", Label).update(
-            f"[{color}]{result.state.value}[/{color}]"
+        self.query_one("#state-bar", Label).update(
+            f"[{color}]● {result.state.value}[/{color}]"
+            f"  PAC: {'[green]up[/green]' if result.pac_running else '[red]down[/red]'}"
+            + (f"  :{result.pac_port}" if result.pac_port else "")
+            + (f"  [dim]shares: {len(shares)}[/dim]" if shares else "")
         )
 
         cards_area = self.query_one("#cards-area")
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        config = mgr.list_config()
 
-        # Ensure a card exists for each connection
+        # Build tag→connection map for forwards
+        conn_map = {c.tag: c for c in config.connections}
+
         for cs in result.connection_statuses:
             if cs.tag not in self._cards:
                 card = ConnectionCard(cs.tag, id=f"card-{cs.tag}")
                 self._cards[cs.tag] = card
                 cards_area.mount(card, before="#pac-card")
-            self._cards[cs.tag].refresh_status(cs)
 
-        # Remove cards for deleted connections
+            conn = conn_map.get(cs.tag)
+            all_forwards = []
+            if conn:
+                all_forwards = list(conn.forwards.local) + list(conn.forwards.remote)
+
+            self._cards[cs.tag].refresh_status(
+                cs,
+                proc_info=extras.get(cs.tag),
+                forwards=all_forwards,
+            )
+            rx, tx = bw.get(cs.tag, (0.0, 0.0))
+            self._cards[cs.tag].refresh_bandwidth(rx, tx)
+
+        # Remove stale cards
         current_tags = {cs.tag for cs in result.connection_statuses}
         for tag in list(self._cards):
             if tag not in current_tags:
@@ -150,34 +184,27 @@ class DashboardScreen(Screen):
                 del self._cards[tag]
 
         # PAC card
-        self.query_one("#pac-card", _PacCard).refresh_status(result.pac_running, result.pac_port)
+        host_count = sum(len(c.pac_hosts) for c in config.connections)
+        self.query_one("#pac-card", _PacCard).refresh_status(
+            result.pac_running, result.pac_port, host_count
+        )
 
-        # Share card
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        share_running = mgr.share_is_running()
-        share_url = mgr.get_pac_url() if share_running else ""
-        self.query_one("#share-card", _ShareCard).refresh_status(share_running, share_url)
+        # Shares summary
+        self.query_one("#shares-card", _SharesSummary).refresh_status(shares)
 
-        # Update button states
-        is_running = result.state == ProcessState.RUNNING
-        is_stopped = result.state == ProcessState.STOPPED
-        self.query_one("#btn-start", Button).disabled = is_running
-        self.query_one("#btn-stop", Button).disabled = is_stopped
-
-    @work(thread=True)
-    def _refresh_bandwidth(self) -> None:
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        for tag, card in list(self._cards.items()):
-            rx, tx = mgr.get_bandwidth(tag)
-            self.app.call_from_thread(card.refresh_bandwidth, rx, tx)
+        # Button states
+        self.query_one("#btn-start", Button).disabled = result.state == ProcessState.RUNNING
+        self.query_one("#btn-stop", Button).disabled = result.state == ProcessState.STOPPED
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-start":
-            self.action_start_all()
-        elif event.button.id == "btn-stop":
-            self.action_stop_all()
-        elif event.button.id == "btn-restart":
-            self.action_restart_all()
+        actions = {
+            "btn-start": self.action_start_all,
+            "btn-stop": self.action_stop_all,
+            "btn-restart": self.action_restart_all,
+        }
+        fn = actions.get(event.button.id or "")
+        if fn:
+            fn()
 
     @work(thread=True)
     def action_start_all(self) -> None:
