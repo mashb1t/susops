@@ -1,7 +1,7 @@
 class Susops < Formula
   desc "SSH SOCKS5 proxy manager — Python TUI + PAC server"
-  homepage "https://github.com/yourusername/susops"
-  url "https://github.com/yourusername/susops/archive/v3.0.0.tar.gz"
+  homepage "https://github.com/mashb1t/susops"
+  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"
   sha256 "PLACEHOLDER"
   license "MIT"
 

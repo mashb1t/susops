@@ -4,7 +4,7 @@ pkgver=3.0.0
 pkgrel=1
 pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
 arch=('any')
-url="https://github.com/yourusername/susops"
+url="https://github.com/mashb1t/susops"
 license=('MIT')
 depends=(
     'python'
@@ -21,7 +21,7 @@ optdepends=(
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 # No go-yq dependency — replaced by pure Python
-source=("$pkgname-$pkgver.tar.gz::https://github.com/yourusername/susops/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/mashb1t/susops/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 # ruamel.yaml is not in the official repos; install via pip inside venv or use python-ruamel-yaml from AUR
