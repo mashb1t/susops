@@ -121,8 +121,8 @@ def cmd_add(args, m) -> int:
             fw = PortForward(
                 src_port=args.local_port,
                 dst_port=args.remote_port,
-                src_addr=args.local_addr or "localhost",
-                dst_addr=args.remote_addr or "localhost",
+                src_addr=args.local_addr,
+                dst_addr=args.remote_addr,
                 tag=args.forward_tag or "",
             )
             m.add_local_forward(args.connection or m.config.connections[0].tag, fw)
@@ -132,8 +132,8 @@ def cmd_add(args, m) -> int:
             fw = PortForward(
                 src_port=args.remote_port,
                 dst_port=args.local_port,
-                src_addr=args.remote_addr or "localhost",
-                dst_addr=args.local_addr or "localhost",
+                src_addr=args.remote_addr,
+                dst_addr=args.local_addr,
                 tag=args.forward_tag or "",
             )
             m.add_remote_forward(args.connection or m.config.connections[0].tag, fw)
