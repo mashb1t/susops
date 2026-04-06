@@ -424,61 +424,61 @@ class SusOpsMacTray(AbstractTrayApp):
             self.show_alert("Invalid Tag", f"Connection '{conn_tag}' not found.")
             return
 
-        bind_label = "Remote Bind Address" if remote else "Local Bind Address"
-        win_bind = rumps.Window(
-            message=f"{bind_label} (blank = localhost, or 0.0.0.0 to listen on all interfaces):",
-            title=title,
-            default_text="localhost",
-            ok="Next",
-            cancel="Cancel",
-            dimensions=(320, 24),
-        )
-        r_bind = win_bind.run()
-        if r_bind.clicked == 0:
-            return
-        src_addr = r_bind.text.strip() or "localhost"
-
-        src_label = "Remote Port" if remote else "Local Port"
-        win2 = rumps.Window(
-            message=f"{src_label} (forward from):",
+        src_label = "Forward Remote Port" if remote else "Forward Local Port"
+        win_src = rumps.Window(
+            message=f"{src_label}:",
             title=title,
             default_text="",
             ok="Next",
             cancel="Cancel",
             dimensions=(320, 24),
         )
-        r2 = win2.run()
-        if r2.clicked == 0:
+        r_src = win_src.run()
+        if r_src.clicked == 0:
             return
-        src = r2.text.strip()
+        src = r_src.text.strip()
 
-        dst_label = "Local Host" if remote else "Remote Host"
-        win3 = rumps.Window(
-            message=f"{dst_label} (blank = localhost):",
+        dst_label = "To Local Port" if remote else "To Remote Port"
+        win_dst = rumps.Window(
+            message=f"{dst_label}:",
+            title=title,
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_dst = win_dst.run()
+        if r_dst.clicked == 0:
+            return
+        dst = r_dst.text.strip()
+
+        src_bind_label = "Remote Bind" if remote else "Local Bind"
+        win_src_bind = rumps.Window(
+            message=f"{src_bind_label} (optional, blank = localhost, options: localhost / 172.17.0.1 / 0.0.0.0):",
             title=title,
             default_text="localhost",
             ok="Next",
             cancel="Cancel",
             dimensions=(320, 24),
         )
-        r3 = win3.run()
-        if r3.clicked == 0:
+        r_src_bind = win_src_bind.run()
+        if r_src_bind.clicked == 0:
             return
-        dst_host = r3.text.strip() or "localhost"
+        src_addr = r_src_bind.text.strip() or "localhost"
 
-        dst_label2 = "Local Port" if remote else "Remote Port"
-        win4 = rumps.Window(
-            message=f"{dst_label2} (forward to):",
+        dst_bind_label = "Local Bind" if remote else "Remote Bind"
+        win_dst_bind = rumps.Window(
+            message=f"{dst_bind_label} (optional, blank = localhost, options: localhost / 172.17.0.1 / 0.0.0.0):",
             title=title,
-            default_text="",
+            default_text="localhost",
             ok="Add",
             cancel="Cancel",
             dimensions=(320, 24),
         )
-        r4 = win4.run()
-        if r4.clicked == 0:
+        r_dst_bind = win_dst_bind.run()
+        if r_dst_bind.clicked == 0:
             return
-        dst = r4.text.strip()
+        dst_addr = r_dst_bind.text.strip() or "localhost"
 
         try:
             src_int = int(src)
@@ -487,7 +487,7 @@ class SusOpsMacTray(AbstractTrayApp):
             self.show_alert("Invalid Port", "Ports must be numbers.")
             return
 
-        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_host, dst_port=dst_int)
+        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int)
         if remote:
             self.do_add_remote_forward(conn_tag, fw)
         else:

@@ -103,17 +103,22 @@ class _AddForwardDialog(ModalScreen):
 
     def compose(self) -> ComposeResult:
         d = self._direction
-        options = [(tag, tag) for tag in self._connections]
+        conn_options = [(tag, tag) for tag in self._connections]
+        bind_options = [("localhost", "localhost"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "0.0.0.0")]
         with Static(classes="modal-dialog"):
             yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
             yield Label("Connection:")
-            yield Select(options, allow_blank=False, id="conn")
-            yield Label("Local port:" if d == "local" else "Remote port:")
-            yield Input(placeholder="8080", id="src-port")
-            yield Label("Remote port:" if d == "local" else "Local port:")
-            yield Input(placeholder="8080", id="dst-port")
+            yield Select(conn_options, allow_blank=False, id="conn")
             yield Label("Label (optional):")
             yield Input(placeholder="", id="tag")
+            yield Label("Forward Local Port *:" if d == "local" else "Forward Remote Port *:")
+            yield Input(placeholder="8080", id="src-port")
+            yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
+            yield Input(placeholder="8080", id="dst-port")
+            yield Label("Local Bind (optional):" if d == "local" else "Remote Bind (optional):")
+            yield Select(bind_options, allow_blank=True, id="src-addr")
+            yield Label("Remote Bind (optional):" if d == "local" else "Local Bind (optional):")
+            yield Select(bind_options, allow_blank=True, id="dst-addr")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-add", variant="success")
@@ -125,6 +130,10 @@ class _AddForwardDialog(ModalScreen):
             return
         conn_val = self.query_one("#conn", Select).value
         conn = conn_val if conn_val is not Select.BLANK else ""
+        src_addr_val = self.query_one("#src-addr", Select).value
+        src_addr = src_addr_val if src_addr_val is not Select.BLANK else "localhost"
+        dst_addr_val = self.query_one("#dst-addr", Select).value
+        dst_addr = dst_addr_val if dst_addr_val is not Select.BLANK else "localhost"
         tag = self.query_one("#tag", Input).value.strip()
         error_label = self.query_one(".modal-error", Label)
         try:
@@ -133,7 +142,11 @@ class _AddForwardDialog(ModalScreen):
         except ValueError:
             error_label.update("Local and remote ports must be valid numbers.")
             return
-        self.dismiss({"conn": conn, "src": src, "dst": dst, "tag": tag, "dir": self._direction})
+        self.dismiss({
+            "conn": conn, "src": src, "dst": dst,
+            "src_addr": src_addr, "dst_addr": dst_addr,
+            "tag": tag, "dir": self._direction,
+        })
 
 
 class ConnectionEditorScreen(Screen):
@@ -408,7 +421,13 @@ class ConnectionEditorScreen(Screen):
         def _on_result(data) -> None:
             if not data:
                 return
-            fw = PortForward(src_port=data["src"], dst_port=data["dst"], tag=data["tag"])
+            fw = PortForward(
+                src_addr=data["src_addr"],
+                src_port=data["src"],
+                dst_addr=data["dst_addr"],
+                dst_port=data["dst"],
+                tag=data["tag"],
+            )
             try:
                 if direction == "local":
                     self.app.manager.add_local_forward(data["conn"], fw)  # type: ignore[attr-defined]
