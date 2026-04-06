@@ -37,11 +37,11 @@ susops-tray
 
 Three frontends share a **single `SusOpsManager` facade** — changes to the facade or core must be reflected in all three:
 
-| Frontend | Entry point | Notes |
-|---|---|---|
-| TUI | `src/susops/tui/` | Textual 8.2.3 + textual-plotext 1.0.1 |
-| Tray Linux | `src/susops/tray/linux.py` | GTK3 + AyatanaAppIndicator3 (system packages) |
-| Tray macOS | `src/susops/tray/mac.py` | rumps + PyObjC |
+| Frontend    | Entry point                | Notes                                         |
+|-------------|----------------------------|-----------------------------------------------|
+| TUI         | `src/susops/tui/`          | Textual 8.2.3 + textual-plotext 1.0.1         |
+| Tray Linux  | `src/susops/tray/linux.py` | GTK3 + AyatanaAppIndicator3 (system packages) |
+| Tray macOS  | `src/susops/tray/mac.py`   | rumps + PyObjC                                |
 
 ```
 src/susops/

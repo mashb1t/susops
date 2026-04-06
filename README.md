@@ -34,15 +34,15 @@ susops/
 
 ## Requirements
 
-| Component | Requirement |
-|-----------|-------------|
-| Python | ≥ 3.11 |
-| SSH tunnels | `autossh` (recommended) or `ssh` |
-| PAC server | built-in (`http.server`) |
-| TUI | `textual >= 0.80` (optional extra) |
-| File sharing | `cryptography >= 42` (optional extra) |
-| Linux tray | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
-| macOS tray | `rumps >= 0.4` |
+| Component    | Requirement                                                           |
+|--------------|-----------------------------------------------------------------------|
+| Python       | ≥ 3.11                                                                |
+| SSH tunnels  | `autossh` (recommended) or `ssh`                                      |
+| PAC server   | built-in (`http.server`)                                              |
+| TUI          | `textual >= 0.80` (optional extra)                                    |
+| File sharing | `cryptography >= 42` (optional extra)                                 |
+| Linux tray   | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
+| macOS tray   | `rumps >= 0.4`                                                        |
 
 ---
 
