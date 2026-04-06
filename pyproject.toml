@@ -33,6 +33,7 @@ crypto = [
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "textual-dev",
 ]
 
 [project.scripts]
