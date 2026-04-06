@@ -305,11 +305,13 @@ class DashboardScreen(Screen):
         rx, tx = data["bw"]
         rx_chart.plt.clear_data()
         rx_chart.plt.title(f"RX  {_fmt_bps(rx)}")
+        rx_chart.plt.ylim(0, max(1.0, max(rx_data)))
         rx_chart.plt.plot(rx_data, color="green")
         rx_chart.refresh()
 
         tx_chart.plt.clear_data()
         tx_chart.plt.title(f"TX  {_fmt_bps(tx)}")
+        tx_chart.plt.ylim(0, max(1.0, max(tx_data)))
         tx_chart.plt.plot(tx_data, color="yellow")
         tx_chart.refresh()
 
