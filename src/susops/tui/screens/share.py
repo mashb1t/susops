@@ -29,8 +29,8 @@ class _AddShareDialog(ModalScreen):
             yield Input(placeholder="", id="password")
             yield Label("Port (0 = auto):")
             yield Input(placeholder="0", value="0", id="port")
-            yield Label("Connection (optional):")
-            yield Select(options, allow_blank=True, id="conn")
+            yield Label("Connection:")
+            yield Select(options, allow_blank=False, id="conn")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Share", id="btn-ok", variant="success")
@@ -76,8 +76,8 @@ class _FetchDialog(ModalScreen):
         options = [(tag, tag) for tag in self._conn_hosts]
         with Static(classes="modal-dialog"):
             yield Label("[bold]Fetch a shared file[/bold]")
-            yield Label("Connection (optional):")
-            yield Select(options, allow_blank=True, id="conn")
+            yield Label("Connection:")
+            yield Select(options, allow_blank=False, id="conn")
             yield Label("Port:")
             yield Input(placeholder="52100", id="port")
             yield Label("Password:")
