@@ -88,6 +88,17 @@ class _PacHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def do_POST(self) -> None:  # noqa: N802
+        """POST /stop — remote shutdown so other processes can stop this server."""
+        if self.path != "/stop":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+        # Shut down in a background thread so the response can be sent first
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: N802
         pass  # suppress default access log
 

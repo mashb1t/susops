@@ -177,6 +177,38 @@ class SusOpsManager:
         self._log(f"[{conn.tag}] Assigned SOCKS port {port}")
         return updated
 
+    # ------------------------------------------------------------------ #
+    # PAC port-file helpers (cross-process PAC status detection)
+    # ------------------------------------------------------------------ #
+
+    @property
+    def _pac_port_file(self) -> "Path":
+        return self.workspace / "pids" / "susops-pac.port"
+
+    def _write_pac_port_file(self, port: int) -> None:
+        self._pac_port_file.parent.mkdir(parents=True, exist_ok=True)
+        self._pac_port_file.write_text(str(port))
+
+    def _remove_pac_port_file(self) -> None:
+        self._pac_port_file.unlink(missing_ok=True)
+
+    def _read_pac_port_file(self) -> int:
+        try:
+            return int(self._pac_port_file.read_text().strip())
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _probe_port(port: int) -> bool:
+        """Return True if something is listening on localhost:port."""
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        except OSError:
+            return False
+
     def _ensure_pac_port(self) -> int:
         if self.config.pac_server_port != 0:
             return self.config.pac_server_port
@@ -242,14 +274,23 @@ class SusOpsManager:
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
 
         if not self._pac_server.is_running():
-            try:
-                self._reload_config()
-                pac_port = self._ensure_pac_port()
-                pac_path = write_pac_file(self.config, self.workspace)
-                self._pac_server.start(pac_port, pac_path)
-                self._log(f"PAC server started on port {pac_port}")
-            except Exception as exc:
-                errors.append(f"PAC server failed: {exc}")
+            # Check if another process already has the PAC server running.
+            cross_port = self._read_pac_port_file()
+            if cross_port and self._probe_port(cross_port):
+                self._log(f"PAC server already running (cross-process) on port {cross_port}")
+            else:
+                # Stale port file (server gone) — clean it up before starting fresh.
+                if cross_port:
+                    self._remove_pac_port_file()
+                try:
+                    self._reload_config()
+                    pac_port = self._ensure_pac_port()
+                    pac_path = write_pac_file(self.config, self.workspace)
+                    self._pac_server.start(pac_port, pac_path)
+                    self._write_pac_port_file(self._pac_server.get_port())
+                    self._log(f"PAC server started on port {pac_port}")
+                except Exception as exc:
+                    errors.append(f"PAC server failed: {exc}")
 
         self._emit_state(self._compute_state())
         return StartResult(
@@ -280,11 +321,27 @@ class SusOpsManager:
         if self._pac_server.is_running():
             try:
                 self._pac_server.stop()
+                self._remove_pac_port_file()
                 self._log("PAC server stopped")
                 if not keep_ports and ephemeral:
                     self.config = self.config.model_copy(update={"pac_server_port": 0})
             except Exception as exc:
                 errors.append(f"PAC: {exc}")
+        else:
+            cross_port = self._read_pac_port_file()
+            if cross_port:
+                # PAC server was started by another process — stop it via HTTP.
+                try:
+                    import urllib.request
+                    urllib.request.urlopen(
+                        f"http://127.0.0.1:{cross_port}/stop",
+                        data=b"",
+                        timeout=2,
+                    )
+                except Exception:
+                    pass  # server may already be gone
+                self._remove_pac_port_file()
+                self._log("PAC server stopped (remote)")
 
         self._save()
         self._emit_state(self._compute_state())
@@ -302,7 +359,14 @@ class SusOpsManager:
         self._reload_config()
         statuses = tuple(self._connection_status(c) for c in self.config.connections)
         pac_running = self._pac_server.is_running()
-        pac_port = self._pac_server.get_port() or self.config.pac_server_port
+        pac_port = self._pac_server.get_port()
+        # Cross-process PAC detection: check port file written by whichever
+        # process owns the PAC server (TUI, tray, or CLI are all independent).
+        if not pac_running:
+            pac_port = pac_port or self._read_pac_port_file()
+            if pac_port:
+                pac_running = self._probe_port(pac_port)
+        pac_port = pac_port or self.config.pac_server_port
         return StatusResult(
             state=self._compute_state(statuses, pac_running),
             connection_statuses=statuses,
