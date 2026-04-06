@@ -424,6 +424,20 @@ class SusOpsMacTray(AbstractTrayApp):
             self.show_alert("Invalid Tag", f"Connection '{conn_tag}' not found.")
             return
 
+        bind_label = "Remote Bind Address" if remote else "Local Bind Address"
+        win_bind = rumps.Window(
+            message=f"{bind_label} (blank = localhost, or 0.0.0.0 to listen on all interfaces):",
+            title=title,
+            default_text="localhost",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_bind = win_bind.run()
+        if r_bind.clicked == 0:
+            return
+        src_addr = r_bind.text.strip() or "localhost"
+
         src_label = "Remote Port" if remote else "Local Port"
         win2 = rumps.Window(
             message=f"{src_label} (forward from):",
@@ -440,9 +454,9 @@ class SusOpsMacTray(AbstractTrayApp):
 
         dst_label = "Local Host" if remote else "Remote Host"
         win3 = rumps.Window(
-            message=f"{dst_label}:",
+            message=f"{dst_label} (blank = localhost):",
             title=title,
-            default_text="localhost" if remote else "",
+            default_text="localhost",
             ok="Next",
             cancel="Cancel",
             dimensions=(320, 24),
@@ -450,7 +464,7 @@ class SusOpsMacTray(AbstractTrayApp):
         r3 = win3.run()
         if r3.clicked == 0:
             return
-        dst_host = r3.text.strip()
+        dst_host = r3.text.strip() or "localhost"
 
         dst_label2 = "Local Port" if remote else "Remote Port"
         win4 = rumps.Window(
@@ -472,11 +486,8 @@ class SusOpsMacTray(AbstractTrayApp):
         except ValueError:
             self.show_alert("Invalid Port", "Ports must be numbers.")
             return
-        if not dst_host:
-            self.show_alert("Missing Field", f"{dst_label} must not be empty.")
-            return
 
-        fw = PortForward(src_port=src_int, dst_addr=dst_host, dst_port=dst_int)
+        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_host, dst_port=dst_int)
         if remote:
             self.do_add_remote_forward(conn_tag, fw)
         else:
