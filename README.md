@@ -10,7 +10,7 @@ SSH SOCKS5 proxy manager with PAC server, Textual TUI, and system tray apps.
 
 SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC (Proxy Auto-Config) file so browsers and other tools route traffic through your tunnels automatically. It replaces a 1600-line Bash CLI with a modern Python stack:
 
-- **Textual TUI** — interactive dashboard, live bandwidth graphs, CRUD editor, log viewer
+- **Textual TUI** — interactive split-pane dashboard, live bandwidth charts, CRUD editor, integrated log viewer
 - **Non-interactive CLI** — scriptable `susops` command with semantic exit codes
 - **Linux tray app** — GTK3 + AyatanaAppIndicator3
 - **macOS tray app** — rumps + PyObjC
@@ -43,7 +43,7 @@ susops/
 | Python       | ≥ 3.11                                                                |
 | SSH tunnels  | `autossh` (recommended) or `ssh`                                      |
 | PAC server   | built-in (`http.server`)                                              |
-| TUI          | `textual >= 0.80` (optional extra)                                    |
+| TUI          | `textual >= 0.80`, `textual-plotext >= 0.2` (optional extra)          |
 | File sharing | `cryptography >= 42` (optional extra)                                 |
 | Linux tray   | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
 | macOS tray   | `rumps >= 0.4`                                                        |
@@ -127,28 +127,38 @@ susops
 
 ### Keybindings
 
-| Key | Action |
-|-----|--------|
-| `d` | Dashboard |
-| `c` | Connection editor |
-| `l` | Log viewer |
-| `f` | File share wizard |
-| `e` | Config editor (YAML) |
-| `s` | Start all tunnels |
-| `x` | Stop all tunnels |
-| `r` | Restart all tunnels |
-| `Ctrl+P` | Command palette |
-| `q` | Quit |
+#### Global
+
+| Key      | Action               |
+|----------|----------------------|
+| `c`      | Connection editor    |
+| `f`      | File share screen    |
+| `e`      | Config editor (YAML) |
+| `s`      | Start all tunnels    |
+| `x`      | Stop all tunnels     |
+| `r`      | Restart all tunnels  |
+| `Ctrl+P` | Command palette      |
+| `q`      | Quit                 |
+
+#### Per screen
+
+| Key      | Action                                          |
+|----------|-------------------------------------------------|
+| `Escape` | Back to dashboard                               |
+| `a`      | Add item (connection, PAC host, forward, share) |
+| `d`      | Delete selected item                            |
 
 ### Screens
 
-**Dashboard** — live status for every connection (colored dot, SOCKS port, PID) plus ↓/↑ bandwidth sparklines updated every 3 seconds. PAC server and active file share status shown below.
+**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot, SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
+- **Stats** — CPU%, memory, active connections, PID for the selected connection
+- **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
+- **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
+- **Logs** — RichLog of all tunnel output, auto-refreshed every 3 seconds
 
-**Connection editor** — tabbed view of Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete the selected row.
+**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
 
-**Log viewer** — scrollable real-time log buffer with per-connection filter and auto-scroll toggle (`a`). Cleared with `c`.
-
-**Share wizard** — share an encrypted file (enter path, optional password, optional port) or fetch a shared file (enter port + password).
+**Share screen** — split-pane: left list of active shares, right panel with file details, URL, password, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share.
 
 **Config editor** — read-only YAML view of `~/.susops/config.yaml`. Press `e` to open in `$EDITOR`.
 
@@ -202,13 +212,15 @@ susops add <host>              # e.g. *.example.com, 10.0.0.0/8, host.example.co
 susops rm  <host>
 
 # Local port forward (-L equivalent)
-susops add -l <local_port> <remote_port> [label] [-c tag]
+susops add -l <local_port> <remote_port> [label] [local_bind] [remote_bind]
 susops rm  -l <local_port>
 
 # Remote port forward (-R equivalent)
-susops add -r <remote_port> <local_port> [label] [-c tag]
+susops add -r <remote_port> <local_port> [label] [remote_bind] [local_bind]
 susops rm  -r <remote_port>
 ```
+
+Bind addresses default to `localhost`. Use `0.0.0.0` to listen on all interfaces or `172.17.0.1` for Docker bridge access.
 
 #### Testing
 
@@ -275,6 +287,8 @@ Requires `rumps`: `pip install "susops[tray-mac]"`
 
 The tray icon reflects the current state (running/partial/stopped). The menu provides Start, Stop, Restart, Test connections, Show status, browser launch, and Quit. State is polled every 5 seconds.
 
+Both tray implementations support full CRUD for connections, PAC hosts, and port forwards (with bind address selection) via native dialogs.
+
 ---
 
 ## Configuration
@@ -293,10 +307,15 @@ connections:
     forwards:
       local:
         - src_port: 5432
-          dst_port: 5432
           src_addr: localhost
+          dst_port: 5432
           dst_addr: db.internal.example.com
           tag: postgres
+        - src_port: 8080
+          src_addr: localhost
+          dst_port: 80
+          dst_addr: web.internal.example.com
+          tag: webui
       remote: []
 susops_app:
   stop_on_quit: true
@@ -304,13 +323,22 @@ susops_app:
   logo_style: COLORED_GLASSES
 ```
 
+### Port forward bind addresses
+
+| Field      | Description                                                                |
+|------------|----------------------------------------------------------------------------|
+| `src_addr` | Local bind address for local forwards; remote bind for remote forwards     |
+| `dst_addr` | Remote destination host for local forwards; local bind for remote forwards |
+
+Common values: `localhost` (default, loopback only), `0.0.0.0` (all interfaces), `172.17.0.1` (Docker bridge).
+
 ### PAC host syntax
 
-| Pattern | Matches |
-|---------|---------|
-| `*.example.com` | any subdomain of example.com |
-| `10.0.0.0/8` | any IP in 10.0.0.0/8 CIDR |
-| `host.example.com` | that exact hostname |
+| Pattern            | Matches                      |
+|--------------------|------------------------------|
+| `*.example.com`    | any subdomain of example.com |
+| `10.0.0.0/8`       | any IP in 10.0.0.0/8 CIDR    |
+| `host.example.com` | that exact hostname          |
 
 ### Port assignment
 
@@ -334,7 +362,7 @@ All runtime data lives in `~/.susops/`:
 
 ## File Sharing
 
-SusOps can share a single file over an encrypted HTTP server, useful for transferring files through an SSH tunnel:
+SusOps can share a single file over an encrypted HTTP server, useful for transferring files through an SSH tunnel. Multiple files can be shared simultaneously on different ports.
 
 ```bash
 # On sender
@@ -370,8 +398,19 @@ mgr.add_connection("work", "user@bastion.example.com", socks_port=0)
 mgr.add_pac_host("*.internal.example.com", conn_tag="work")
 mgr.add_pac_host("10.0.0.0/8", conn_tag="work")
 
-# Add a local port forward
-mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432))
+# Add a local port forward (with optional bind addresses)
+mgr.add_local_forward("work", PortForward(
+    src_port=5432, src_addr="localhost",
+    dst_port=5432, dst_addr="db.internal.example.com",
+    tag="postgres",
+))
+
+# Add a remote port forward
+mgr.add_remote_forward("work", PortForward(
+    src_port=8080, src_addr="localhost",
+    dst_port=8080, dst_addr="localhost",
+    tag="webserver",
+))
 
 # Start
 result = mgr.start()
@@ -389,10 +428,14 @@ mgr.on_log = lambda msg: print(f"[LOG] {msg}")
 result = mgr.test("internal.example.com")
 print(result.success, result.latency_ms)
 
-# Share a file
+# Share a file (multiple concurrent shares supported)
 from pathlib import Path
 info = mgr.share(Path("/tmp/file.txt"))
 print(info.url, info.password)
+
+# Fetch a shared file
+path = mgr.fetch(port=info.port, password=info.password, host="localhost")
+print(path)  # ~/Downloads/file.txt
 
 # Stop
 mgr.stop()
@@ -429,31 +472,25 @@ susops/
   pyproject.toml
   src/susops/
     core/
-      __init__.py
       config.py         # Pydantic v2 + ruamel.yaml
       ssh.py            # autossh subprocess management
       pac.py            # PAC generation + HTTP server
       share.py          # AES-256-CTR file sharing
       process.py        # PID file-based process manager
-      ports.py          # Port utilities
+      ports.py          # Port utilities (validate_port, is_port_free, CIDR)
       ssh_config.py     # ~/.ssh/config parser
       types.py          # Enums + result dataclasses
     facade.py           # SusOpsManager public API
     tui/
       __main__.py       # Dual-mode entrypoint
       cli.py            # argparse non-interactive CLI
-      app.py            # Textual App
+      app.py            # Textual App (SusOpsTuiApp)
+      app.tcss          # Global CSS theme
       screens/
-        dashboard.py
-        connection_editor.py
-        share.py
-        log_viewer.py
-        config_editor.py
-      widgets/
-        connection_card.py
-        status_indicator.py
-        bandwidth_chart.py
-        log_panel.py
+        dashboard.py        # Split-pane dashboard (sidebar + tabbed detail)
+        connection_editor.py # CRUD editor with modal dialogs
+        share.py            # File share + fetch screen
+        config_editor.py    # Read-only YAML viewer
     tray/
       base.py           # AbstractTrayApp
       linux.py          # GTK3 + AyatanaAppIndicator3
