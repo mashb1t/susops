@@ -47,13 +47,13 @@ class SusOpsTuiApp(App):
     CSS_PATH = "app.tcss"
 
     BINDINGS = [
-        Binding("ctrl+p", "command_palette", "Commands"),
-        Binding("c", "push_screen('connections')", "Connections", show=True),
-        Binding("f", "push_screen('share')", "Share", show=True),
+        Binding("c", "push_screen('connections')", "Connections", show=False),
         Binding("e", "push_screen('config')", "Config", show=False),
+        Binding("f", "push_screen('share')", "Share", show=False),
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
+        Binding("ctrl+p", "command_palette", "Commands"),
         Binding("q", "quit", "Quit"),
     ]
 

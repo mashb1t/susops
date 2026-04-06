@@ -59,6 +59,7 @@ class DashboardScreen(Screen):
         Binding("x", "stop_all", "Stop"),
         Binding("r", "restart_all", "Restart"),
         Binding("c", "push_screen('connections')", "Connections"),
+        Binding("e", "push_screen('config')", "Config"),
         Binding("f", "push_screen('share')", "Share"),
     ]
 
