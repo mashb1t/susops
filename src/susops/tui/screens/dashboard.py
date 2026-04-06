@@ -42,7 +42,6 @@ class DashboardScreen(Screen):
         Binding("x", "stop_all", "Stop"),
         Binding("r", "restart_all", "Restart"),
         Binding("c", "push_screen('connections')", "Connections"),
-        Binding("l", "push_screen('logs')", "Logs"),
         Binding("f", "push_screen('share')", "Share"),
     ]
 
@@ -110,9 +109,6 @@ class DashboardScreen(Screen):
         mgr.on_log = self._prev_on_log
 
     def _on_new_log(self, msg: str) -> None:
-        tag = self._selected_tag
-        if tag and f"[{tag}]" not in msg:
-            return
         try:
             self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
         except Exception:
@@ -304,13 +300,12 @@ class DashboardScreen(Screen):
         tx_chart.plt.plot(tx_data, color="yellow")
         tx_chart.refresh()
 
-        # Logs tab — load existing buffer filtered to this connection
+        # Logs tab — show all logs (no per-connection filter)
         log_widget = self.query_one("#detail-logs", RichLog)
         log_widget.clear()
         mgr = self.app.manager  # type: ignore[attr-defined]
-        for line in mgr.get_logs(200):
-            if f"[{tag}]" in line:
-                log_widget.write(line)
+        for line in mgr.get_logs(500):
+            log_widget.write(line)
 
         # Forwards tab
         fwd_table = self.query_one("#fwd-table", DataTable)

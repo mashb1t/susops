@@ -9,7 +9,6 @@ from textual.widgets import Footer, Header
 from susops.tui.screens.config_editor import ConfigEditorScreen
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
 from susops.tui.screens.dashboard import DashboardScreen
-from susops.tui.screens.log_viewer import LogViewerScreen
 from susops.tui.screens.share import ShareScreen
 
 
@@ -24,7 +23,6 @@ class _SusOpsCommands(Provider):
             ("Restart tunnels", app.action_restart_all, "Restart all SSH tunnels"),
             ("Dashboard", lambda: app.push_screen("dashboard"), "Go to dashboard"),
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
-            ("Logs", lambda: app.push_screen("logs"), "View logs"),
             ("Share", lambda: app.push_screen("share"), "Share/fetch files"),
             ("Config", lambda: app.push_screen("config"), "Edit config"),
             ("Quit", app.action_quit, "Quit SusOps"),
@@ -52,7 +50,6 @@ class SusOpsTuiApp(App):
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("d", "push_screen('dashboard')", "Dashboard", show=True),
         Binding("c", "push_screen('connections')", "Connections", show=True),
-        Binding("l", "push_screen('logs')", "Logs", show=True),
         Binding("f", "push_screen('share')", "Share", show=True),
         Binding("e", "push_screen('config')", "Config", show=False),
         Binding("s", "start_all", "Start", show=False),
@@ -64,7 +61,6 @@ class SusOpsTuiApp(App):
     SCREENS = {
         "dashboard": DashboardScreen,
         "connections": ConnectionEditorScreen,
-        "logs": LogViewerScreen,
         "share": ShareScreen,
         "config": ConfigEditorScreen,
     }
