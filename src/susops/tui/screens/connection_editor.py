@@ -13,6 +13,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -67,12 +68,13 @@ class _AddPacHostDialog(ModalScreen):
         self._connections = connections
 
     def compose(self) -> ComposeResult:
+        options = [(tag, tag) for tag in self._connections]
         with Static(classes="modal-dialog"):
             yield Label("[bold]Add PAC Host[/bold]")
             yield Label("Host / wildcard / CIDR:")
             yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
             yield Label("Connection (leave blank for default):")
-            yield Input(placeholder=self._connections[0] if self._connections else "", id="conn")
+            yield Select(options, allow_blank=True, id="conn")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-add", variant="success")
@@ -83,7 +85,8 @@ class _AddPacHostDialog(ModalScreen):
             self.dismiss(None)
             return
         host = self.query_one("#host", Input).value.strip()
-        conn = self.query_one("#conn", Input).value.strip() or None
+        conn_val = self.query_one("#conn", Select).value
+        conn = conn_val if conn_val is not Select.BLANK else None
         if not host:
             self.query_one(".modal-error", Label).update("Host pattern is required.")
             return
@@ -100,10 +103,11 @@ class _AddForwardDialog(ModalScreen):
 
     def compose(self) -> ComposeResult:
         d = self._direction
+        options = [(tag, tag) for tag in self._connections]
         with Static(classes="modal-dialog"):
             yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
-            yield Label("Connection tag:")
-            yield Input(placeholder=self._connections[0] if self._connections else "", id="conn")
+            yield Label("Connection:")
+            yield Select(options, allow_blank=False, id="conn")
             yield Label("Local port:" if d == "local" else "Remote port:")
             yield Input(placeholder="8080", id="src-port")
             yield Label("Remote port:" if d == "local" else "Local port:")
@@ -119,7 +123,8 @@ class _AddForwardDialog(ModalScreen):
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
-        conn = self.query_one("#conn", Input).value.strip()
+        conn_val = self.query_one("#conn", Select).value
+        conn = conn_val if conn_val is not Select.BLANK else ""
         tag = self.query_one("#tag", Input).value.strip()
         error_label = self.query_one(".modal-error", Label)
         try:
