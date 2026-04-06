@@ -138,6 +138,7 @@ class ConnectionEditorScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
+        Binding("r", "reload", "Reload"),
     ]
 
     DEFAULT_CSS = """
@@ -172,7 +173,6 @@ class ConnectionEditorScreen(Screen):
         self.query_one("#detail-preview", Static).border_title = "Details"
         self._setup_tables()
         self._reload()
-        self.set_interval(5.0, self._bg_reload)
 
     def _setup_tables(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
@@ -306,6 +306,9 @@ class ConnectionEditorScreen(Screen):
                 preview.update("")
         else:
             preview.update("")
+
+    def action_reload(self) -> None:
+        self._bg_reload()
 
     def action_add_item(self) -> None:
         active = self.query_one("#editor-tabs", TabbedContent).active
