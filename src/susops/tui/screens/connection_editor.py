@@ -217,10 +217,10 @@ class ConnectionEditorScreen(Screen):
         tbl.add_columns("Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
-        tbl.add_columns("Connection", "Local Port", "Remote Port", "Label")
+        tbl.add_columns("Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label")
 
         tbl = self.query_one("#tbl-remote", DataTable)
-        tbl.add_columns("Connection", "Remote Port", "Local Port", "Label")
+        tbl.add_columns("Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Label")
 
     @work(thread=True)
     def _bg_reload(self) -> None:
@@ -277,7 +277,8 @@ class ConnectionEditorScreen(Screen):
         for conn in config.connections:
             for fw in conn.forwards.local:
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), str(fw.dst_port), fw.tag or "",
+                    conn.tag, str(fw.src_port), fw.src_addr or "localhost",
+                    str(fw.dst_port), fw.dst_addr or "localhost", fw.tag or "",
                     key=f"{conn.tag}:L:{fw.src_port}",
                 )
         if tbl.row_count:
@@ -289,7 +290,8 @@ class ConnectionEditorScreen(Screen):
         for conn in config.connections:
             for fw in conn.forwards.remote:
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), str(fw.dst_port), fw.tag or "",
+                    conn.tag, str(fw.src_port), fw.src_addr or "localhost",
+                    str(fw.dst_port), fw.dst_addr or "localhost", fw.tag or "",
                     key=f"{conn.tag}:R:{fw.src_port}",
                 )
         if tbl.row_count:
