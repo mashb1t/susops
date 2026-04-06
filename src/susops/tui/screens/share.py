@@ -127,7 +127,7 @@ class ShareScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        #yield Header()
         with Horizontal(id="share-split"):
             with Vertical(id="share-list-panel"):
                 yield ListView(id="share-list")

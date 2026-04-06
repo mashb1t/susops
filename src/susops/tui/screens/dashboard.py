@@ -89,7 +89,7 @@ class DashboardScreen(Screen):
         self._idle_ticks: int = 0  # ticks since last active connection
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        #yield Header()
         with Horizontal(id="split"):
             with VerticalScroll(id="sidebar"):
                 yield Static("", id="status-bar")

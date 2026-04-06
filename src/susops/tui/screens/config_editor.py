@@ -26,10 +26,7 @@ class ConfigEditorScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        with Horizontal(id="config-toolbar"):
-            yield Button("↺ Reload", id="btn-reload")
-            yield Button("✎ Edit Config", id="btn-editor")
+        #yield Header()
         area = TextArea(language="yaml", id="config-area", read_only=True)
         area.border_title = "config.yaml"
         yield area

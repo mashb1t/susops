@@ -190,7 +190,7 @@ class ConnectionEditorScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        #yield Header()
         with TabbedContent(id="editor-tabs"):
             with TabPane("Connections", id="tab-connections"):
                 yield DataTable(id="tbl-connections", cursor_type="row")
