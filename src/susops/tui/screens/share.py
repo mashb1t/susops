@@ -1,36 +1,21 @@
-"""Share screen — multi-share list with modal dialogs for add/fetch."""
+"""Share screen — split-pane share list with modal dialogs for add/fetch."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
-from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 from textual import work
 
 
-class _AddShareDialog(Screen):
+class _AddShareDialog(ModalScreen):
     """Modal: start sharing a file."""
 
-    DEFAULT_CSS = """
-    _AddShareDialog { align: center middle; }
-    #dialog {
-        width: 60; height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label { margin-top: 1; }
-    #dialog Input { margin-bottom: 1; }
-    .btn-row { layout: horizontal; margin-top: 1; }
-    .btn-row Button { margin-right: 1; }
-    #error { color: $error; height: 1; }
-    """
-
     def compose(self) -> ComposeResult:
-        with Container(id="dialog"):
+        with Static(classes="modal-dialog"):
             yield Label("[bold]Share a file[/bold]")
             yield Label("File path:")
             yield Input(placeholder="/path/to/file", id="path")
@@ -38,8 +23,8 @@ class _AddShareDialog(Screen):
             yield Input(placeholder="", id="password")
             yield Label("Port (0 = auto):")
             yield Input(placeholder="0", value="0", id="port")
-            yield Label("", id="error")
-            with Horizontal(classes="btn-row"):
+            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-btn-row"):
                 yield Button("Share", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
@@ -62,26 +47,11 @@ class _AddShareDialog(Screen):
         self.dismiss({"path": path, "password": pw, "port": port})
 
 
-class _FetchDialog(Screen):
+class _FetchDialog(ModalScreen):
     """Modal: fetch a shared file."""
 
-    DEFAULT_CSS = """
-    _FetchDialog { align: center middle; }
-    #dialog {
-        width: 60; height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label { margin-top: 1; }
-    #dialog Input { margin-bottom: 1; }
-    .btn-row { layout: horizontal; margin-top: 1; }
-    .btn-row Button { margin-right: 1; }
-    #error { color: $error; height: 1; }
-    """
-
     def compose(self) -> ComposeResult:
-        with Container(id="dialog"):
+        with Static(classes="modal-dialog"):
             yield Label("[bold]Fetch a shared file[/bold]")
             yield Label("Port:")
             yield Input(placeholder="52100", id="port")
@@ -89,8 +59,8 @@ class _FetchDialog(Screen):
             yield Input(placeholder="", id="password")
             yield Label("Save to (blank = ~/Downloads/<filename>):")
             yield Input(placeholder="", id="outfile")
-            yield Label("", id="error")
-            with Horizontal(classes="btn-row"):
+            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-btn-row"):
                 yield Button("Fetch", id="btn-ok", variant="primary")
                 yield Button("Cancel", id="btn-cancel")
 
@@ -113,7 +83,7 @@ class _FetchDialog(Screen):
 
 
 class ShareScreen(Screen):
-    """Active shares list + dialogs to add shares or fetch files."""
+    """Split-pane share screen: active shares list + detail panel."""
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
@@ -123,64 +93,73 @@ class ShareScreen(Screen):
         Binding("r", "refresh", "Refresh"),
     ]
 
-    DEFAULT_CSS = """
-    ShareScreen { layout: vertical; }
-    #toolbar {
-        height: 3;
-        layout: horizontal;
-        padding: 0 1;
-        background: $surface-darken-1;
-    }
-    #toolbar Button { margin-right: 1; }
-    #shares-table { height: 1fr; margin: 1; }
-    #status-bar {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="toolbar"):
+        with Horizontal(id="share-toolbar"):
             yield Button("+ Share file", id="btn-add", variant="success")
             yield Button("↓ Fetch file", id="btn-fetch", variant="primary")
             yield Button("■ Stop share", id="btn-stop", variant="error")
-        yield DataTable(id="shares-table", cursor_type="row")
-        yield Label("", id="status-bar")
+            yield Button("↺ Refresh", id="btn-refresh")
+        with Horizontal(id="share-split"):
+            with Vertical(id="share-list-panel"):
+                yield ListView(id="share-list")
+            yield Static("", id="share-detail", markup=True)
+        yield Label("", id="share-status")
         yield Footer()
 
     def on_mount(self) -> None:
-        tbl = self.query_one("#shares-table", DataTable)
-        tbl.add_columns("File", "Port", "URL", "Password", "CLI command")
+        lv = self.query_one("#share-list", ListView)
+        lv.border_title = "Active Shares"
+        self._shares: list = []
         self._reload()
 
     def _reload(self) -> None:
-        tbl = self.query_one("#shares-table", DataTable)
-        tbl.clear()
-        shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
-        for info in shares:
+        self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
+        lv = self.query_one("#share-list", ListView)
+        lv.clear()
+        for info in self._shares:
             name = Path(info.file_path).name
-            tbl.add_row(
-                name,
-                str(info.port),
-                info.url,
-                info.password,
-                f"susops fetch {info.port} {info.password}",
-                key=str(info.port),
-            )
-        count = len(shares)
-        self.query_one("#status-bar", Label).update(
+            lv.append(ListItem(Label(f"[green]●[/green] {name}  :{info.port}")))
+        count = len(self._shares)
+        self.query_one("#share-status", Label).update(
             f"{count} active share(s)" if count else "No active shares"
         )
+        if self._shares:
+            self._show_detail(self._shares[0])
+        else:
+            self.query_one("#share-detail", Static).update(
+                "[dim]No active shares.\n\nPress [bold]a[/bold] to share a file.[/dim]"
+            )
+
+    def _show_detail(self, info) -> None:
+        name = Path(info.file_path).name
+        fetch_cmd = f"susops fetch {info.port} {info.password}"
+        text = (
+            f"[bold]File:[/bold]     {info.file_path}\n"
+            f"[bold]Name:[/bold]     {name}\n"
+            f"[bold]Port:[/bold]     {info.port}\n"
+            f"[bold]URL:[/bold]      {info.url}\n"
+            f"[bold]Password:[/bold] {info.password}\n\n"
+            f"[bold]Fetch command:[/bold]\n"
+            f"  [dim]{fetch_cmd}[/dim]"
+        )
+        self.query_one("#share-detail", Static).update(text)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        idx = event.list_view.index
+        if idx is not None and 0 <= idx < len(self._shares):
+            self._show_detail(self._shares[idx])
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-add":
-            self.action_add_share()
-        elif event.button.id == "btn-fetch":
-            self.action_fetch_file()
-        elif event.button.id == "btn-stop":
-            self.action_stop_share()
+        mapping = {
+            "btn-add": self.action_add_share,
+            "btn-fetch": self.action_fetch_file,
+            "btn-stop": self.action_stop_share,
+            "btn-refresh": self.action_refresh,
+        }
+        fn = mapping.get(event.button.id or "")
+        if fn:
+            fn()
 
     def action_add_share(self) -> None:
         def _on_result(data) -> None:
@@ -197,11 +176,10 @@ class ShareScreen(Screen):
         self.app.push_screen(_FetchDialog(), _on_result)
 
     def action_stop_share(self) -> None:
-        tbl = self.query_one("#shares-table", DataTable)
-        if tbl.row_count == 0:
+        idx = self.query_one("#share-list", ListView).index
+        if idx is None or idx >= len(self._shares):
             return
-        row = tbl.get_row_at(tbl.cursor_row)
-        port = int(str(row[1]))
+        port = self._shares[idx].port
         self.app.manager.stop_share(port)  # type: ignore[attr-defined]
         self._reload()
 
@@ -213,13 +191,10 @@ class ShareScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         try:
             info = mgr.share(Path(path), password=password, port=port or None)
-            msg = (
-                f"[green]Sharing {Path(path).name} on :{info.port}  "
-                f"pw: {info.password}[/green]"
-            )
+            msg = f"[green]Sharing {Path(path).name} on :{info.port}  pw: {info.password}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
-        self.app.call_from_thread(self.query_one("#status-bar", Label).update, msg)
+        self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)
         self.app.call_from_thread(self._reload)
 
     @work(thread=True)
@@ -231,4 +206,4 @@ class ShareScreen(Screen):
             msg = f"[green]Downloaded to: {result}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
-        self.app.call_from_thread(self.query_one("#status-bar", Label).update, msg)
+        self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)

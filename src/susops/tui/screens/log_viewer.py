@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, RichLog, Select, Switch, Label
-from textual.containers import Horizontal
+from textual.widgets import Button, Footer, Header, RichLog, Select, Switch, Label
+from textual.containers import Horizontal, Vertical
 
 
 class LogViewerScreen(Screen):
@@ -19,35 +18,12 @@ class LogViewerScreen(Screen):
     ]
 
     DEFAULT_CSS = """
-    LogViewerScreen {
-        layout: vertical;
-    }
-    #toolbar {
-        height: 3;
-        layout: horizontal;
-        padding: 0 1;
-        background: $surface-darken-1;
-        align: left middle;
-    }
-    #toolbar Label {
-        margin-right: 1;
-        height: 1;
-    }
-    #toolbar Switch {
-        margin-right: 2;
-    }
-    #log-view {
-        height: 1fr;
-        border: round $surface-darken-1;
-        margin: 0 1 1 1;
-    }
+    LogViewerScreen { layout: vertical; }
     """
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="toolbar"):
-            yield Label("Auto-scroll:")
-            yield Switch(value=True, id="autoscroll-switch")
+        with Horizontal(id="log-toolbar"):
             yield Label("Filter:")
             yield Select(
                 [("All", "")],
@@ -55,7 +31,12 @@ class LogViewerScreen(Screen):
                 id="filter-select",
                 allow_blank=False,
             )
-        yield RichLog(highlight=True, markup=True, wrap=True, id="log-view")
+            yield Label("Auto-scroll:")
+            yield Switch(value=True, id="autoscroll-switch")
+            yield Button("Clear", id="btn-clear")
+        log = RichLog(highlight=True, markup=True, wrap=True, id="log-view")
+        log.border_title = "Logs"
+        yield log
         yield Footer()
 
     def on_mount(self) -> None:
@@ -94,6 +75,10 @@ class LogViewerScreen(Screen):
         log_view.write(msg)
         if self.query_one("#autoscroll-switch", Switch).value:
             log_view.scroll_end(animate=False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-clear":
+            self.action_clear_logs()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "filter-select":

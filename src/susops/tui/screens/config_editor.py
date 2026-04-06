@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, TextArea
-from textual.containers import Vertical, Horizontal
+from textual.containers import Horizontal
 from textual import work
 
 
@@ -22,30 +22,17 @@ class ConfigEditorScreen(Screen):
     ]
 
     DEFAULT_CSS = """
-    ConfigEditorScreen {
-        layout: vertical;
-    }
-    #toolbar {
-        height: 3;
-        layout: horizontal;
-        padding: 0 1;
-        background: $surface-darken-1;
-    }
-    #toolbar Button {
-        margin-right: 1;
-    }
-    #config-area {
-        height: 1fr;
-        margin: 0 1 1 1;
-    }
+    ConfigEditorScreen { layout: vertical; }
     """
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="toolbar"):
+        with Horizontal(id="config-toolbar"):
             yield Button("↺ Reload", id="btn-reload")
             yield Button("✎ Edit in $EDITOR", id="btn-editor")
-        yield TextArea(language="yaml", id="config-area", read_only=True)
+        area = TextArea(language="yaml", id="config-area", read_only=True)
+        area.border_title = "config.yaml"
+        yield area
         yield Footer()
 
     def on_mount(self) -> None:

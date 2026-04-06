@@ -1,73 +1,41 @@
-"""Dashboard screen — htop-style live overview with per-process metrics."""
+"""Dashboard screen — lazydocker+nvtop-inspired split-pane live overview."""
 from __future__ import annotations
+
+from collections import deque
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Label, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Header,
+    Label,
+    ListItem,
+    ListView,
+    RichLog,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 from textual import work
+from textual_plotext import PlotextPlot
 
 from susops.core.types import ProcessState, StatusResult
-from susops.tui.widgets.connection_card import ConnectionCard
 
 
-class _PacCard(Static):
-    DEFAULT_CSS = """
-    _PacCard {
-        height: auto;
-        border: round $surface-darken-1;
-        padding: 0 1;
-        margin: 0 0 1 0;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Label("", id="pac-label")
-        yield Label("", id="pac-hosts")
-
-    def refresh_status(self, running: bool, port: int, host_count: int) -> None:
-        dot = "[green]●[/green]" if running else "[red]○[/red]"
-        port_str = f"  :{port}" if port else ""
-        self.query_one("#pac-label", Label).update(
-            f"{dot} PAC server{port_str}"
-        )
-        if running:
-            self.query_one("#pac-hosts", Label).update(
-                f"[dim]  Routing {host_count} host pattern(s)[/dim]"
-            )
-        else:
-            self.query_one("#pac-hosts", Label).update("")
-
-
-class _SharesSummary(Static):
-    DEFAULT_CSS = """
-    _SharesSummary {
-        height: auto;
-        border: round $surface-darken-1;
-        padding: 0 1;
-        margin: 0 0 1 0;
-    }
-    """
-
-    def compose(self) -> ComposeResult:
-        yield Label("", id="shares-label")
-
-    def refresh_status(self, shares: list) -> None:
-        if not shares:
-            self.display = False
-            return
-        self.display = True
-        lines = ["[bold]File shares[/bold]"]
-        for info in shares:
-            from pathlib import Path
-            name = Path(info.file_path).name
-            lines.append(f"  [green]●[/green] {name}  :{info.port}  [dim]pw: {info.password[:8]}…[/dim]")
-        self.query_one("#shares-label", Label).update("\n".join(lines))
+def _fmt_bps(bps: float) -> str:
+    if bps >= 1_048_576:
+        return f"{bps / 1_048_576:.1f}MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.0f}kB/s"
+    return f"{bps:.0f}B/s"
 
 
 class DashboardScreen(Screen):
-    """Htop-style dashboard: per-connection process metrics + bandwidth sparklines."""
+    """Lazydocker+nvtop-inspired split-pane dashboard."""
 
     BINDINGS = [
         Binding("s", "start_all", "Start"),
@@ -80,45 +48,71 @@ class DashboardScreen(Screen):
 
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
-    #toolbar {
-        height: 3;
-        layout: horizontal;
-        padding: 0 1;
-        background: $surface-darken-1;
-    }
-    #toolbar Button { margin: 0 1 0 0; min-width: 10; }
-    #state-bar {
-        height: 1;
-        padding: 0 1;
-        background: $surface-darken-2;
-        color: $text-muted;
-    }
-    #cards-area { height: 1fr; padding: 1; }
+    #status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
+    #split { height: 1fr; }
+    #sidebar { width: 32; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #pac-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
+    #shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
+    #detail-tabs { width: 1fr; }
+    #bw-container { height: 1fr; }
+    #rx-chart { height: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
+    #tx-chart { height: 1fr; border: round $primary-darken-1; margin: 0 1; }
+    #stats-content { height: auto; padding: 1 2; }
+    #fwd-table { height: 1fr; margin: 1; }
+    #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
+    #conn-list { height: auto; min-height: 3; border: round $primary-darken-1; margin: 1 0 1 0; border-title-align: left; }
     """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._conn_tags: list[str] = []
+        self._selected_tag: str | None = None
+        self._conn_data: dict = {}
+        self._rx_history: dict = {}
+        self._tx_history: dict = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="toolbar"):
-            yield Button("▶ Start", id="btn-start", variant="success")
-            yield Button("■ Stop", id="btn-stop", variant="error")
-            yield Button("↺ Restart", id="btn-restart", variant="warning")
-        yield Label("", id="state-bar")
-        with ScrollableContainer(id="cards-area"):
-            yield _PacCard(id="pac-card")
-            yield _SharesSummary(id="shares-card")
+        yield Static("", id="status-bar")
+        with Horizontal(id="split"):
+            with VerticalScroll(id="sidebar"):
+                yield ListView(id="conn-list")
+                yield Static("", id="pac-info")
+                yield Static("", id="shares-info")
+            with TabbedContent(id="detail-tabs"):
+                with TabPane("Stats", id="tab-stats"):
+                    yield Static("Select a connection.", id="stats-content")
+                with TabPane("Bandwidth", id="tab-bw"):
+                    with Vertical(id="bw-container"):
+                        yield PlotextPlot(id="rx-chart")
+                        yield PlotextPlot(id="tx-chart")
+                with TabPane("Forwards", id="tab-fwd"):
+                    yield DataTable(id="fwd-table", cursor_type="row")
+                with TabPane("Logs", id="tab-logs"):
+                    yield RichLog(id="detail-logs", highlight=True, markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
-        self._cards: dict[str, ConnectionCard] = {}
-        self.refresh_status()
+        conn_list = self.query_one("#conn-list", ListView)
+        conn_list.border_title = "Connections"
+
+        pac_info = self.query_one("#pac-info", Static)
+        pac_info.border_title = "PAC Server"
+
+        shares_info = self.query_one("#shares-info", Static)
+        shares_info.border_title = "Active Shares"
+
+        fwd_table = self.query_one("#fwd-table", DataTable)
+        fwd_table.add_columns("Dir", "Local Port", "Remote Host", "Remote Port", "Label")
+
         self.set_interval(3.0, self.refresh_status)
+        self.refresh_status()
 
     @work(thread=True)
     def refresh_status(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         result: StatusResult = mgr.status()
 
-        # Gather per-connection extras in the worker thread (no blocking sleep)
         extras: dict[str, dict] = {}
         bw: dict[str, tuple[float, float]] = {}
         for cs in result.connection_statuses:
@@ -126,7 +120,8 @@ class DashboardScreen(Screen):
             bw[cs.tag] = mgr.get_bandwidth(cs.tag)
 
         shares = mgr.list_shares()
-        self.app.call_from_thread(self._apply_status, result, extras, bw, shares)
+        config = mgr.list_config()
+        self.app.call_from_thread(self._apply_status, result, extras, bw, shares, config)
 
     def _apply_status(
         self,
@@ -134,6 +129,7 @@ class DashboardScreen(Screen):
         extras: dict,
         bw: dict,
         shares: list,
+        config,
     ) -> None:
         state_colors = {
             ProcessState.RUNNING: "green",
@@ -143,68 +139,190 @@ class DashboardScreen(Screen):
             ProcessState.INITIAL: "dim",
         }
         color = state_colors.get(result.state, "dim")
-        self.query_one("#state-bar", Label).update(
-            f"[{color}]● {result.state.value}[/{color}]"
-            f"  PAC: {'[green]up[/green]' if result.pac_running else '[red]down[/red]'}"
-            + (f"  :{result.pac_port}" if result.pac_port else "")
-            + (f"  [dim]shares: {len(shares)}[/dim]" if shares else "")
+        running_count = sum(1 for cs in result.connection_statuses if cs.running)
+        total_count = len(result.connection_statuses)
+        pac_str = "[green]up[/green]" if result.pac_running else "[red]down[/red]"
+        pac_port_str = f":{result.pac_port}" if result.pac_port else ""
+        share_str = f"  [dim]shares: {len(shares)}[/dim]" if shares else ""
+        self.query_one("#status-bar", Static).update(
+            f"[{color}]●[/{color}] {running_count}/{total_count} running"
+            f"  PAC: {pac_str}{pac_port_str}"
+            f"  [dim]s=start x=stop r=restart[/dim]"
+            f"{share_str}"
         )
 
-        cards_area = self.query_one("#cards-area")
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        config = mgr.list_config()
-
-        # Build tag→connection map for forwards
+        # Build conn_data with forwards from config
         conn_map = {c.tag: c for c in config.connections}
+        new_conn_data: dict = {}
+        for cs in result.connection_statuses:
+            conn = conn_map.get(cs.tag)
+            forwards = []
+            if conn:
+                forwards = list(conn.forwards.local) + list(conn.forwards.remote)
+                forwards_local = list(conn.forwards.local)
+                forwards_remote = list(conn.forwards.remote)
+            else:
+                forwards_local = []
+                forwards_remote = []
+            new_conn_data[cs.tag] = {
+                "cs": cs,
+                "proc_info": extras.get(cs.tag) or {},
+                "bw": bw.get(cs.tag, (0.0, 0.0)),
+                "forwards_local": forwards_local,
+                "forwards_remote": forwards_remote,
+                "conn": conn,
+            }
+        self._conn_data = new_conn_data
+
+        # Update rolling bandwidth history (60 samples)
+        for cs in result.connection_statuses:
+            tag = cs.tag
+            rx, tx = bw.get(tag, (0.0, 0.0))
+            if tag not in self._rx_history:
+                self._rx_history[tag] = deque([0.0] * 60, maxlen=60)
+                self._tx_history[tag] = deque([0.0] * 60, maxlen=60)
+            self._rx_history[tag].append(rx)
+            self._tx_history[tag].append(tx)
+
+        # Remove history for tags that no longer exist
+        current_tags = {cs.tag for cs in result.connection_statuses}
+        for tag in list(self._rx_history):
+            if tag not in current_tags:
+                del self._rx_history[tag]
+                del self._tx_history[tag]
+
+        # Repopulate ListView
+        conn_list = self.query_one("#conn-list", ListView)
+        prev_index = conn_list.index
+        conn_list.clear()
+        self._conn_tags = [cs.tag for cs in result.connection_statuses]
 
         for cs in result.connection_statuses:
-            if cs.tag not in self._cards:
-                card = ConnectionCard(cs.tag, id=f"card-{cs.tag}")
-                self._cards[cs.tag] = card
-                cards_area.mount(card, before="#pac-card")
-
-            conn = conn_map.get(cs.tag)
-            all_forwards = []
-            if conn:
-                all_forwards = list(conn.forwards.local) + list(conn.forwards.remote)
-
-            self._cards[cs.tag].refresh_status(
-                cs,
-                proc_info=extras.get(cs.tag),
-                forwards=all_forwards,
-            )
+            dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
+            port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, tx = bw.get(cs.tag, (0.0, 0.0))
-            self._cards[cs.tag].refresh_bandwidth(rx, tx)
+            bw_str = _fmt_bps(rx)
+            label_text = f"{dot} {cs.tag:<12} :{port_str:<6} {bw_str:>9}↓"
+            conn_list.append(ListItem(Label(label_text)))
 
-        # Remove stale cards
-        current_tags = {cs.tag for cs in result.connection_statuses}
-        for tag in list(self._cards):
-            if tag not in current_tags:
-                self._cards[tag].remove()
-                del self._cards[tag]
+        # Restore selection
+        if self._conn_tags:
+            target_index = prev_index if prev_index is not None and prev_index < len(self._conn_tags) else 0
+            try:
+                conn_list.index = target_index
+                self._selected_tag = self._conn_tags[target_index]
+            except Exception:
+                self._selected_tag = self._conn_tags[0]
+        else:
+            self._selected_tag = None
 
-        # PAC card
+        # Update PAC info
         host_count = sum(len(c.pac_hosts) for c in config.connections)
-        self.query_one("#pac-card", _PacCard).refresh_status(
-            result.pac_running, result.pac_port, host_count
-        )
+        pac_dot = "[green]●[/green]" if result.pac_running else "[red]○[/red]"
+        pac_port_display = f":{result.pac_port}" if result.pac_port else ""
+        pac_url = f"http://localhost:{result.pac_port}/proxy.pac" if result.pac_port else ""
+        pac_lines = [f"{pac_dot} PAC server{pac_port_display}"]
+        if result.pac_running:
+            pac_lines.append(f"[dim]  {host_count} host pattern(s)[/dim]")
+            if pac_url:
+                pac_lines.append(f"[dim]  {pac_url}[/dim]")
+        self.query_one("#pac-info", Static).update("\n".join(pac_lines))
 
-        # Shares summary
-        self.query_one("#shares-card", _SharesSummary).refresh_status(shares)
+        # Update shares info
+        shares_widget = self.query_one("#shares-info", Static)
+        if not shares:
+            shares_widget.display = False
+        else:
+            shares_widget.display = True
+            share_lines = []
+            for info in shares:
+                name = Path(info.file_path).name
+                share_lines.append(f"[green]●[/green] {name}  :{info.port}")
+            shares_widget.update("\n".join(share_lines))
 
-        # Button states
-        self.query_one("#btn-start", Button).disabled = result.state == ProcessState.RUNNING
-        self.query_one("#btn-stop", Button).disabled = result.state == ProcessState.STOPPED
+        # Refresh detail panel for currently selected tag
+        self._update_detail_panel(self._selected_tag)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        actions = {
-            "btn-start": self.action_start_all,
-            "btn-stop": self.action_stop_all,
-            "btn-restart": self.action_restart_all,
-        }
-        fn = actions.get(event.button.id or "")
-        if fn:
-            fn()
+    def _update_detail_panel(self, tag: str | None) -> None:
+        if not tag or tag not in self._conn_data:
+            self.query_one("#stats-content", Static).update(
+                "[dim]Select a connection from the sidebar.[/dim]"
+            )
+            fwd_table = self.query_one("#fwd-table", DataTable)
+            fwd_table.clear()
+            return
+
+        data = self._conn_data[tag]
+        cs = data["cs"]
+        proc_info = data["proc_info"]
+        conn = data.get("conn")
+        forwards_local = data.get("forwards_local", [])
+        forwards_remote = data.get("forwards_remote", [])
+
+        # Stats tab
+        cpu = proc_info.get("cpu", 0.0) if proc_info else 0.0
+        mem_mb = proc_info.get("mem_mb", 0.0) if proc_info else 0.0
+        conns = proc_info.get("conns", 0) if proc_info else 0
+        pid_str = str(cs.pid) if cs.pid else "—"
+        ssh_host = conn.ssh_host if conn else "—"
+        socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
+        status_str = "[green]running[/green]" if cs.running else "[red]stopped[/red]"
+
+        stats_lines = [
+            f"[bold]{tag}[/bold]  {status_str}",
+            "",
+            f"  SSH host   : {ssh_host}",
+            f"  SOCKS port : {socks_port_str}",
+            f"  PID        : {pid_str}",
+            f"  CPU        : {cpu:.1f}%",
+            f"  Memory     : {mem_mb:.1f} MB",
+            f"  Connections: {conns}",
+        ]
+        self.query_one("#stats-content", Static).update("\n".join(stats_lines))
+
+        # Bandwidth tab
+        rx_data = list(self._rx_history.get(tag, [0.0] * 60))
+        tx_data = list(self._tx_history.get(tag, [0.0] * 60))
+        rx_chart = self.query_one("#rx-chart", PlotextPlot)
+        tx_chart = self.query_one("#tx-chart", PlotextPlot)
+
+        rx, tx = data["bw"]
+        rx_chart.plt.clear_data()
+        rx_chart.plt.title(f"RX  {_fmt_bps(rx)}")
+        rx_chart.plt.plot(rx_data, color="green")
+        rx_chart.refresh()
+
+        tx_chart.plt.clear_data()
+        tx_chart.plt.title(f"TX  {_fmt_bps(tx)}")
+        tx_chart.plt.plot(tx_data, color="yellow")
+        tx_chart.refresh()
+
+        # Forwards tab
+        fwd_table = self.query_one("#fwd-table", DataTable)
+        fwd_table.clear()
+        for fw in forwards_local:
+            fwd_table.add_row(
+                "L",
+                str(fw.src_port),
+                fw.dst_addr,
+                str(fw.dst_port),
+                fw.tag or "",
+            )
+        for fw in forwards_remote:
+            fwd_table.add_row(
+                "R",
+                str(fw.src_port),
+                fw.dst_addr,
+                str(fw.dst_port),
+                fw.tag or "",
+            )
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        index = event.list_view.index
+        if index is not None and index < len(self._conn_tags):
+            tag = self._conn_tags[index]
+            self._selected_tag = tag
+            self._update_detail_panel(tag)
 
     @work(thread=True)
     def action_start_all(self) -> None:

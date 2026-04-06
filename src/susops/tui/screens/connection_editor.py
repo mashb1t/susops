@@ -4,7 +4,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
-from textual.screen import Screen
+from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -12,33 +12,18 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Static,
     TabbedContent,
     TabPane,
 )
-from susops.core.config import Connection, Forwards, PortForward
+from susops.core.config import PortForward
+from susops.core.types import ProcessState
 
 
-class _AddConnectionDialog(Screen):
+class _AddConnectionDialog(ModalScreen):
     """Modal for adding a new SSH connection."""
 
-    def compose(self) -> ComposeResult:
-        yield Container(
-            Label("[bold]Add Connection[/bold]"),
-            Label("Tag:"),
-            Input(placeholder="e.g. work", id="tag"),
-            Label("SSH host (user@host):"),
-            Input(placeholder="user@hostname", id="ssh-host"),
-            Label("SOCKS port (0 = auto):"),
-            Input(placeholder="0", id="socks-port", value="0"),
-            Button("Add", id="btn-add", variant="success"),
-            Button("Cancel", id="btn-cancel"),
-            id="dialog",
-        )
-
     DEFAULT_CSS = """
-    _AddConnectionDialog {
-        align: center middle;
-    }
     #dialog {
         width: 50;
         height: auto;
@@ -53,7 +38,27 @@ class _AddConnectionDialog(Screen):
         margin-top: 1;
         margin-right: 1;
     }
+    #error {
+        height: 1;
+        color: $error;
+        margin-top: 1;
+    }
     """
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Label("[bold]Add Connection[/bold]"),
+            Label("Tag:"),
+            Input(placeholder="e.g. work", id="tag"),
+            Label("SSH host (user@host):"),
+            Input(placeholder="user@hostname", id="ssh-host"),
+            Label("SOCKS port (0 = auto):"),
+            Input(placeholder="0", id="socks-port", value="0"),
+            Label("", id="error"),
+            Button("Add", id="btn-add", variant="success"),
+            Button("Cancel", id="btn-cancel"),
+            id="dialog",
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
@@ -62,17 +67,40 @@ class _AddConnectionDialog(Screen):
         tag = self.query_one("#tag", Input).value.strip()
         host = self.query_one("#ssh-host", Input).value.strip()
         port_str = self.query_one("#socks-port", Input).value.strip()
-        if not tag or not host:
+        error_label = self.query_one("#error", Label)
+        if not tag:
+            error_label.update("Tag is required.")
+            return
+        if not host:
+            error_label.update("SSH host is required.")
             return
         try:
             port = int(port_str or "0")
         except ValueError:
-            port = 0
+            error_label.update("SOCKS port must be a number.")
+            return
         self.dismiss({"tag": tag, "host": host, "port": port})
 
 
-class _AddPacHostDialog(Screen):
+class _AddPacHostDialog(ModalScreen):
     """Modal for adding a PAC host."""
+
+    DEFAULT_CSS = """
+    #dialog {
+        width: 50;
+        height: auto;
+        border: round $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    #dialog Label { margin-top: 1; }
+    #dialog Button { margin-top: 1; margin-right: 1; }
+    #error {
+        height: 1;
+        color: $error;
+        margin-top: 1;
+    }
+    """
 
     def __init__(self, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -85,15 +113,29 @@ class _AddPacHostDialog(Screen):
             Input(placeholder="*.example.com or 10.0.0.0/8", id="host"),
             Label("Connection (leave blank for default):"),
             Input(placeholder=self._connections[0] if self._connections else "", id="conn"),
+            Label("", id="error"),
             Button("Add", id="btn-add", variant="success"),
             Button("Cancel", id="btn-cancel"),
             id="dialog",
         )
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-cancel":
+            self.dismiss(None)
+            return
+        host = self.query_one("#host", Input).value.strip()
+        conn = self.query_one("#conn", Input).value.strip() or None
+        error_label = self.query_one("#error", Label)
+        if not host:
+            error_label.update("Host pattern is required.")
+            return
+        self.dismiss({"host": host, "conn": conn})
+
+
+class _AddForwardDialog(ModalScreen):
+    """Modal for adding a local or remote port forward."""
+
     DEFAULT_CSS = """
-    _AddPacHostDialog {
-        align: center middle;
-    }
     #dialog {
         width: 50;
         height: auto;
@@ -103,21 +145,12 @@ class _AddPacHostDialog(Screen):
     }
     #dialog Label { margin-top: 1; }
     #dialog Button { margin-top: 1; margin-right: 1; }
+    #error {
+        height: 1;
+        color: $error;
+        margin-top: 1;
+    }
     """
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-cancel":
-            self.dismiss(None)
-            return
-        host = self.query_one("#host", Input).value.strip()
-        conn = self.query_one("#conn", Input).value.strip() or None
-        if not host:
-            return
-        self.dismiss({"host": host, "conn": conn})
-
-
-class _AddForwardDialog(Screen):
-    """Modal for adding a local or remote port forward."""
 
     def __init__(self, direction: str, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -135,25 +168,11 @@ class _AddForwardDialog(Screen):
             Input(placeholder="8080", id="dst-port"),
             Label("Label (optional):"),
             Input(placeholder="", id="tag"),
+            Label("", id="error"),
             Button("Add", id="btn-add", variant="success"),
             Button("Cancel", id="btn-cancel"),
             id="dialog",
         )
-
-    DEFAULT_CSS = """
-    _AddForwardDialog {
-        align: center middle;
-    }
-    #dialog {
-        width: 50;
-        height: auto;
-        border: round $primary;
-        padding: 1 2;
-        background: $surface;
-    }
-    #dialog Label { margin-top: 1; }
-    #dialog Button { margin-top: 1; margin-right: 1; }
-    """
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
@@ -161,10 +180,12 @@ class _AddForwardDialog(Screen):
             return
         conn = self.query_one("#conn", Input).value.strip()
         tag = self.query_one("#tag", Input).value.strip()
+        error_label = self.query_one("#error", Label)
         try:
             src = int(self.query_one("#src-port", Input).value.strip())
             dst = int(self.query_one("#dst-port", Input).value.strip())
         except ValueError:
+            error_label.update("Local and remote ports must be valid numbers.")
             return
         self.dismiss({"conn": conn, "src": src, "dst": dst, "tag": tag, "dir": self._direction})
 
@@ -196,6 +217,14 @@ class ConnectionEditorScreen(Screen):
     .tab-actions Button {
         margin-right: 1;
     }
+    #detail-preview {
+        height: 6;
+        border: round $primary-darken-1;
+        border-title-align: left;
+        padding: 0 1;
+        margin: 0 1 1 1;
+        color: $text-muted;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -225,15 +254,18 @@ class ConnectionEditorScreen(Screen):
                         yield Button("+ Add", id="btn-add-remote", variant="success")
                         yield Button("- Remove", id="btn-rm-remote", variant="error")
                     yield DataTable(id="tbl-remote", cursor_type="row")
+        yield Static("", id="detail-preview")
         yield Footer()
 
     def on_mount(self) -> None:
+        preview = self.query_one("#detail-preview", Static)
+        preview.border_title = "Details"
         self._setup_tables()
         self._reload()
 
     def _setup_tables(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
-        tbl.add_columns("Tag", "SSH Host", "SOCKS Port", "PAC Hosts", "Forwards")
+        tbl.add_columns("Status", "Tag", "SSH Host", "SOCKS Port", "PAC Hosts", "Forwards")
 
         tbl = self.query_one("#tbl-pac", DataTable)
         tbl.add_columns("Host", "Connection")
@@ -247,10 +279,20 @@ class ConnectionEditorScreen(Screen):
     def _reload(self) -> None:
         config = self.app.manager.list_config()  # type: ignore[attr-defined]
 
+        # Get running status for connections
+        try:
+            status_result = self.app.manager.status()  # type: ignore[attr-defined]
+            status_map = {cs.tag: cs.running for cs in status_result.connection_statuses}
+        except Exception:
+            status_map = {}
+
         tbl = self.query_one("#tbl-connections", DataTable)
         tbl.clear()
         for conn in config.connections:
+            running = status_map.get(conn.tag, False)
+            dot = "[green]●[/green]" if running else "[red]○[/red]"
             tbl.add_row(
+                dot,
                 conn.tag,
                 conn.ssh_host,
                 str(conn.socks_proxy_port) if conn.socks_proxy_port else "auto",
@@ -285,6 +327,70 @@ class ConnectionEditorScreen(Screen):
 
     def _conn_tags(self) -> list[str]:
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Update the detail preview when a row is highlighted."""
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        preview = self.query_one("#detail-preview", Static)
+
+        try:
+            config = self.app.manager.list_config()  # type: ignore[attr-defined]
+            conn_map = {c.tag: c for c in config.connections}
+        except Exception:
+            preview.update("")
+            return
+
+        if active == "tab-connections":
+            tbl = self.query_one("#tbl-connections", DataTable)
+            if tbl.row_count == 0:
+                preview.update("")
+                return
+            try:
+                row = tbl.get_row_at(tbl.cursor_row)
+                # row[0]=dot, row[1]=tag, row[2]=ssh_host, row[3]=socks_port, row[4]=pac_hosts, row[5]=forwards
+                tag = str(row[1])
+                conn = conn_map.get(tag)
+                if conn:
+                    pac_count = len(conn.pac_hosts)
+                    fwd_count = len(conn.forwards.local) + len(conn.forwards.remote)
+                    preview.update(
+                        f"SSH host: {conn.ssh_host}  |  Port: {conn.socks_proxy_port or 'auto'}"
+                        f"  |  PAC hosts: {pac_count}  |  Forwards: {fwd_count}"
+                    )
+                else:
+                    preview.update(f"Tag: {tag}")
+            except Exception:
+                preview.update("")
+
+        elif active == "tab-pac":
+            tbl = self.query_one("#tbl-pac", DataTable)
+            if tbl.row_count == 0:
+                preview.update("")
+                return
+            try:
+                row = tbl.get_row_at(tbl.cursor_row)
+                host = str(row[0])
+                conn_tag = str(row[1])
+                preview.update(f"Pattern: {host}  |  Connection: {conn_tag}")
+            except Exception:
+                preview.update("")
+
+        elif active in ("tab-local", "tab-remote"):
+            tbl_id = "#tbl-local" if active == "tab-local" else "#tbl-remote"
+            tbl = self.query_one(tbl_id, DataTable)
+            if tbl.row_count == 0:
+                preview.update("")
+                return
+            try:
+                row = tbl.get_row_at(tbl.cursor_row)
+                conn_tag = str(row[0])
+                port = str(row[1])
+                preview.update(f"Connection: {conn_tag}  |  Port: {port}")
+            except Exception:
+                preview.update("")
+
+        else:
+            preview.update("")
 
     def action_add_item(self) -> None:
         active = self.query_one("#editor-tabs", TabbedContent).active
@@ -339,11 +445,10 @@ class ConnectionEditorScreen(Screen):
 
     def _do_rm_connection(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
-        row_key = tbl.cursor_row
         if tbl.row_count == 0:
             return
-        row = tbl.get_row_at(row_key)
-        tag = str(row[0])
+        row = tbl.get_row_at(tbl.cursor_row)
+        tag = str(row[1])  # col 0 is status dot, col 1 is tag
         try:
             self.app.manager.remove_connection(tag)  # type: ignore[attr-defined]
             self._reload()

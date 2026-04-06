@@ -46,17 +46,7 @@ class SusOpsTuiApp(App):
     TITLE = "SusOps"
     SUB_TITLE = "SSH Tunnel & PAC Manager"
 
-    CSS = """
-    Screen {
-        background: $background;
-    }
-    Header {
-        background: $primary-darken-2;
-    }
-    Footer {
-        background: $surface-darken-1;
-    }
-    """
+    CSS_PATH = "app.tcss"
 
     BINDINGS = [
         Binding("ctrl+p", "command_palette", "Commands"),

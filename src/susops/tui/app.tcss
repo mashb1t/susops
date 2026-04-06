@@ -1,0 +1,53 @@
+/* SusOps TUI — global theme */
+
+/* ── Base ── */
+Screen { background: $background; }
+Header { background: $primary-darken-3; }
+Footer { background: $surface-darken-2; }
+
+/* ── Dashboard ── */
+#status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
+#conn-list { height: auto; min-height: 3; border: round $primary-darken-1; margin: 1 0 1 0; border-title-align: left; }
+#conn-list > ListItem { height: 1; padding: 0 1; }
+#pac-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; border-title-align: left; }
+#shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; border-title-align: left; }
+#bw-container { height: 1fr; }
+#rx-chart { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
+#tx-chart { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1; }
+#stats-content { height: auto; padding: 1 2; }
+#fwd-table { height: 1fr; margin: 1; }
+#detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
+
+/* ── Connection editor ── */
+.tab-actions { height: 3; layout: horizontal; padding: 0 1; background: $surface-darken-1; }
+.tab-actions Button { margin-right: 1; }
+#detail-preview { height: 6; border: round $primary-darken-1; border-title-align: left; padding: 0 1; margin: 0 1 1 1; color: $text-muted; }
+
+/* ── Share ── */
+#share-toolbar { height: 3; layout: horizontal; padding: 0 1; background: $surface-darken-1; }
+#share-toolbar Button { margin-right: 1; }
+#share-list-panel { width: 35; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+#share-list { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
+#share-list > ListItem { height: 1; padding: 0 1; }
+#share-detail { width: 1fr; padding: 1 2; height: 1fr; }
+#share-status { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
+
+/* ── Logs ── */
+#log-toolbar { height: 3; layout: horizontal; padding: 0 1; background: $surface-darken-1; align: left middle; }
+#log-toolbar Label { margin-right: 1; height: 1; }
+#log-toolbar Switch { margin-right: 2; }
+#log-toolbar Button { margin-left: 2; }
+#log-view { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
+
+/* ── Config ── */
+#config-toolbar { height: 3; layout: horizontal; padding: 0 1; background: $surface-darken-1; }
+#config-toolbar Button { margin-right: 1; }
+#config-area { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
+
+/* ── Modals ── */
+.modal-dialog { width: 60; height: auto; border: round $primary; padding: 1 2; background: $surface; }
+.modal-dialog Label { margin-top: 1; }
+.modal-dialog Input { margin-bottom: 1; }
+.modal-error { color: $error; height: 1; }
+.modal-btn-row { layout: horizontal; margin-top: 1; }
+.modal-btn-row Button { margin-right: 1; }
