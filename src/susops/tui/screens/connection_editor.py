@@ -4,9 +4,10 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
+    Button,
     DataTable,
     Footer,
     Header,
@@ -19,61 +20,31 @@ from textual.widgets import (
 from susops.core.config import PortForward
 
 
-_DIALOG_CSS = """
-#dialog {
-    width: 56;
-    height: auto;
-    border: round $primary;
-    padding: 1 2;
-    background: $surface;
-}
-#dialog Label { margin-top: 1; }
-#dialog #error {
-    height: 1;
-    color: $error;
-    margin-top: 1;
-}
-#dialog #btn-row {
-    height: auto;
-    margin-top: 1;
-}
-#dialog #btn-row Button { margin-right: 1; }
-"""
-
-
 class _AddConnectionDialog(ModalScreen):
     """Modal for adding a new SSH connection."""
 
-    DEFAULT_CSS = _DIALOG_CSS
-
     def compose(self) -> ComposeResult:
-        from textual.widgets import Button
-        yield Container(
-            Label("[bold]Add Connection[/bold]"),
-            Label("Tag:"),
-            Input(placeholder="e.g. work", id="tag"),
-            Label("SSH host (user@host):"),
-            Input(placeholder="user@hostname", id="ssh-host"),
-            Label("SOCKS port (0 = auto):"),
-            Input(placeholder="0", id="socks-port", value="0"),
-            Label("", id="error"),
-            Horizontal(
-                Button("Add", id="btn-add", variant="success"),
-                Button("Cancel", id="btn-cancel"),
-                id="btn-row",
-            ),
-            id="dialog",
-        )
+        with Static(classes="modal-dialog"):
+            yield Label("[bold]Add Connection[/bold]")
+            yield Label("Tag:")
+            yield Input(placeholder="e.g. work", id="tag")
+            yield Label("SSH host (user@host):")
+            yield Input(placeholder="user@hostname", id="ssh-host")
+            yield Label("SOCKS port (0 = auto):")
+            yield Input(placeholder="0", id="socks-port", value="0")
+            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
-        from textual.widgets import Button
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
         tag = self.query_one("#tag", Input).value.strip()
         host = self.query_one("#ssh-host", Input).value.strip()
         port_str = self.query_one("#socks-port", Input).value.strip()
-        error_label = self.query_one("#error", Label)
+        error_label = self.query_one(".modal-error", Label)
         if not tag:
             error_label.update("Tag is required.")
             return
@@ -91,28 +62,21 @@ class _AddConnectionDialog(ModalScreen):
 class _AddPacHostDialog(ModalScreen):
     """Modal for adding a PAC host."""
 
-    DEFAULT_CSS = _DIALOG_CSS
-
     def __init__(self, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
         self._connections = connections
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Button
-        yield Container(
-            Label("[bold]Add PAC Host[/bold]"),
-            Label("Host / wildcard / CIDR:"),
-            Input(placeholder="*.example.com or 10.0.0.0/8", id="host"),
-            Label("Connection (leave blank for default):"),
-            Input(placeholder=self._connections[0] if self._connections else "", id="conn"),
-            Label("", id="error"),
-            Horizontal(
-                Button("Add", id="btn-add", variant="success"),
-                Button("Cancel", id="btn-cancel"),
-                id="btn-row",
-            ),
-            id="dialog",
-        )
+        with Static(classes="modal-dialog"):
+            yield Label("[bold]Add PAC Host[/bold]")
+            yield Label("Host / wildcard / CIDR:")
+            yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
+            yield Label("Connection (leave blank for default):")
+            yield Input(placeholder=self._connections[0] if self._connections else "", id="conn")
+            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
@@ -121,7 +85,7 @@ class _AddPacHostDialog(ModalScreen):
         host = self.query_one("#host", Input).value.strip()
         conn = self.query_one("#conn", Input).value.strip() or None
         if not host:
-            self.query_one("#error", Label).update("Host pattern is required.")
+            self.query_one(".modal-error", Label).update("Host pattern is required.")
             return
         self.dismiss({"host": host, "conn": conn})
 
@@ -129,34 +93,27 @@ class _AddPacHostDialog(ModalScreen):
 class _AddForwardDialog(ModalScreen):
     """Modal for adding a local or remote port forward."""
 
-    DEFAULT_CSS = _DIALOG_CSS
-
     def __init__(self, direction: str, connections: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
         self._direction = direction
         self._connections = connections
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Button
         d = self._direction
-        yield Container(
-            Label(f"[bold]Add {d.capitalize()} Forward[/bold]"),
-            Label("Connection tag:"),
-            Input(placeholder=self._connections[0] if self._connections else "", id="conn"),
-            Label("Local port:" if d == "local" else "Remote port:"),
-            Input(placeholder="8080", id="src-port"),
-            Label("Remote port:" if d == "local" else "Local port:"),
-            Input(placeholder="8080", id="dst-port"),
-            Label("Label (optional):"),
-            Input(placeholder="", id="tag"),
-            Label("", id="error"),
-            Horizontal(
-                Button("Add", id="btn-add", variant="success"),
-                Button("Cancel", id="btn-cancel"),
-                id="btn-row",
-            ),
-            id="dialog",
-        )
+        with Static(classes="modal-dialog"):
+            yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
+            yield Label("Connection tag:")
+            yield Input(placeholder=self._connections[0] if self._connections else "", id="conn")
+            yield Label("Local port:" if d == "local" else "Remote port:")
+            yield Input(placeholder="8080", id="src-port")
+            yield Label("Remote port:" if d == "local" else "Local port:")
+            yield Input(placeholder="8080", id="dst-port")
+            yield Label("Label (optional):")
+            yield Input(placeholder="", id="tag")
+            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
@@ -164,7 +121,7 @@ class _AddForwardDialog(ModalScreen):
             return
         conn = self.query_one("#conn", Input).value.strip()
         tag = self.query_one("#tag", Input).value.strip()
-        error_label = self.query_one("#error", Label)
+        error_label = self.query_one(".modal-error", Label)
         try:
             src = int(self.query_one("#src-port", Input).value.strip())
             dst = int(self.query_one("#dst-port", Input).value.strip())
