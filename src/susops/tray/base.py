@@ -232,6 +232,33 @@ class AbstractTrayApp(ABC):
         else:
             self.show_alert("Error", "Firefox not found")
 
+    def do_list_all(self) -> None:
+        def _run():
+            config = self.manager.list_config()
+            lines = []
+            for conn in config.connections:
+                hosts = ", ".join(conn.pac_hosts) or "(none)"
+                local = ", ".join(
+                    f":{fw.src_port}→{fw.dst_addr}:{fw.dst_port}" for fw in conn.forwards.local
+                ) or "(none)"
+                remote = ", ".join(
+                    f":{fw.src_port}→{fw.dst_addr}:{fw.dst_port}" for fw in conn.forwards.remote
+                ) or "(none)"
+                lines.append(f"[{conn.tag}] {conn.ssh_host}")
+                lines.append(f"  PAC hosts: {hosts}")
+                lines.append(f"  Local fwd: {local}")
+                lines.append(f"  Remote fwd: {remote}")
+            return "\n".join(lines) or "No connections configured."
+        self.run_in_background(_run, lambda msg: self.show_output_dialog("List All", msg))
+
+    def do_open_config_file(self) -> None:
+        import subprocess, shutil
+        config_path = self.manager.workspace / "config.yaml"
+        for opener in ("xdg-open", "open", "notepad"):
+            if shutil.which(opener):
+                subprocess.Popen([opener, str(config_path)])
+                return
+
     def do_reset(self, force: bool = False) -> None:
         self.manager.reset()
         self.show_alert("Reset", "Workspace has been reset.")
