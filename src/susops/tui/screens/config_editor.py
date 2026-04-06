@@ -44,12 +44,6 @@ class ConfigEditorScreen(Screen):
             content = "# No config file found"
         self.query_one("#config-area", TextArea).load_text(content)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-reload":
-            self.action_reload()
-        elif event.button.id == "btn-editor":
-            self.action_open_editor()
-
     def action_reload(self) -> None:
         self._load_yaml()
         self.app.notify("Config reloaded")

@@ -50,5 +50,5 @@ Footer { background: $surface-darken-2; }
 .modal-dialog Input { margin-bottom: 1; }
 .modal-dialog Select { margin-bottom: 1; }
 .modal-error { color: $error; height: 1; }
-.modal-btn-row { layout: horizontal; margin-top: 1; }
+.modal-btn-row { layout: horizontal; }
 .modal-btn-row Button { margin-right: 1; }
