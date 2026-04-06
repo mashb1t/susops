@@ -326,7 +326,7 @@ class SusOpsManager:
             connection_statuses=tuple(statuses),
         )
 
-    def stop(self, keep_ports: bool = False, force: bool = False) -> StopResult:
+    def stop(self, keep_ports: bool = False) -> StopResult:
         self._reload_config()
         errors = []
 
@@ -617,7 +617,7 @@ class SusOpsManager:
         return self.config
 
     def reset(self) -> None:
-        self.stop(force=True)
+        self.stop()
         self.stop_share()
         import shutil
         shutil.rmtree(self.workspace, ignore_errors=True)

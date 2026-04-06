@@ -221,7 +221,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         Gtk = self._Gtk
 
         # ── Status row ────────────────────────────────────────────────────
-        self._item_status = Gtk.MenuItem(label="SusOps — checking…")
+        self._item_status = Gtk.MenuItem(label="SusOps: checking…")
         self._item_status.set_sensitive(False)
         self._menu.append(self._item_status)
         self._menu.append(Gtk.SeparatorMenuItem())
@@ -444,7 +444,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             ProcessState.ERROR: "🔴",
             ProcessState.INITIAL: "⚫",
         }.get(state, "⚫")
-        self._item_status.set_label(f"{dot} SusOps — {state.value}")
+        self._item_status.set_label(f"{dot} SusOps: {state.value}")
 
     # ------------------------------------------------------------------ #
     # Dialog handlers

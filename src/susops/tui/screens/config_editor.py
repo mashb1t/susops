@@ -1,4 +1,4 @@
-"""Config editor screen — YAML view with live edit via $EDITOR."""
+"""Config editor screen — YAML view with live edit."""
 from __future__ import annotations
 
 import os
@@ -13,12 +13,12 @@ from textual import work
 
 
 class ConfigEditorScreen(Screen):
-    """Shows current config.yaml with option to open in $EDITOR."""
+    """Shows current config.yaml with option to open."""
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("r", "reload", "Reload"),
-        Binding("e", "open_editor", "Edit in $EDITOR"),
+        Binding("e", "open_editor", "Edit"),
     ]
 
     DEFAULT_CSS = """
@@ -29,7 +29,7 @@ class ConfigEditorScreen(Screen):
         yield Header()
         with Horizontal(id="config-toolbar"):
             yield Button("↺ Reload", id="btn-reload")
-            yield Button("✎ Edit in $EDITOR", id="btn-editor")
+            yield Button("✎ Edit Config", id="btn-editor")
         area = TextArea(language="yaml", id="config-area", read_only=True)
         area.border_title = "config.yaml"
         yield area
@@ -61,9 +61,8 @@ class ConfigEditorScreen(Screen):
     def action_open_editor(self) -> None:
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
         config_path = workspace / "config.yaml"
-        editor = os.environ.get("EDITOR", "nano")
         try:
-            subprocess.run([editor, str(config_path)], check=True)
+            subprocess.run(["open", str(config_path)], check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             self.app.call_from_thread(
                 self.app.notify, f"Editor failed: {e}", severity="error"
