@@ -48,6 +48,7 @@ Footer { background: $surface-darken-2; }
 .modal-dialog { width: 60; height: auto; border: round $primary; padding: 1 2; background: $surface; }
 .modal-dialog Label { margin-top: 1; }
 .modal-dialog Input { margin-bottom: 1; }
+.modal-dialog Select { margin-bottom: 1; }
 .modal-error { color: $error; height: 1; }
 .modal-btn-row { layout: horizontal; margin-top: 1; }
 .modal-btn-row Button { margin-right: 1; }

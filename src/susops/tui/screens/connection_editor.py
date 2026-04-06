@@ -36,7 +36,7 @@ class _AddConnectionDialog(ModalScreen):
             yield Input(placeholder="0", id="socks-port", value="0")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
-                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
@@ -80,11 +80,11 @@ class _AddPacHostDialog(ModalScreen):
             yield Label("[bold]Add PAC Host[/bold]")
             yield Label("Host / wildcard / CIDR:")
             yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
-            yield Label("Connection (leave blank for default):")
-            yield Select(options, allow_blank=True, id="conn")
+            yield Label("Connection")
+            yield Select(options, allow_blank=False, id="conn")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
-                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
@@ -122,13 +122,13 @@ class _AddForwardDialog(ModalScreen):
             yield Input(placeholder="8080", id="src-port")
             yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
             yield Input(placeholder="8080", id="dst-port")
-            yield Label("Local Bind (optional):" if d == "local" else "Remote Bind (optional):")
-            yield Select(bind_options, allow_blank=True, id="src-addr")
-            yield Label("Remote Bind (optional):" if d == "local" else "Local Bind (optional):")
-            yield Select(bind_options, allow_blank=True, id="dst-addr")
+            yield Label("Local Bind:" if d == "local" else "Remote Bind:")
+            yield Select(bind_options, allow_blank=False, id="src-addr")
+            yield Label("Remote Bind:" if d == "local" else "Local Bind:")
+            yield Select(bind_options, allow_blank=False, id="dst-addr")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
-                yield Button("Add", id="btn-add", variant="success")
+                yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
     def on_button_pressed(self, event) -> None:
@@ -277,8 +277,8 @@ class ConnectionEditorScreen(Screen):
         for conn in config.connections:
             for fw in conn.forwards.local:
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), fw.src_addr or "localhost",
-                    str(fw.dst_port), fw.dst_addr or "localhost", fw.tag or "",
+                    conn.tag, str(fw.src_port), fw.src_addr,
+                    str(fw.dst_port), fw.dst_addr, fw.tag or "",
                     key=f"{conn.tag}:L:{fw.src_port}",
                 )
         if tbl.row_count:
@@ -290,8 +290,8 @@ class ConnectionEditorScreen(Screen):
         for conn in config.connections:
             for fw in conn.forwards.remote:
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), fw.src_addr or "localhost",
-                    str(fw.dst_port), fw.dst_addr or "localhost", fw.tag or "",
+                    conn.tag, str(fw.src_port), fw.src_addr,
+                    str(fw.dst_port), fw.dst_addr, fw.tag or "",
                     key=f"{conn.tag}:R:{fw.src_port}",
                 )
         if tbl.row_count:
