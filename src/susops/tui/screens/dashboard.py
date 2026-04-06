@@ -34,6 +34,16 @@ def _fmt_bps(bps: float) -> str:
     return f"{bps:.0f}B/s"
 
 
+def _scale_data(data: list[float]) -> tuple[list[float], str]:
+    """Scale bandwidth data to a human-readable unit. Returns (scaled_data, unit_label)."""
+    peak = max(data) if data else 0.0
+    if peak >= 1_048_576:
+        return [v / 1_048_576 for v in data], "MB/s"
+    if peak >= 1024:
+        return [v / 1024 for v in data], "kB/s"
+    return list(data), "B/s"
+
+
 class DashboardScreen(Screen):
 
     BINDINGS = [
@@ -299,16 +309,18 @@ class DashboardScreen(Screen):
         tx_chart = self.query_one("#tx-chart", PlotextPlot)
 
         rx, tx = data["bw"]
+        rx_scaled, rx_unit = _scale_data(rx_data)
         rx_chart.plt.clear_data()
-        rx_chart.plt.title(f"RX  {_fmt_bps(rx)}")
-        rx_chart.plt.ylim(0, max(1.0, max(rx_data)))
-        rx_chart.plt.plot(rx_data, color="green")
+        rx_chart.plt.title(f"RX  {_fmt_bps(rx)}  [{rx_unit}]")
+        rx_chart.plt.ylim(0, max(1.0, max(rx_scaled)))
+        rx_chart.plt.plot(rx_scaled, color="green")
         rx_chart.refresh()
 
+        tx_scaled, tx_unit = _scale_data(tx_data)
         tx_chart.plt.clear_data()
-        tx_chart.plt.title(f"TX  {_fmt_bps(tx)}")
-        tx_chart.plt.ylim(0, max(1.0, max(tx_data)))
-        tx_chart.plt.plot(tx_data, color="yellow")
+        tx_chart.plt.title(f"TX  {_fmt_bps(tx)}  [{tx_unit}]")
+        tx_chart.plt.ylim(0, max(1.0, max(tx_scaled)))
+        tx_chart.plt.plot(tx_scaled, color="yellow")
         tx_chart.refresh()
 
         # Logs tab — show all logs (no per-connection filter)

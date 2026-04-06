@@ -44,18 +44,19 @@ _WORKSPACE_DEFAULT = Path.home() / ".susops"
 
 
 class _BandwidthSampler:
-    """Background thread that samples SSH process IO every 2 seconds.
+    """Background thread that samples system-wide network I/O every 2 seconds.
 
-    Uses read_chars/write_chars from /proc/pid/io which include socket I/O,
-    making this suitable for measuring SSH tunnel throughput.
+    Uses psutil.net_io_counters() bytes_recv/bytes_sent which provide true
+    directional bandwidth (RX vs TX) unlike /proc/pid/io which mirrors both
+    directions equally for SSH tunnel processes.
     """
 
     INTERVAL = 2.0
 
     def __init__(self, process_mgr: ProcessManager) -> None:
         self._mgr = process_mgr
-        self._rates: dict[str, tuple[float, float]] = {}   # tag -> (rx_bps, tx_bps)
-        self._prev: dict[str, tuple[float, float, float]] = {}  # tag -> (rx, tx, t)
+        self._rate: tuple[float, float] = (0.0, 0.0)  # (rx_bps, tx_bps)
+        self._prev: tuple[float, float, float] | None = None  # (rx, tx, t)
         self._lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="susops-bw-sampler"
@@ -76,45 +77,28 @@ class _BandwidthSampler:
         except ImportError:
             return
 
+        counters = psutil.net_io_counters()
+        if counters is None:
+            return
+        rx = float(counters.bytes_recv)
+        tx = float(counters.bytes_sent)
         now = time.monotonic()
-        for key, running in self._mgr.status_all().items():
-            if not key.startswith(SSH_PROCESS_PREFIX):
-                continue
-            tag = key[len(SSH_PROCESS_PREFIX) + 1:]
-            pid = self._mgr.get_pid(key)
-            if pid is None:
-                continue
-            try:
-                proc = psutil.Process(pid)
-                # Include all child processes (autossh -> ssh)
-                all_procs = [proc] + proc.children(recursive=True)
-                rx = sum(
-                    getattr(p.io_counters(), "read_chars", 0)
-                    for p in all_procs
-                    if p.is_running()
-                )
-                tx = sum(
-                    getattr(p.io_counters(), "write_chars", 0)
-                    for p in all_procs
-                    if p.is_running()
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
-                continue
 
-            with self._lock:
-                if tag in self._prev:
-                    prev_rx, prev_tx, prev_t = self._prev[tag]
-                    dt = now - prev_t
-                    if dt > 0:
-                        self._rates[tag] = (
-                            max(0.0, (rx - prev_rx) / dt),
-                            max(0.0, (tx - prev_tx) / dt),
-                        )
-                self._prev[tag] = (rx, tx, now)
+        with self._lock:
+            if self._prev is not None:
+                prev_rx, prev_tx, prev_t = self._prev
+                dt = now - prev_t
+                if dt > 0:
+                    self._rate = (
+                        max(0.0, (rx - prev_rx) / dt),
+                        max(0.0, (tx - prev_tx) / dt),
+                    )
+            self._prev = (rx, tx, now)
 
     def get_rate(self, tag: str) -> tuple[float, float]:
+        """Return (rx_bps, tx_bps). Tag is ignored — rates are system-wide."""
         with self._lock:
-            return self._rates.get(tag, (0.0, 0.0))
+            return self._rate
 
 
 class SusOpsManager:
