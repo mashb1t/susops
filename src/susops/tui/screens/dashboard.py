@@ -90,9 +90,9 @@ class DashboardScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Static("", id="status-bar")
         with Horizontal(id="split"):
             with VerticalScroll(id="sidebar"):
+                yield Static("", id="status-bar")
                 yield ListView(id="conn-list")
                 yield Static("", id="pac-info")
                 yield Static("", id="shares-info")
@@ -114,7 +114,7 @@ class DashboardScreen(Screen):
         self.query_one("#pac-info", Static).border_title = "PAC Server"
         self.query_one("#shares-info", Static).border_title = "Active Shares"
         self.query_one("#fwd-table", DataTable).add_columns(
-            "Dir", "Local Port", "Remote Host", "Remote Port", "Label"
+            "Dir", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label"
         )
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
@@ -357,17 +357,15 @@ class DashboardScreen(Screen):
         for fw in forwards_local:
             fwd_table.add_row(
                 "L",
-                str(fw.src_port),
-                fw.dst_addr,
-                str(fw.dst_port),
+                str(fw.src_port), fw.src_addr or "localhost",
+                str(fw.dst_port), fw.dst_addr or "localhost",
                 fw.tag or "",
             )
         for fw in forwards_remote:
             fwd_table.add_row(
                 "R",
-                str(fw.src_port),
-                fw.dst_addr,
-                str(fw.dst_port),
+                str(fw.src_port), fw.src_addr or "localhost",
+                str(fw.dst_port), fw.dst_addr or "localhost",
                 fw.tag or "",
             )
 
