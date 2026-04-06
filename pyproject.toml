@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "susops"
+version = "3.0.0"
+description = "SusOps — SSH SOCKS5 proxy manager with PAC server, Textual TUI, and system tray apps"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "ruamel.yaml>=0.18",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=0.80",
+    "textual-plotext>=0.2",
+]
+tray-linux = []
+# PyGObject (gi) and GTK3 must be installed via system package manager:
+#   Arch: sudo pacman -S python-gobject gtk3 libayatana-appindicator
+#   Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1
+tray-mac = [
+    "rumps>=0.4",
+]
+crypto = [
+    "cryptography>=42",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+susops = "susops.tui.__main__:main"
+so = "susops.tui.__main__:main"
+
+[project.gui-scripts]
+susops-tray = "susops.tray:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
