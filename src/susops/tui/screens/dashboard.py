@@ -224,24 +224,35 @@ class DashboardScreen(Screen):
                 del self._rx_history[tag]
                 del self._tx_history[tag]
 
-        # Repopulate ListView, preserving cursor position
+        # Update connection list — update labels in-place when possible to
+        # preserve the visual selection highlight; only rebuild if tags changed.
         conn_list = self.query_one("#conn-list", ListView)
-        cur = conn_list.index or 0
-        conn_list.clear()
-        self._conn_tags = [cs.tag for cs in result.connection_statuses]
+        new_tags = [cs.tag for cs in result.connection_statuses]
 
+        label_texts = []
         for cs in result.connection_statuses:
             dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
-            rx, tx = bw.get(cs.tag, (0.0, 0.0))
-            bw_str = _fmt_bps(rx)
-            label_text = f"{dot} {cs.tag:<12} {port_str:<6} {bw_str:>9}↓"
-            conn_list.append(ListItem(Label(label_text)))
+            rx, _tx = bw.get(cs.tag, (0.0, 0.0))
+            label_texts.append(f"{dot} {cs.tag:<12} {port_str:<6} {_fmt_bps(rx):>9}↓")
+
+        if new_tags == self._conn_tags:
+            # Same connections — update text in-place, selection stays intact
+            for item, text in zip(conn_list.query(ListItem), label_texts):
+                item.query_one(Label).update(text)
+        else:
+            # Connections added/removed — rebuild and restore cursor
+            cur = conn_list.index or 0
+            conn_list.clear()
+            self._conn_tags = new_tags
+            for text in label_texts:
+                conn_list.append(ListItem(Label(text)))
+            if self._conn_tags:
+                conn_list.index = min(cur, len(self._conn_tags) - 1)
 
         if self._conn_tags:
-            target = min(cur, len(self._conn_tags) - 1)
-            conn_list.index = target
-            self._selected_tag = self._conn_tags[target]
+            idx = conn_list.index or 0
+            self._selected_tag = self._conn_tags[min(idx, len(self._conn_tags) - 1)]
         else:
             self._selected_tag = None
 
