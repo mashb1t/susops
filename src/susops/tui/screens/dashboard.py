@@ -224,9 +224,9 @@ class DashboardScreen(Screen):
                 del self._rx_history[tag]
                 del self._tx_history[tag]
 
-        # Repopulate ListView
+        # Repopulate ListView, preserving cursor position
         conn_list = self.query_one("#conn-list", ListView)
-        prev_index = conn_list.index
+        cur = conn_list.index or 0
         conn_list.clear()
         self._conn_tags = [cs.tag for cs in result.connection_statuses]
 
@@ -238,14 +238,10 @@ class DashboardScreen(Screen):
             label_text = f"{dot} {cs.tag:<12} {port_str:<6} {bw_str:>9}↓"
             conn_list.append(ListItem(Label(label_text)))
 
-        # Restore selection
         if self._conn_tags:
-            target_index = prev_index if prev_index is not None and prev_index < len(self._conn_tags) else 0
-            try:
-                conn_list.index = target_index
-                self._selected_tag = self._conn_tags[target_index]
-            except Exception:
-                self._selected_tag = self._conn_tags[0]
+            target = min(cur, len(self._conn_tags) - 1)
+            conn_list.index = target
+            self._selected_tag = self._conn_tags[target]
         else:
             self._selected_tag = None
 
