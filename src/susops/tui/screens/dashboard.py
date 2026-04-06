@@ -93,20 +93,30 @@ class DashboardScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        conn_list = self.query_one("#conn-list", ListView)
-        conn_list.border_title = "Connections"
-
-        pac_info = self.query_one("#pac-info", Static)
-        pac_info.border_title = "PAC Server"
-
-        shares_info = self.query_one("#shares-info", Static)
-        shares_info.border_title = "Active Shares"
-
-        fwd_table = self.query_one("#fwd-table", DataTable)
-        fwd_table.add_columns("Dir", "Local Port", "Remote Host", "Remote Port", "Label")
-
+        self.query_one("#conn-list", ListView).border_title = "Connections"
+        self.query_one("#pac-info", Static).border_title = "PAC Server"
+        self.query_one("#shares-info", Static).border_title = "Active Shares"
+        self.query_one("#fwd-table", DataTable).add_columns(
+            "Dir", "Local Port", "Remote Host", "Remote Port", "Label"
+        )
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        self._prev_on_log = mgr.on_log
+        mgr.on_log = self._on_new_log
         self.set_interval(3.0, self.refresh_status)
         self.refresh_status()
+
+    def on_unmount(self) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        mgr.on_log = self._prev_on_log
+
+    def _on_new_log(self, msg: str) -> None:
+        tag = self._selected_tag
+        if tag and f"[{tag}]" not in msg:
+            return
+        try:
+            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
+        except Exception:
+            pass
 
     @work(thread=True)
     def refresh_status(self) -> None:
@@ -216,17 +226,14 @@ class DashboardScreen(Screen):
         else:
             self._selected_tag = None
 
-        # Update PAC info
+        # Update PAC info (keep to 2 lines — sidebar is only 32 chars wide)
         host_count = sum(len(c.pac_hosts) for c in config.connections)
         pac_dot = "[green]●[/green]" if result.pac_running else "[red]○[/red]"
-        pac_port_display = f":{result.pac_port}" if result.pac_port else ""
-        pac_url = f"http://localhost:{result.pac_port}/proxy.pac" if result.pac_port else ""
-        pac_lines = [f"{pac_dot} PAC server{pac_port_display}"]
+        pac_port_display = f" :{result.pac_port}" if result.pac_port else ""
+        pac_line = f"{pac_dot} PAC{pac_port_display}"
         if result.pac_running:
-            pac_lines.append(f"[dim]  {host_count} host pattern(s)[/dim]")
-            if pac_url:
-                pac_lines.append(f"[dim]  {pac_url}[/dim]")
-        self.query_one("#pac-info", Static).update("\n".join(pac_lines))
+            pac_line += f"  [dim]{host_count} host(s)[/dim]"
+        self.query_one("#pac-info", Static).update(pac_line)
 
         # Update shares info
         shares_widget = self.query_one("#shares-info", Static)
@@ -296,6 +303,14 @@ class DashboardScreen(Screen):
         tx_chart.plt.title(f"TX  {_fmt_bps(tx)}")
         tx_chart.plt.plot(tx_data, color="yellow")
         tx_chart.refresh()
+
+        # Logs tab — load existing buffer filtered to this connection
+        log_widget = self.query_one("#detail-logs", RichLog)
+        log_widget.clear()
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        for line in mgr.get_logs(200):
+            if f"[{tag}]" in line:
+                log_widget.write(line)
 
         # Forwards tab
         fwd_table = self.query_one("#fwd-table", DataTable)

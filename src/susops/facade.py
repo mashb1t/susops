@@ -262,11 +262,12 @@ class SusOpsManager:
         self._reload_config()
         errors = []
 
+        ephemeral = self.config.susops_app.ephemeral_ports
         for conn in self.config.connections:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr):
                     self._log(f"[{conn.tag}] Stopped")
-                if not keep_ports and conn.socks_proxy_port != 0:
+                if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     updated = conn.model_copy(update={"socks_proxy_port": 0})
                     new_conns = [
                         updated if c.tag == conn.tag else c
@@ -280,7 +281,7 @@ class SusOpsManager:
             try:
                 self._pac_server.stop()
                 self._log("PAC server stopped")
-                if not keep_ports:
+                if not keep_ports and ephemeral:
                     self.config = self.config.model_copy(update={"pac_server_port": 0})
             except Exception as exc:
                 errors.append(f"PAC: {exc}")
