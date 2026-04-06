@@ -1,13 +1,68 @@
 """AbstractTrayApp — shared tray app logic for Linux and macOS."""
 from __future__ import annotations
 
+import re
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
-from susops.core.config import PortForward
 from susops.core.types import ProcessState
+
+_ASSETS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons"
+
+_STATE_FILENAMES = {
+    ProcessState.RUNNING: "running",
+    ProcessState.STOPPED_PARTIALLY: "stopped_partially",
+    ProcessState.STOPPED: "stopped",
+    ProcessState.ERROR: "error",
+    ProcessState.INITIAL: "stopped",
+}
+
+
+def get_icon_path(
+    state: ProcessState,
+    logo_style: str = "colored_glasses",
+    variant: str = "dark",
+    prefer_png: bool = False,
+) -> str | None:
+    """Return the icon path for a given state, style, and variant.
+
+    Tries the requested variant first, then falls back to the other.
+    If prefer_png is True, checks .png before .svg; otherwise SVG first.
+    """
+    name = _STATE_FILENAMES.get(state, "stopped")
+    exts = ("png", "svg") if prefer_png else ("svg", "png")
+    other_variant = "dark" if variant == "light" else "light"
+
+    for v in (variant, other_variant):
+        base = _ASSETS_DIR / logo_style.lower() / v / name
+        for ext in exts:
+            p = base.with_suffix(f".{ext}")
+            if p.exists():
+                return str(p)
+    return None
+
+
+def get_ssh_hosts() -> list[str]:
+    """Return non-wildcard Host entries from ~/.ssh/config."""
+    cfg = Path.home() / ".ssh" / "config"
+    if not cfg.exists():
+        return []
+    hosts = []
+    pattern = re.compile(r"^\s*Host\s+(.*)$", re.IGNORECASE)
+    for line in cfg.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = pattern.match(line)
+        if m:
+            for h in m.group(1).split():
+                if "*" not in h and "?" not in h:
+                    hosts.append(h)
+    return hosts
+
+from susops.core.config import PortForward
 from susops.facade import SusOpsManager
 
 

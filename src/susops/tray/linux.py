@@ -13,9 +13,7 @@ from typing import Callable
 
 from susops.core.config import PortForward
 from susops.core.types import ProcessState
-from susops.tray.base import AbstractTrayApp
-
-_ASSETS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons"
+from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
 
 def _is_dark_theme() -> bool:
@@ -36,54 +34,15 @@ def _is_dark_theme() -> bool:
         return False
 
 
-def _get_icon_path(state: ProcessState, logo_style: str = "colored_glasses") -> str:
-    """Return path to SVG icon for this state, respecting light/dark theme.
-
-    Icon variants are inverted relative to the desktop theme: on a dark desktop
-    we use the *light* icon set so the icon is visible against the dark panel.
-    """
-    subdir = logo_style.lower()
-    # Dark desktop → use light icons (visible on dark panel background)
+def _get_icon_path(state: ProcessState, logo_style: str = "colored_glasses") -> str | None:
+    """Return icon path for state, picking light/dark variant based on desktop theme."""
     variant = "light" if _is_dark_theme() else "dark"
-    state_file_map = {
-        ProcessState.RUNNING: "running",
-        ProcessState.STOPPED_PARTIALLY: "stopped_partially",
-        ProcessState.STOPPED: "stopped",
-        ProcessState.ERROR: "error",
-        ProcessState.INITIAL: "stopped",
-    }
-    name = state_file_map.get(state, "stopped")
-    candidate = _ASSETS_DIR / subdir / variant / f"{name}.svg"
-    if candidate.exists():
-        return str(candidate)
-    # Fallback: other variant
-    other = "dark" if variant == "light" else "light"
-    candidate = _ASSETS_DIR / subdir / other / f"{name}.svg"
-    if candidate.exists():
-        return str(candidate)
-    return ""
+    return get_icon_path(state, logo_style=logo_style, variant=variant)
 
 
 def _is_valid_port(value: str) -> bool:
     return value.isdigit() and 1 <= int(value) <= 65535
 
-
-def _get_ssh_hosts() -> list[str]:
-    cfg = Path.home() / ".ssh" / "config"
-    if not cfg.exists():
-        return []
-    hosts = []
-    pattern = re.compile(r"^\s*Host\s+(.*)$", re.IGNORECASE)
-    for line in cfg.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = pattern.match(line)
-        if m:
-            for h in m.group(1).split():
-                if "*" not in h and "?" not in h:
-                    hosts.append(h)
-    return hosts
 
 
 def _polish_dialog(Gtk, dlg) -> None:
@@ -642,7 +601,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
         tag_entry = Gtk.Entry(activates_default=True)
         host_combo = Gtk.ComboBoxText(has_entry=True)
-        for h in _get_ssh_hosts():
+        for h in get_ssh_hosts():
             host_combo.append_text(h)
         host_combo.get_child().set_placeholder_text("hostname, IP, or SSH alias")
         host_combo.get_child().set_activates_default(True)

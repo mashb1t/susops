@@ -4,7 +4,6 @@ Requires: pip install 'susops[tray-mac]'  (rumps>=0.4)
 """
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import threading
@@ -13,47 +12,12 @@ from typing import Callable
 
 from susops.core.config import PortForward
 from susops.core.types import ProcessState
-from susops.tray.base import AbstractTrayApp
-
-_ASSETS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons"
+from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
 
 def _get_icon_path(state: ProcessState) -> str | None:
-    subdir = "colored_glasses"
-    variant = "dark"
-    state_file_map = {
-        ProcessState.RUNNING: "running",
-        ProcessState.STOPPED_PARTIALLY: "stopped_partially",
-        ProcessState.STOPPED: "stopped",
-        ProcessState.ERROR: "error",
-        ProcessState.INITIAL: "stopped",
-    }
-    name = state_file_map.get(state, "inactive")
-    candidate = _ASSETS_DIR / subdir / variant / f"{name}.png"
-    if candidate.exists():
-        return str(candidate)
-    svg = _ASSETS_DIR / subdir / variant / f"{name}.svg"
-    if svg.exists():
-        return str(svg)
-    return None
-
-
-def _get_ssh_hosts() -> list[str]:
-    cfg = Path.home() / ".ssh" / "config"
-    if not cfg.exists():
-        return []
-    hosts = []
-    pattern = re.compile(r"^\s*Host\s+(.*)$", re.IGNORECASE)
-    for line in cfg.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = pattern.match(line)
-        if m:
-            for h in m.group(1).split():
-                if "*" not in h and "?" not in h:
-                    hosts.append(h)
-    return hosts
+    """Return icon path for state (macOS: PNG preferred, dark variant)."""
+    return get_icon_path(state, prefer_png=True)
 
 
 class SusOpsMacTray(AbstractTrayApp):
