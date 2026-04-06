@@ -44,6 +44,14 @@ def _scale_data(data: list[float]) -> tuple[list[float], str]:
     return list(data), "B/s"
 
 
+def _yticks(max_val: float, unit: str, n: int = 6) -> tuple[list[float], list[str]]:
+    """Generate n+1 evenly-spaced Y-axis ticks from 0 to max_val with unit labels."""
+    step = max_val / n
+    ticks = [i * step for i in range(n + 1)]
+    labels = [f"{v:.2f} {unit}" for v in ticks]
+    return ticks, labels
+
+
 class DashboardScreen(Screen):
 
     BINDINGS = [
@@ -310,16 +318,22 @@ class DashboardScreen(Screen):
 
         rx, tx = data["bw"]
         rx_scaled, rx_unit = _scale_data(rx_data)
+        rx_max = max(1.0, max(rx_scaled))
+        rx_ticks, rx_labels = _yticks(rx_max, rx_unit)
         rx_chart.plt.clear_data()
-        rx_chart.plt.title(f"RX  {_fmt_bps(rx)}  [{rx_unit}]")
-        rx_chart.plt.ylim(0, max(1.0, max(rx_scaled)))
+        rx_chart.plt.title(f"RX  {_fmt_bps(rx)}")
+        rx_chart.plt.ylim(0, rx_max)
+        rx_chart.plt.yticks(rx_ticks, rx_labels)
         rx_chart.plt.plot(rx_scaled, color="green")
         rx_chart.refresh()
 
         tx_scaled, tx_unit = _scale_data(tx_data)
+        tx_max = max(1.0, max(tx_scaled))
+        tx_ticks, tx_labels = _yticks(tx_max, tx_unit)
         tx_chart.plt.clear_data()
-        tx_chart.plt.title(f"TX  {_fmt_bps(tx)}  [{tx_unit}]")
-        tx_chart.plt.ylim(0, max(1.0, max(tx_scaled)))
+        tx_chart.plt.title(f"TX  {_fmt_bps(tx)}")
+        tx_chart.plt.ylim(0, tx_max)
+        tx_chart.plt.yticks(tx_ticks, tx_labels)
         tx_chart.plt.plot(tx_scaled, color="yellow")
         tx_chart.refresh()
 
