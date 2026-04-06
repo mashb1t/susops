@@ -78,9 +78,9 @@ class ConfigEditorScreen(Screen):
         try:
             subprocess.run([editor, str(config_path)], check=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self.app.notify, f"Editor failed: {e}", severity="error"
             )
             return
-        self.call_from_thread(self._load_yaml)
-        self.call_from_thread(self.app.notify, "Config saved")
+        self.app.call_from_thread(self._load_yaml)
+        self.app.call_from_thread(self.app.notify, "Config saved")

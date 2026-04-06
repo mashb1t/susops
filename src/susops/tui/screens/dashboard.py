@@ -116,7 +116,7 @@ class DashboardScreen(Screen):
     def refresh_status(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         result: StatusResult = mgr.status()
-        self.call_from_thread(self._apply_status, result)
+        self.app.call_from_thread(self._apply_status, result)
 
     def _apply_status(self, result: StatusResult) -> None:
         # Update global state label
@@ -169,7 +169,7 @@ class DashboardScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         for tag, card in list(self._cards.items()):
             rx, tx = mgr.get_bandwidth(tag)
-            self.call_from_thread(card.refresh_bandwidth, rx, tx)
+            self.app.call_from_thread(card.refresh_bandwidth, rx, tx)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-start":
@@ -182,14 +182,14 @@ class DashboardScreen(Screen):
     @work(thread=True)
     def action_start_all(self) -> None:
         self.app.manager.start()  # type: ignore[attr-defined]
-        self.call_from_thread(self.refresh_status)
+        self.app.call_from_thread(self.refresh_status)
 
     @work(thread=True)
     def action_stop_all(self) -> None:
         self.app.manager.stop()  # type: ignore[attr-defined]
-        self.call_from_thread(self.refresh_status)
+        self.app.call_from_thread(self.refresh_status)
 
     @work(thread=True)
     def action_restart_all(self) -> None:
         self.app.manager.restart()  # type: ignore[attr-defined]
-        self.call_from_thread(self.refresh_status)
+        self.app.call_from_thread(self.refresh_status)

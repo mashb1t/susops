@@ -103,7 +103,7 @@ class ShareScreen(Screen):
             port = 0
 
         if not path_str:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self.query_one("#share-info", Static).update,
                 "[red]Please enter a file path.[/red]",
             )
@@ -122,8 +122,8 @@ class ShareScreen(Screen):
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
 
-        self.call_from_thread(self.query_one("#share-info", Static).update, msg)
-        self.call_from_thread(self._update_share_button_state)
+        self.app.call_from_thread(self.query_one("#share-info", Static).update, msg)
+        self.app.call_from_thread(self._update_share_button_state)
 
     def _do_stop_share(self) -> None:
         self.app.manager.stop_share()  # type: ignore[attr-defined]
@@ -137,7 +137,7 @@ class ShareScreen(Screen):
         out_str = self.query_one("#fetch-out", Input).value.strip()
 
         if not port_str or not password:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self.query_one("#fetch-result", Static).update,
                 "[red]Port and password are required.[/red]",
             )
@@ -146,7 +146,7 @@ class ShareScreen(Screen):
         try:
             port = int(port_str)
         except ValueError:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self.query_one("#fetch-result", Static).update,
                 "[red]Invalid port.[/red]",
             )
@@ -160,4 +160,4 @@ class ShareScreen(Screen):
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
 
-        self.call_from_thread(self.query_one("#fetch-result", Static).update, msg)
+        self.app.call_from_thread(self.query_one("#fetch-result", Static).update, msg)
