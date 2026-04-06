@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from susops.core.config import PortForward
+from susops.core.ports import is_port_free, validate_port
 from susops.core.types import ProcessState
 from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
@@ -40,8 +41,10 @@ def _get_icon_path(state: ProcessState, logo_style: str = "colored_glasses") -> 
     return get_icon_path(state, logo_style=logo_style, variant=variant)
 
 
-def _is_valid_port(value: str) -> bool:
-    return value.isdigit() and 1 <= int(value) <= 65535
+def _is_valid_port(value: str, allow_zero: bool = False) -> bool:
+    if not value.isdigit():
+        return False
+    return validate_port(int(value), allow_zero=allow_zero)
 
 
 
@@ -537,6 +540,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if pac_text != "0" and not _is_valid_port(pac_text):
                 _alert(Gtk, dlg, "Invalid Port", "PAC Server Port must be between 1 and 65535.")
                 continue
+            if pac_text != "0" and not is_port_free(int(pac_text)):
+                _alert(Gtk, dlg, "Port In Use", f"Port {pac_text} is already in use.")
+                continue
 
             new_logo = logo_styles[combo_logo.get_active()] if combo_logo.get_active() >= 0 else _saved_logo
             self.manager.update_app_config(
@@ -632,6 +638,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 continue
             if port and not _is_valid_port(port):
                 _alert(Gtk, dlg, "Invalid Port", "SOCKS Proxy Port must be between 1 and 65535.", Gtk.MessageType.ERROR)
+                continue
+            if port and not is_port_free(int(port)):
+                _alert(Gtk, dlg, "Port In Use", f"Port {port} is already in use.", Gtk.MessageType.ERROR)
                 continue
 
             dlg.destroy()
@@ -745,6 +754,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if not _is_valid_port(src):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Local Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
+            if not is_port_free(int(src)):
+                _alert(Gtk, dlg, "Port In Use", f"Local port {src} is already in use.", Gtk.MessageType.ERROR)
+                continue
             if not _is_valid_port(dst):
                 _alert(Gtk, dlg, "Invalid Port", "To Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
@@ -817,6 +829,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 continue
             if not _is_valid_port(lport):
                 _alert(Gtk, dlg, "Invalid Port", "To Local Port must be 1–65535.", Gtk.MessageType.ERROR)
+                continue
+            if not is_port_free(int(lport)):
+                _alert(Gtk, dlg, "Port In Use", f"Local port {lport} is already in use.", Gtk.MessageType.ERROR)
                 continue
 
             fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None)

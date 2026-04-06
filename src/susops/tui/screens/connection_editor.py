@@ -19,6 +19,7 @@ from textual.widgets import (
     TabPane,
 )
 from susops.core.config import PortForward
+from susops.core.ports import is_port_free, validate_port
 
 
 class _AddConnectionDialog(ModalScreen):
@@ -56,6 +57,12 @@ class _AddConnectionDialog(ModalScreen):
             port = int(port_str or "0")
         except ValueError:
             error_label.update("SOCKS port must be a number.")
+            return
+        if not validate_port(port, allow_zero=True):
+            error_label.update("SOCKS port must be 0 (auto) or between 1 and 65535.")
+            return
+        if port != 0 and not is_port_free(port):
+            error_label.update(f"Port {port} is already in use.")
             return
         self.dismiss({"tag": tag, "host": host, "port": port})
 
@@ -140,7 +147,16 @@ class _AddForwardDialog(ModalScreen):
             src = int(self.query_one("#src-port", Input).value.strip())
             dst = int(self.query_one("#dst-port", Input).value.strip())
         except ValueError:
-            error_label.update("Local and remote ports must be valid numbers.")
+            error_label.update("Ports must be valid numbers.")
+            return
+        if not validate_port(src) or not validate_port(dst):
+            error_label.update("Ports must be between 1 and 65535.")
+            return
+        if self._direction == "local" and not is_port_free(src):
+            error_label.update(f"Local port {src} is already in use.")
+            return
+        if self._direction == "remote" and not is_port_free(dst):
+            error_label.update(f"Local port {dst} is already in use.")
             return
         self.dismiss({
             "conn": conn, "src": src, "dst": dst,

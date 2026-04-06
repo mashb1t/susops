@@ -9,6 +9,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Select, Static
 from textual import work
+from susops.core.ports import is_port_free, validate_port
 
 
 class _AddShareDialog(ModalScreen):
@@ -47,10 +48,18 @@ class _AddShareDialog(ModalScreen):
             self.query_one("#error", Label).update("File not found.")
             return
         pw = self.query_one("#password", Input).value.strip() or None
+        error_label = self.query_one("#error", Label)
         try:
             port = int(self.query_one("#port", Input).value.strip() or "0")
         except ValueError:
-            port = 0
+            error_label.update("Port must be a number.")
+            return
+        if not validate_port(port, allow_zero=True):
+            error_label.update("Port must be 0 (auto) or between 1 and 65535.")
+            return
+        if port != 0 and not is_port_free(port):
+            error_label.update(f"Port {port} is already in use.")
+            return
         conn_val = self.query_one("#conn", Select).value
         conn = conn_val if conn_val is not Select.BLANK else None
         self.dismiss({"path": path, "password": pw, "port": port, "conn": conn})
@@ -92,7 +101,10 @@ class _FetchDialog(ModalScreen):
         try:
             port = int(port_str)
         except ValueError:
-            self.query_one("#error", Label).update("Invalid port.")
+            self.query_one("#error", Label).update("Port must be a number.")
+            return
+        if not validate_port(port):
+            self.query_one("#error", Label).update("Port must be between 1 and 65535.")
             return
         conn_val = self.query_one("#conn", Select).value
         host = "localhost"

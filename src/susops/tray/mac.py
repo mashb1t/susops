@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from susops.core.config import PortForward
+from susops.core.ports import is_port_free, validate_port
 from susops.core.types import ProcessState
 from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
@@ -260,6 +261,12 @@ class SusOpsMacTray(AbstractTrayApp):
         except ValueError:
             self.show_alert("Invalid Port", f"'{pac_text}' is not a valid port number.")
             return
+        if not validate_port(pac_int, allow_zero=True):
+            self.show_alert("Invalid Port", f"PAC port must be 0 (auto) or between 1 and 65535.")
+            return
+        if pac_int != 0 and not is_port_free(pac_int):
+            self.show_alert("Port In Use", f"Port {pac_int} is already in use.")
+            return
 
         # Toggle stop_on_quit
         win2 = rumps.Window(
@@ -347,6 +354,12 @@ class SusOpsMacTray(AbstractTrayApp):
                 port_int = int(port_text)
             except ValueError:
                 self.show_alert("Invalid Port", f"'{port_text}' is not a valid port.")
+                return
+            if not validate_port(port_int, allow_zero=True):
+                self.show_alert("Invalid Port", "SOCKS port must be 0 (auto) or between 1 and 65535.")
+                return
+            if port_int != 0 and not is_port_free(port_int):
+                self.show_alert("Port In Use", f"Port {port_int} is already in use.")
                 return
 
         self.do_add_connection(tag, host, port_int)
@@ -485,6 +498,13 @@ class SusOpsMacTray(AbstractTrayApp):
             dst_int = int(dst)
         except ValueError:
             self.show_alert("Invalid Port", "Ports must be numbers.")
+            return
+        if not validate_port(src_int) or not validate_port(dst_int):
+            self.show_alert("Invalid Port", "Ports must be between 1 and 65535.")
+            return
+        local_port = dst_int if remote else src_int
+        if not is_port_free(local_port):
+            self.show_alert("Port In Use", f"Local port {local_port} is already in use.")
             return
 
         fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int)

@@ -8,8 +8,7 @@ __all__ = [
     "get_random_free_port",
     "is_port_free",
     "validate_port",
-    "cidr_to_netmask",
-    "check_local_port_conflict",
+    "cidr_to_netmask"
 ]
 
 def get_random_free_port(start: int = 49152, end: int = 65535) -> int:
@@ -34,9 +33,13 @@ def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
         except OSError:
             return False
 
-def validate_port(port: int) -> bool:
-    """Return True if port is in valid range 1–65535."""
-    return isinstance(port, int) and 1 <= port <= 65535
+def validate_port(port: int, *, allow_zero: bool = False) -> bool:
+    """Return True if port is in valid range 1–65535, or 0 when allow_zero=True."""
+    if not isinstance(port, int):
+        return False
+    if allow_zero and port == 0:
+        return True
+    return 1 <= port <= 65535
 
 def cidr_to_netmask(cidr_bits: int) -> str:
     """Convert CIDR prefix length to dotted-decimal netmask.
@@ -47,14 +50,3 @@ def cidr_to_netmask(cidr_bits: int) -> str:
         raise ValueError(f"CIDR bits must be 0-32, got {cidr_bits}")
     mask = (0xFFFFFFFF << (32 - cidr_bits)) & 0xFFFFFFFF
     return socket.inet_ntoa(struct.pack(">I", mask))
-
-def check_local_port_conflict(port: int) -> str | None:
-    """Return an error message if port conflicts, or None if it's free.
-
-    Checks: valid range, port is free on localhost.
-    """
-    if not validate_port(port):
-        return f"Port {port} is out of valid range (1-65535)"
-    if not is_port_free(port):
-        return f"Port {port} is already in use on localhost"
-    return None
