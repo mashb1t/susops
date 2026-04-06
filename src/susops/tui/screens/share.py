@@ -14,7 +14,12 @@ from textual import work
 class _AddShareDialog(ModalScreen):
     """Modal: start sharing a file."""
 
+    def __init__(self, conn_hosts: dict[str, str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._conn_hosts = conn_hosts  # tag -> ssh_host
+
     def compose(self) -> ComposeResult:
+        hint = ", ".join(self._conn_hosts) if self._conn_hosts else ""
         with Static(classes="modal-dialog"):
             yield Label("[bold]Share a file[/bold]")
             yield Label("File path:")
@@ -23,6 +28,8 @@ class _AddShareDialog(ModalScreen):
             yield Input(placeholder="", id="password")
             yield Label("Port (0 = auto):")
             yield Input(placeholder="0", value="0", id="port")
+            yield Label(f"Connection (optional — {hint}):" if hint else "Connection (optional):")
+            yield Input(placeholder=next(iter(self._conn_hosts), ""), id="conn")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Share", id="btn-ok", variant="success")
@@ -44,15 +51,23 @@ class _AddShareDialog(ModalScreen):
             port = int(self.query_one("#port", Input).value.strip() or "0")
         except ValueError:
             port = 0
-        self.dismiss({"path": path, "password": pw, "port": port})
+        conn = self.query_one("#conn", Input).value.strip() or None
+        self.dismiss({"path": path, "password": pw, "port": port, "conn": conn})
 
 
 class _FetchDialog(ModalScreen):
     """Modal: fetch a shared file."""
 
+    def __init__(self, conn_hosts: dict[str, str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._conn_hosts = conn_hosts  # tag -> ssh_host
+
     def compose(self) -> ComposeResult:
+        hint = ", ".join(self._conn_hosts) if self._conn_hosts else ""
         with Static(classes="modal-dialog"):
             yield Label("[bold]Fetch a shared file[/bold]")
+            yield Label(f"Connection (optional — {hint}):" if hint else "Connection (optional):")
+            yield Input(placeholder=next(iter(self._conn_hosts), "localhost"), id="conn")
             yield Label("Port:")
             yield Input(placeholder="52100", id="port")
             yield Label("Password:")
@@ -78,8 +93,14 @@ class _FetchDialog(ModalScreen):
         except ValueError:
             self.query_one("#error", Label).update("Invalid port.")
             return
+        conn = self.query_one("#conn", Input).value.strip() or None
+        # Resolve connection tag to SSH host (strip user@ prefix if present)
+        host = "localhost"
+        if conn:
+            raw = self._conn_hosts.get(conn, conn)
+            host = raw.split("@")[-1]
         outfile = self.query_one("#outfile", Input).value.strip() or None
-        self.dismiss({"port": port, "password": pw, "outfile": outfile})
+        self.dismiss({"port": port, "password": pw, "host": host, "outfile": outfile})
 
 
 class ShareScreen(Screen):
@@ -126,17 +147,32 @@ class ShareScreen(Screen):
                 "[dim]No active shares.\n\nPress [bold]a[/bold] to share a file.[/dim]"
             )
 
+    def _conn_hosts(self) -> dict[str, str]:
+        try:
+            cfg = self.app.manager.list_config()  # type: ignore[attr-defined]
+            return {c.tag: c.ssh_host for c in cfg.connections}
+        except Exception:
+            return {}
+
     def _show_detail(self, info) -> None:
         name = Path(info.file_path).name
-        fetch_cmd = f"susops fetch {info.port} {info.password}"
+        fetch_local = f"susops fetch {info.port} {info.password}"
+        conn_hosts = self._conn_hosts()
+        remote_lines = ""
+        if conn_hosts:
+            remote_lines = "\n[bold]Remote fetch (via connection):[/bold]"
+            for tag, ssh_host in conn_hosts.items():
+                host = ssh_host.split("@")[-1]
+                remote_lines += f"\n  [dim]{tag}: susops fetch {info.port} {info.password} --host {host}[/dim]"
         text = (
             f"[bold]File:[/bold]     {info.file_path}\n"
             f"[bold]Name:[/bold]     {name}\n"
             f"[bold]Port:[/bold]     {info.port}\n"
             f"[bold]URL:[/bold]      {info.url}\n"
             f"[bold]Password:[/bold] {info.password}\n\n"
-            f"[bold]Fetch command:[/bold]\n"
-            f"  [dim]{fetch_cmd}[/dim]"
+            f"[bold]Local fetch:[/bold]\n"
+            f"  [dim]{fetch_local}[/dim]"
+            f"{remote_lines}"
         )
         self.query_one("#share-detail", Static).update(text)
 
@@ -150,14 +186,14 @@ class ShareScreen(Screen):
             if not data:
                 return
             self._do_share(data["path"], data["password"], data["port"])
-        self.app.push_screen(_AddShareDialog(), _on_result)
+        self.app.push_screen(_AddShareDialog(self._conn_hosts()), _on_result)
 
     def action_fetch_file(self) -> None:
         def _on_result(data) -> None:
             if not data:
                 return
-            self._do_fetch(data["port"], data["password"], data["outfile"])
-        self.app.push_screen(_FetchDialog(), _on_result)
+            self._do_fetch(data["port"], data["password"], data["host"], data["outfile"])
+        self.app.push_screen(_FetchDialog(self._conn_hosts()), _on_result)
 
     def action_stop_share(self) -> None:
         idx = self.query_one("#share-list", ListView).index
@@ -182,11 +218,11 @@ class ShareScreen(Screen):
         self.app.call_from_thread(self._reload)
 
     @work(thread=True)
-    def _do_fetch(self, port: int, password: str, outfile: str | None) -> None:
+    def _do_fetch(self, port: int, password: str, host: str, outfile: str | None) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         out = Path(outfile) if outfile else None
         try:
-            result = mgr.fetch(port=port, password=password, outfile=out)
+            result = mgr.fetch(port=port, password=password, host=host, outfile=out)
             msg = f"[green]Downloaded to: {result}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
