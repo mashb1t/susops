@@ -18,7 +18,7 @@ from susops.core.config import (
     save_config,
 )
 from susops.core.pac import PacServer, write_pac_file
-from susops.core.ports import check_local_port_conflict, get_random_free_port
+from susops.core.ports import get_random_free_port
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
