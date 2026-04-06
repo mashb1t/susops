@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Select, Static
 from textual import work
 
 
@@ -19,7 +19,7 @@ class _AddShareDialog(ModalScreen):
         self._conn_hosts = conn_hosts  # tag -> ssh_host
 
     def compose(self) -> ComposeResult:
-        hint = ", ".join(self._conn_hosts) if self._conn_hosts else ""
+        options = [(tag, tag) for tag in self._conn_hosts]
         with Static(classes="modal-dialog"):
             yield Label("[bold]Share a file[/bold]")
             yield Label("File path:")
@@ -28,8 +28,8 @@ class _AddShareDialog(ModalScreen):
             yield Input(placeholder="", id="password")
             yield Label("Port (0 = auto):")
             yield Input(placeholder="0", value="0", id="port")
-            yield Label(f"Connection (optional — {hint}):" if hint else "Connection (optional):")
-            yield Input(placeholder=next(iter(self._conn_hosts), ""), id="conn")
+            yield Label("Connection (optional):")
+            yield Select(options, allow_blank=True, id="conn")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Share", id="btn-ok", variant="success")
@@ -51,7 +51,8 @@ class _AddShareDialog(ModalScreen):
             port = int(self.query_one("#port", Input).value.strip() or "0")
         except ValueError:
             port = 0
-        conn = self.query_one("#conn", Input).value.strip() or None
+        conn_val = self.query_one("#conn", Select).value
+        conn = conn_val if conn_val is not Select.BLANK else None
         self.dismiss({"path": path, "password": pw, "port": port, "conn": conn})
 
 
@@ -63,11 +64,11 @@ class _FetchDialog(ModalScreen):
         self._conn_hosts = conn_hosts  # tag -> ssh_host
 
     def compose(self) -> ComposeResult:
-        hint = ", ".join(self._conn_hosts) if self._conn_hosts else ""
+        options = [(tag, tag) for tag in self._conn_hosts]
         with Static(classes="modal-dialog"):
             yield Label("[bold]Fetch a shared file[/bold]")
-            yield Label(f"Connection (optional — {hint}):" if hint else "Connection (optional):")
-            yield Input(placeholder=next(iter(self._conn_hosts), "localhost"), id="conn")
+            yield Label("Connection (optional):")
+            yield Select(options, allow_blank=True, id="conn")
             yield Label("Port:")
             yield Input(placeholder="52100", id="port")
             yield Label("Password:")
@@ -93,11 +94,10 @@ class _FetchDialog(ModalScreen):
         except ValueError:
             self.query_one("#error", Label).update("Invalid port.")
             return
-        conn = self.query_one("#conn", Input).value.strip() or None
-        # Resolve connection tag to SSH host (strip user@ prefix if present)
+        conn_val = self.query_one("#conn", Select).value
         host = "localhost"
-        if conn:
-            raw = self._conn_hosts.get(conn, conn)
+        if conn_val is not Select.BLANK:
+            raw = self._conn_hosts.get(conn_val, conn_val)
             host = raw.split("@")[-1]
         outfile = self.query_one("#outfile", Input).value.strip() or None
         self.dismiss({"port": port, "password": pw, "host": host, "outfile": outfile})
