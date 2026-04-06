@@ -35,7 +35,6 @@ def _fmt_bps(bps: float) -> str:
 
 
 class DashboardScreen(Screen):
-    """Lazydocker+nvtop-inspired split-pane dashboard."""
 
     BINDINGS = [
         Binding("s", "start_all", "Start"),
@@ -49,7 +48,7 @@ class DashboardScreen(Screen):
     DashboardScreen { layout: vertical; }
     #status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
     #split { height: 1fr; }
-    #sidebar { width: 32; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #sidebar { width: 36; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #pac-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
     #shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
     #detail-tabs { width: 1fr; }
@@ -161,12 +160,11 @@ class DashboardScreen(Screen):
         running_count = sum(1 for cs in result.connection_statuses if cs.running)
         total_count = len(result.connection_statuses)
         pac_str = "[green]up[/green]" if result.pac_running else "[red]down[/red]"
-        pac_port_str = f":{result.pac_port}" if result.pac_port else ""
+        pac_port_str = f"{result.pac_port}" if result.pac_port else ""
         share_str = f"  [dim]shares: {len(shares)}[/dim]" if shares else ""
         self.query_one("#status-bar", Static).update(
             f"[{color}]●[/{color}] {running_count}/{total_count} running"
-            f"  PAC: {pac_str}{pac_port_str}"
-            f"  [dim]s=start x=stop r=restart[/dim]"
+            f"  PAC: {pac_str}:{pac_port_str}"
             f"{share_str}"
         )
 
@@ -175,9 +173,7 @@ class DashboardScreen(Screen):
         new_conn_data: dict = {}
         for cs in result.connection_statuses:
             conn = conn_map.get(cs.tag)
-            forwards = []
             if conn:
-                forwards = list(conn.forwards.local) + list(conn.forwards.remote)
                 forwards_local = list(conn.forwards.local)
                 forwards_remote = list(conn.forwards.remote)
             else:
@@ -221,7 +217,7 @@ class DashboardScreen(Screen):
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, tx = bw.get(cs.tag, (0.0, 0.0))
             bw_str = _fmt_bps(rx)
-            label_text = f"{dot} {cs.tag:<12} :{port_str:<6} {bw_str:>9}↓"
+            label_text = f"{dot} {cs.tag:<12} {port_str:<6} {bw_str:>9}↓"
             conn_list.append(ListItem(Label(label_text)))
 
         # Restore selection
@@ -238,7 +234,7 @@ class DashboardScreen(Screen):
         # Update PAC info (keep to 2 lines — sidebar is only 32 chars wide)
         host_count = sum(len(c.pac_hosts) for c in config.connections)
         pac_dot = "[green]●[/green]" if result.pac_running else "[red]○[/red]"
-        pac_port_display = f" :{result.pac_port}" if result.pac_port else ""
+        pac_port_display = f" {result.pac_port}" if result.pac_port else ""
         pac_line = f"{pac_dot} PAC{pac_port_display}"
         if result.pac_running:
             pac_line += f"  [dim]{host_count} host(s)[/dim]"

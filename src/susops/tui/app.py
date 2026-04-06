@@ -41,14 +41,13 @@ class _SusOpsCommands(Provider):
 class SusOpsTuiApp(App):
     """SusOps Textual TUI — SSH tunnel + PAC proxy manager."""
 
-    #TITLE = "SusOps"
-    #SUB_TITLE = "SSH Tunnel & PAC Manager"
+    TITLE = "SusOps"
+    SUB_TITLE = "SSH Tunnel & PAC Manager"
 
     CSS_PATH = "app.tcss"
 
     BINDINGS = [
         Binding("ctrl+p", "command_palette", "Commands"),
-        Binding("d", "push_screen('dashboard')", "Dashboard", show=True),
         Binding("c", "push_screen('connections')", "Connections", show=True),
         Binding("f", "push_screen('share')", "Share", show=True),
         Binding("e", "push_screen('config')", "Config", show=False),
