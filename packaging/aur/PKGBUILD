@@ -1,1 +1,46 @@
-# TODO: implement — see plan at ~/.claude/plans/curious-swinging-sutherland.md
+# Maintainer: Your Name <you@example.com>
+pkgname=susops
+pkgver=3.0.0
+pkgrel=1
+pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
+arch=('any')
+url="https://github.com/yourusername/susops"
+license=('MIT')
+depends=(
+    'python'
+    'python-gobject'
+    'gtk3'
+    'libayatana-appindicator'
+    'autossh'
+    'python-pydantic'
+    'python-psutil'
+)
+optdepends=(
+    'python-textual: interactive TUI interface'
+    'python-cryptography: encrypted file sharing'
+)
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
+# No go-yq dependency — replaced by pure Python
+source=("$pkgname-$pkgver.tar.gz::https://github.com/yourusername/susops/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+# ruamel.yaml is not in the official repos; install via pip inside venv or use python-ruamel-yaml from AUR
+# For a production PKGBUILD, add:
+#   depends+=('python-ruamel-yaml')
+
+build() {
+    cd "$pkgname-$pkgver"
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    python -m installer --destdir="$pkgdir" dist/*.whl
+
+    # Install desktop entry for tray app
+    install -Dm644 packaging/aur/susops-tray.desktop \
+        "$pkgdir/usr/share/applications/susops-tray.desktop"
+
+    # Install license
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

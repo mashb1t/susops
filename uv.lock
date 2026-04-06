@@ -605,6 +605,7 @@ source = { editable = "." }
 dependencies = [
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "pytest" },
     { name = "ruamel-yaml" },
 ]
 
@@ -629,6 +630,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
