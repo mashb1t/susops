@@ -140,12 +140,8 @@ class ShareScreen(Screen):
         lv = self.query_one("#share-list", ListView)
         lv.border_title = "Shares"
         self._shares: list = []
-        self._sse_active: bool = True
         self._reload()
-        self._start_sse_listener()
-
-    def on_unmount(self) -> None:
-        self._sse_active = False
+        self.set_interval(2.0, self._reload)
 
     def _reload(self) -> None:
         self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
@@ -270,42 +266,6 @@ class ShareScreen(Screen):
 
     def action_refresh(self) -> None:
         self._reload()
-
-    @work(thread=True)
-    def _start_sse_listener(self) -> None:
-        """Background worker: connect to SSE /events and reload on share/state events."""
-        import time
-        import urllib.request
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        backoff = 1.0
-        while self._sse_active:
-            status_url = mgr.get_status_url()
-            if not status_url:
-                for _ in range(20):
-                    if not self._sse_active:
-                        return
-                    time.sleep(0.1)
-                continue
-            try:
-                req = urllib.request.Request(status_url)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    backoff = 1.0
-                    buf = ""
-                    for raw in resp:
-                        if not self._sse_active:
-                            return
-                        line = raw.decode("utf-8", errors="replace")
-                        buf += line
-                        if buf.endswith("\n\n"):
-                            if "event: share" in buf or "event: state" in buf:
-                                self.app.call_from_thread(self._reload)
-                            buf = ""
-            except Exception:
-                for _ in range(max(1, int(backoff * 10))):
-                    if not self._sse_active:
-                        return
-                    time.sleep(0.1)
-                backoff = min(backoff * 2, 30.0)
 
     @work(thread=True)
     def _do_share(self, path: str, conn_tag: str, password: str | None, port: int) -> None:

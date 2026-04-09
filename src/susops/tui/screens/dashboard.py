@@ -281,7 +281,12 @@ class DashboardScreen(Screen):
             share_lines = []
             for info in shares:
                 name = Path(info.file_path).name
-                dot = "[green]●[/green]" if info.running else "[dim]○[/dim]"
+                if info.running:
+                    dot = "[green]●[/green]"
+                elif info.stopped:
+                    dot = "[dim]○[/dim]"
+                else:
+                    dot = "[red]○[/red]"
                 share_lines.append(f"{dot} {name}  :{info.port}")
             shares_widget.update("\n".join(share_lines))
 
@@ -406,7 +411,7 @@ class DashboardScreen(Screen):
             try:
                 req = urllib.request.Request(status_url)
                 # Short timeout so the thread wakes up and can exit promptly
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=2) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:
