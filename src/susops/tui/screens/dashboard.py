@@ -122,6 +122,7 @@ class DashboardScreen(Screen):
         mgr.on_log = self._on_new_log
         self.set_interval(2.0, self._tick_refresh)
         self.refresh_status()
+        self._start_sse_listener()
 
     def on_unmount(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
@@ -375,6 +376,34 @@ class DashboardScreen(Screen):
             tag = self._conn_tags[index]
             self._selected_tag = tag
             self._update_detail_panel(tag)
+
+    @work(thread=True)
+    def _start_sse_listener(self) -> None:
+        """Connect to SSE /events and trigger fast refresh on state/share/forward events."""
+        import time
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        backoff = 1.0
+        while True:
+            status_url = mgr.get_status_url()
+            if not status_url:
+                time.sleep(2.0)
+                continue
+            try:
+                import urllib.request
+                req = urllib.request.Request(status_url)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    backoff = 1.0
+                    buf = ""
+                    for raw in resp:
+                        line = raw.decode("utf-8", errors="replace")
+                        buf += line
+                        if buf.endswith("\n\n"):
+                            if any(e in buf for e in ("event: state", "event: share", "event: forward")):
+                                self.app.call_from_thread(self.refresh_status)
+                            buf = ""
+            except Exception:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     @work(thread=True)
     def action_start_all(self) -> None:

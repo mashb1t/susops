@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install for development (venv at .venv/)
-pip install -e ".[tui,crypto,dev]"
+pip install -e ".[tui,share,dev]"
 
 # Run all tests
 pytest

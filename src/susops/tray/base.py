@@ -227,33 +227,27 @@ class AbstractTrayApp(ABC):
 
     def do_add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         try:
+            # Facade starts the slave immediately if ControlMaster is running — no restart needed.
             self.manager.add_local_forward(conn_tag, fw)
-            if self._should_restart_after_change():
-                self.do_restart()
         except ValueError as e:
             self.show_alert("Error", str(e))
 
     def do_add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
         try:
             self.manager.add_remote_forward(conn_tag, fw)
-            if self._should_restart_after_change():
-                self.do_restart()
         except ValueError as e:
             self.show_alert("Error", str(e))
 
     def do_remove_local_forward(self, port: int) -> None:
         try:
+            # Facade kills the slave immediately — no restart needed.
             self.manager.remove_local_forward(port)
-            if self._should_restart_after_change():
-                self.do_restart()
         except ValueError as e:
             self.show_alert("Error", str(e))
 
     def do_remove_remote_forward(self, port: int) -> None:
         try:
             self.manager.remove_remote_forward(port)
-            if self._should_restart_after_change():
-                self.do_restart()
         except ValueError as e:
             self.show_alert("Error", str(e))
 
