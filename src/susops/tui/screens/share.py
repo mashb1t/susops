@@ -146,6 +146,7 @@ class ShareScreen(Screen):
     def _reload(self) -> None:
         self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
         lv = self.query_one("#share-list", ListView)
+        prev_idx = lv.index
         lv.clear()
         for info in self._shares:
             name = Path(info.file_path).name
@@ -177,7 +178,9 @@ class ShareScreen(Screen):
 
         self.query_one("#share-status", Label).update(status)
         if self._shares:
-            self._show_detail(self._shares[0])
+            idx = prev_idx if prev_idx is not None and prev_idx < len(self._shares) else 0
+            lv.index = idx
+            self._show_detail(self._shares[idx])
         else:
             self.query_one("#share-detail", Static).update(
                 "[dim]No shares.\n\nPress [bold]a[/bold] to share a file.[/dim]"
