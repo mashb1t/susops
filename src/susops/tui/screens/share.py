@@ -144,11 +144,10 @@ class ShareScreen(Screen):
         self.set_interval(2.0, self._reload)
 
     def _reload(self) -> None:
-        self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
+        new_shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
         lv = self.query_one("#share-list", ListView)
-        prev_idx = lv.index
-        lv.clear()
-        for info in self._shares:
+
+        def _label(info) -> str:
             name = Path(info.file_path).name
             if info.running:
                 dot = "[green]●[/green]"
@@ -156,7 +155,25 @@ class ShareScreen(Screen):
                 dot = "[dim]○[/dim]"
             else:
                 dot = "[red]○[/red]"
-            lv.append(ListItem(Label(f"{dot} {name}  :{info.port}")))
+            return f"{dot} {name}  :{info.port}"
+
+        new_ports = [i.port for i in new_shares]
+        old_ports = [i.port for i in self._shares]
+
+        if new_ports == old_ports:
+            # Same shares — update labels in-place so selection is never disturbed
+            for item, info in zip(lv.query(ListItem), new_shares):
+                item.query_one(Label).update(_label(info))
+        else:
+            # Shares added/removed — rebuild and restore cursor
+            cur = lv.index or 0
+            lv.clear()
+            for info in new_shares:
+                lv.append(ListItem(Label(_label(info))))
+            if new_shares:
+                lv.index = min(cur, len(new_shares) - 1)
+
+        self._shares = new_shares
 
         n_running = sum(1 for i in self._shares if i.running)
         n_stopped = sum(1 for i in self._shares if not i.running and i.stopped)
@@ -178,8 +195,7 @@ class ShareScreen(Screen):
 
         self.query_one("#share-status", Label).update(status)
         if self._shares:
-            idx = prev_idx if prev_idx is not None and prev_idx < len(self._shares) else 0
-            lv.index = idx
+            idx = lv.index or 0
             self._show_detail(self._shares[idx])
         else:
             self.query_one("#share-detail", Static).update(
