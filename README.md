@@ -108,13 +108,13 @@ pip install susops
 pip install "susops[tui]"
 
 # TUI + encrypted file sharing
-pip install "susops[tui,crypto]"
+pip install "susops[tui,share]"
 
 # Linux tray (system GTK3 packages must be installed separately)
-pip install "susops[tui,tray-linux,crypto]"
+pip install "susops[tui,share,tray-linux]"
 
 # macOS tray
-pip install "susops[tui,tray-mac,crypto]"
+pip install "susops[tui,share,tray-mac]"
 ```
 
 ### Arch Linux (AUR)
@@ -136,7 +136,7 @@ brew install mashb1t/susops/susops
 ```bash
 git clone https://github.com/mashb1t/susops
 cd susops
-pip install -e ".[tui,crypto,dev]"
+pip install -e ".[tui,share,dev]"
 ```
 
 ---
@@ -525,7 +525,7 @@ mgr.stop()
 git clone https://github.com/mashb1t/susops
 cd susops
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[tui,crypto,dev]"
+pip install -e ".[tui,share,dev]"
 
 # Run tests
 pytest
