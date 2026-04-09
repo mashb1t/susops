@@ -1,6 +1,7 @@
 """SusOpsManager — the single public API for all SusOps frontends."""
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import threading
 import time
@@ -1011,9 +1012,15 @@ class SusOpsManager:
         for p in dead:
             del self._share_servers[p]
 
-        # In-memory running shares
+        # In-memory running shares — attach live access counters
         running_ports = set(self._share_servers.keys())
-        result: list[ShareInfo] = [info for _, info in self._share_servers.values()]
+        result: list[ShareInfo] = []
+        for server, info in self._share_servers.values():
+            result.append(dataclasses.replace(
+                info,
+                access_count=server.access_count,
+                failed_count=server.failed_count,
+            ))
 
         # Config-only stopped shares (persisted but server not running in this process)
         self._reload_config()

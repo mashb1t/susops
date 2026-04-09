@@ -167,6 +167,8 @@ class ShareServer:
         self._encrypted_data: bytes = b""
         self._encrypted_filename: str = ""
         self._password: str = ""
+        self._access_count: int = 0
+        self._failed_count: int = 0
 
     def start(
         self,
@@ -208,6 +210,7 @@ class ShareServer:
         async def handle(request: web.Request) -> web.Response:
             auth = request.headers.get("Authorization", "")
             if not auth.startswith("Basic "):
+                self._failed_count += 1
                 return web.Response(
                     status=401,
                     headers={"WWW-Authenticate": 'Basic realm="susops share"'},
@@ -216,13 +219,16 @@ class ShareServer:
                 decoded = base64.b64decode(auth[6:]).decode()
                 _, _, pw = decoded.partition(":")
             except Exception:
+                self._failed_count += 1
                 return web.Response(status=401)
             if pw != self._password:
+                self._failed_count += 1
                 return web.Response(
                     status=401,
                     headers={"WWW-Authenticate": 'Basic realm="susops share"'},
                 )
 
+            self._access_count += 1
             return web.Response(
                 body=self._encrypted_data,
                 content_type="application/octet-stream",
@@ -262,6 +268,14 @@ class ShareServer:
 
     def get_port(self) -> int:
         return self._port
+
+    @property
+    def access_count(self) -> int:
+        return self._access_count
+
+    @property
+    def failed_count(self) -> int:
+        return self._failed_count
 
 
 def fetch_file(

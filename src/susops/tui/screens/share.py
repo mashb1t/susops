@@ -217,6 +217,9 @@ class ShareScreen(Screen):
             state_str = "[dim]stopped[/dim]"
         else:
             state_str = "[red]offline[/red]"
+        access_str = f"[green]{info.access_count} ok[/green]"
+        if info.failed_count:
+            access_str += f"  [red]{info.failed_count} failed[/red]"
         text = (
             f"[bold]File:[/bold]       {info.file_path}\n"
             f"[bold]Name:[/bold]       {name}\n"
@@ -225,6 +228,7 @@ class ShareScreen(Screen):
             f"[bold]Password:[/bold]   {info.password}\n"
             f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n"
             f"[bold]State:[/bold]      {state_str}\n"
+            f"[bold]Access:[/bold]     {access_str}\n"
         )
         if info.running:
             text += (

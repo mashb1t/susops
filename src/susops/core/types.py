@@ -167,3 +167,5 @@ class ShareInfo:
     conn_tag: str | None = None
     running: bool = True
     stopped: bool = False  # True = manually stopped; False + not running = offline (conn down)
+    access_count: int = 0
+    failed_count: int = 0
