@@ -20,7 +20,7 @@ def main() -> None:
     if sys.stdout.isatty() and args.command is None:
         try:
             from susops.tui.app import SusOpsTuiApp
-            app = SusOpsTuiApp()
+            app = SusOpsTuiApp(verbose=args.verbose)
             app.run()
         except ImportError as exc:
             print(

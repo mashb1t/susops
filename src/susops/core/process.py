@@ -81,17 +81,33 @@ class ProcessManager:
         return True
 
     def is_running(self, name: str) -> bool:
-        """Return True if the named process is currently running."""
+        """Return True if the named process is currently running (not a zombie)."""
         pid = self.get_pid(name)
         if pid is None:
             return False
         try:
             os.kill(pid, 0)
-            return True
         except ProcessLookupError:
             return False
         except PermissionError:
             return True  # exists, not our process, but it's running
+        # Process exists in the table — check whether it's a zombie.
+        # Zombies respond to kill(0) but can't do any real work.
+        # Reading /proc is Linux-only; on other platforms we trust kill(0).
+        try:
+            status = Path(f"/proc/{pid}/status").read_text()
+            for line in status.splitlines():
+                if line.startswith("State:") and "Z" in line:
+                    # Reap it (only works if we're the parent)
+                    try:
+                        os.waitpid(pid, os.WNOHANG)
+                    except (ChildProcessError, OSError):
+                        pass
+                    self._pid_file(name).unlink(missing_ok=True)
+                    return False
+        except OSError:
+            pass  # /proc not available or pid already gone
+        return True
 
     def get_pid(self, name: str) -> int | None:
         """Return the PID for a named process, or None if not tracked."""

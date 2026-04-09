@@ -68,10 +68,10 @@ class SusOpsTuiApp(App):
 
     COMMANDS = App.COMMANDS | {_SusOpsCommands}
 
-    def __init__(self) -> None:
+    def __init__(self, verbose: bool = False) -> None:
         super().__init__()
         from susops.facade import SusOpsManager
-        self.manager = SusOpsManager()
+        self.manager = SusOpsManager(verbose=verbose)
 
     def on_mount(self) -> None:
         self.push_screen("dashboard")

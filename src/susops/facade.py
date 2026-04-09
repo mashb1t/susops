@@ -26,6 +26,7 @@ from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
+    is_socket_alive,
     is_tunnel_running,
     socket_path,
     start_forward,
@@ -165,9 +166,10 @@ class _BandwidthSampler:
 class SusOpsManager:
     """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
-    def __init__(self, workspace: Path = _WORKSPACE_DEFAULT) -> None:
+    def __init__(self, workspace: Path = _WORKSPACE_DEFAULT, verbose: bool = False) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self._verbose = verbose
 
         self.config: SusOpsConfig = load_config(workspace)
         self._process_mgr = ProcessManager(workspace)
@@ -198,6 +200,28 @@ class SusOpsManager:
         if self.on_log:
             self.on_log(msg)
 
+    def _debug(self, msg: str) -> None:
+        """Log a debug message. Only active when verbose=True.
+
+        In TUI/tray mode the message goes to the Logs tab via on_log.
+        In CLI mode (no on_log handler) it is printed to stderr.
+        """
+        if not self._verbose:
+            return
+        full = f"[debug] {msg}"
+        self._log_buffer.append(full)
+        if self.on_log:
+            self.on_log(full)
+        else:
+            import sys
+            print(full, file=sys.stderr)
+
+    def _emit(self, event: str, data: dict) -> None:
+        """Emit an SSE event and log it when verbose (bandwidth excluded — too noisy)."""
+        self._status_server.emit(event, data)
+        if event != "bandwidth":
+            self._debug(f"event:{event} {data}")
+
     def _emit_state(self, state: ProcessState) -> None:
         if self.on_state_change:
             self.on_state_change(state)
@@ -213,6 +237,10 @@ class SusOpsManager:
 
     def _connection_status(self, conn: Connection) -> ConnectionStatus:
         running = is_tunnel_running(conn.tag, self._process_mgr)
+        # Fall back to socket liveness when PID file is stale (zombie reaped,
+        # or master restarted outside our control).
+        if not running:
+            running = is_socket_alive(conn.tag, self.workspace)
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{conn.tag}")
         return ConnectionStatus(
             tag=conn.tag,
@@ -440,7 +468,6 @@ class SusOpsManager:
             new_conns.append(conn.model_copy(update={"file_shares": updated}))
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
-        self._save()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -463,6 +490,13 @@ class SusOpsManager:
         for conn in connections:
             if is_tunnel_running(conn.tag, self._process_mgr):
                 self._log(f"[{conn.tag}] Already running")
+                statuses.append(self._connection_status(conn))
+                continue
+            if is_socket_alive(conn.tag, self.workspace):
+                # ControlMaster is alive but our PID file is stale (e.g.
+                # process was a zombie that was reaped). Don't start a
+                # second master — re-adopt by re-tracking the socket owner.
+                self._log(f"[{conn.tag}] Socket alive but PID stale — skipping new master")
                 statuses.append(self._connection_status(conn))
                 continue
             try:
@@ -506,7 +540,7 @@ class SusOpsManager:
                         if raw.port != fs.port:
                             self._update_file_share_port(conn.tag, fs, raw.port)
                         self._log(f"[{conn.tag}] Started share '{fp.name}' on :{raw.port}")
-                        self._status_server.emit("share", {
+                        self._emit("share", {
                             "port": raw.port,
                             "file": fp.name,
                             "running": True,
@@ -533,13 +567,13 @@ class SusOpsManager:
                     tag=conn.tag, running=True, pid=pid,
                     socks_port=conn.socks_proxy_port,
                 ))
-                self._status_server.emit("state", {"tag": conn.tag, "running": True, "pid": pid})
+                self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
             except Exception as exc:
                 msg = f"[{conn.tag}] Failed: {exc}"
                 self._log(msg)
                 errors.append(msg)
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
-                self._status_server.emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
 
         if not self._pac_server.is_running():
             cross_port = self._read_pac_port_file()
@@ -592,7 +626,7 @@ class SusOpsManager:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
                     self._log(f"[{conn.tag}] Stopped")
-                    self._status_server.emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                    self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     updated = conn.model_copy(update={"socks_proxy_port": 0})
                     new_conns = [
@@ -632,7 +666,7 @@ class SusOpsManager:
             try:
                 server.stop()
                 self._log(f"File share on port {p} stopped")
-                self._status_server.emit("share", {
+                self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
                     "running": False,
@@ -781,7 +815,7 @@ class SusOpsManager:
         if conn and is_tunnel_running(conn_tag, self._process_mgr):
             try:
                 start_forward(conn, fw, "local", self._process_mgr, self.workspace)
-                self._status_server.emit("forward", {
+                self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"local-{fw.src_port}",
                     "direction": "local", "running": True,
                 })
@@ -794,7 +828,7 @@ class SusOpsManager:
         if conn and is_tunnel_running(conn_tag, self._process_mgr):
             try:
                 start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
-                self._status_server.emit("forward", {
+                self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"remote-{fw.src_port}",
                     "direction": "remote", "running": True,
                 })
@@ -817,7 +851,7 @@ class SusOpsManager:
                 # Stop the slave process if it exists
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
                 stop_forward(conn.tag, fw_tag, self._process_mgr)
-                self._status_server.emit("forward", {
+                self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
                     "direction": direction, "running": False,
                 })
@@ -893,7 +927,7 @@ class SusOpsManager:
             except Exception as exc:
                 self._log(f"[{conn_tag}] Share forward {info.port} failed: {exc}")
 
-        self._status_server.emit("share", {
+        self._emit("share", {
             "port": info.port,
             "file": file.name,
             "running": True,
@@ -916,7 +950,7 @@ class SusOpsManager:
                 if info.conn_tag:
                     stop_forward(info.conn_tag, f"share-{port}", self._process_mgr)
                 self._set_file_share_stopped(port, True)
-                self._status_server.emit("share", {
+                self._emit("share", {
                     "port": port,
                     "file": Path(info.file_path).name,
                     "running": False,
@@ -928,7 +962,7 @@ class SusOpsManager:
                 self._log(f"File share on port {p} stopped")
                 if info.conn_tag:
                     stop_forward(info.conn_tag, f"share-{p}", self._process_mgr)
-                self._status_server.emit("share", {
+                self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
                     "running": False,
@@ -940,7 +974,7 @@ class SusOpsManager:
         """Stop and permanently remove a share from config."""
         self.stop_share(port)
         self._remove_file_share_from_config(port)
-        self._status_server.emit("share", {
+        self._emit("share", {
             "port": port,
             "file": "",
             "running": False,

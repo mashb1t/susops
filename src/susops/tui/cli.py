@@ -16,10 +16,11 @@ from pathlib import Path
 from susops.core.types import ProcessState
 
 
-def _manager():
+def _manager(args=None):
     """Lazy import to avoid circular imports and slow startup when not needed."""
     from susops.facade import SusOpsManager
-    return SusOpsManager()
+    verbose = getattr(args, "verbose", False)
+    return SusOpsManager(verbose=verbose)
 
 
 def _print_status(result) -> int:
@@ -293,6 +294,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-c", "--connection", metavar="TAG",
         help="Target a specific connection by tag",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Enable debug logging (events, state changes)",
+    )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     # start
@@ -390,5 +395,5 @@ def dispatch(args: argparse.Namespace) -> int:
     """Dispatch a parsed command to its handler. Returns exit code."""
     if not hasattr(args, "func") or args.func is None:
         return 1
-    m = _manager()
+    m = _manager(args)
     return args.func(args, m)

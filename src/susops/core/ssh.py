@@ -142,6 +142,13 @@ def start_master(
     sock = socket_path(conn.tag, workspace)
     sock.parent.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale socket so the new master can take ownership.
+    # A live master is never reached here (facade checks is_tunnel_running +
+    # is_socket_alive before calling start_master), so a socket at this
+    # point is always left over from a dead master.
+    if sock.exists():
+        sock.unlink()
+
     name = _master_name(conn.tag)
     cmd = build_master_cmd(conn, sock)
 
