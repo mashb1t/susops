@@ -1,22 +1,40 @@
-"""SSH tunnel management using autossh (or ssh fallback) + ProcessManager."""
+"""SSH tunnel management using autossh (or ssh fallback) + ProcessManager.
+
+Architecture:
+  - One ControlMaster process per connection (manages the multiplexed socket).
+  - Each port forward (local, remote, share) is its own lightweight slave process
+    that attaches to the master via the Unix socket.
+  - Forwards can be added/removed without restarting the master.
+"""
 from __future__ import annotations
+
 import shutil
 import subprocess
 from pathlib import Path
 
-from susops.core.config import Connection
+from susops.core.config import Connection, PortForward
 from susops.core.process import ProcessManager
 
 __all__ = [
-    "build_ssh_cmd",
-    "start_tunnel",
-    "stop_tunnel",
+    "build_ssh_cmd",          # legacy alias — kept for CLI compat
+    "build_master_cmd",
+    "build_forward_cmd",
+    "start_tunnel",           # starts master + all configured forwards
+    "start_master",
+    "start_forward",
+    "stop_tunnel",            # stops all forward slaves + master
+    "stop_forward",
     "is_tunnel_running",
+    "is_socket_alive",
+    "socket_path",
     "test_ssh_connectivity",
     "SSH_PROCESS_PREFIX",
+    "FWD_PROCESS_PREFIX",
 ]
 
 SSH_PROCESS_PREFIX = "susops-ssh"
+FWD_PROCESS_PREFIX = "susops-fwd"
+_SOCKET_DIR = "sockets"
 
 
 def _ssh_binary() -> str:
@@ -24,15 +42,76 @@ def _ssh_binary() -> str:
     return "autossh" if shutil.which("autossh") else "ssh"
 
 
-def _process_name(tag: str) -> str:
+def _master_name(tag: str) -> str:
     return f"{SSH_PROCESS_PREFIX}-{tag}"
 
 
-def build_ssh_cmd(conn: Connection) -> list[str]:
-    """Build the SSH command list for a connection.
+def _forward_name(conn_tag: str, fw_tag: str) -> str:
+    return f"{FWD_PROCESS_PREFIX}-{conn_tag}-{fw_tag}"
 
-    Uses autossh if available, falls back to ssh.
+
+def socket_path(tag: str, workspace: Path) -> Path:
+    """Return the ControlMaster Unix socket path for a connection."""
+    return workspace / _SOCKET_DIR / f"{tag}.sock"
+
+
+def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
+    """Build the ControlMaster SSH command.
+
+    Uses autossh if available. Establishes SOCKS proxy and ControlMaster socket.
+    No -L/-R forwards — those are handled by separate slave processes.
     The SOCKS port must already be assigned (non-zero) in conn.socks_proxy_port.
+    """
+    binary = _ssh_binary()
+
+    if binary == "autossh":
+        cmd: list[str] = ["autossh", "-M", "0"]
+    else:
+        cmd = ["ssh"]
+
+    cmd += [
+        "-N", "-T",
+        "-D", str(conn.socks_proxy_port),
+        "-o", "ControlMaster=yes",
+        "-o", f"ControlPath={sock}",
+        "-o", "ControlPersist=yes",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=3",
+    ]
+
+    cmd.append(conn.ssh_host)
+    return cmd
+
+
+def build_forward_cmd(
+    conn: Connection,
+    fw: PortForward,
+    direction: str,
+    sock: Path,
+) -> list[str]:
+    """Build a ControlSlave SSH command for a single port forward.
+
+    direction: "local" → -L, "remote" → -R
+    Attaches to the existing ControlMaster socket.
+    """
+    flag = "-L" if direction == "local" else "-R"
+    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
+
+    return [
+        "ssh",
+        "-N", "-T",
+        "-o", f"ControlPath={sock}",
+        flag, fwd_spec,
+        conn.ssh_host,
+    ]
+
+
+# Legacy alias — keeps existing callers (CLI, old tests) working.
+def build_ssh_cmd(conn: Connection) -> list[str]:
+    """Legacy: build the monolithic SSH command (no ControlMaster).
+
+    Kept for backwards compatibility. New code should use build_master_cmd.
     """
     binary = _ssh_binary()
 
@@ -49,11 +128,9 @@ def build_ssh_cmd(conn: Connection) -> list[str]:
         "-o", "ServerAliveCountMax=3",
     ]
 
-    # Local forwards: -L src_addr:src_port:dst_addr:dst_port
     for fw in conn.forwards.local:
         cmd += ["-L", f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"]
 
-    # Remote forwards: -R src_addr:src_port:dst_addr:dst_port
     for fw in conn.forwards.remote:
         cmd += ["-R", f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"]
 
@@ -61,14 +138,13 @@ def build_ssh_cmd(conn: Connection) -> list[str]:
     return cmd
 
 
-def start_tunnel(
+def start_master(
     conn: Connection,
     process_mgr: ProcessManager,
     workspace: Path,
 ) -> int:
-    """Start an SSH tunnel for the given connection.
+    """Start the ControlMaster SSH process for a connection.
 
-    The SOCKS port must already be assigned (non-zero) in conn.socks_proxy_port.
     Returns the PID of the started process.
     Raises ValueError if socks_proxy_port is 0.
     Raises RuntimeError if the process fails to start.
@@ -79,8 +155,11 @@ def start_tunnel(
             "Assign one before starting."
         )
 
-    name = _process_name(conn.tag)
-    cmd = build_ssh_cmd(conn)
+    sock = socket_path(conn.tag, workspace)
+    sock.parent.mkdir(parents=True, exist_ok=True)
+
+    name = _master_name(conn.tag)
+    cmd = build_master_cmd(conn, sock)
 
     log_file = workspace / "logs" / f"{name}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -91,17 +170,106 @@ def start_tunnel(
     return pid
 
 
-def stop_tunnel(tag: str, process_mgr: ProcessManager) -> bool:
-    """Stop the SSH tunnel for the given connection tag.
+def start_forward(
+    conn: Connection,
+    fw: PortForward,
+    direction: str,
+    process_mgr: ProcessManager,
+    workspace: Path,
+) -> int:
+    """Start a ControlSlave process for a single port forward.
 
-    Returns True if the tunnel was stopped, False if it wasn't running.
+    Attaches to the existing ControlMaster socket.
+    Returns the PID of the started process.
     """
-    return process_mgr.stop(_process_name(tag))
+    sock = socket_path(conn.tag, workspace)
+    name = _forward_name(conn.tag, fw.tag or f"{direction}-{fw.src_port}")
+    cmd = build_forward_cmd(conn, fw, direction, sock)
+
+    log_file = workspace / "logs" / f"{name}.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log_file, "a") as log:
+        pid = process_mgr.start(name, cmd, stdout=log, stderr=log)
+
+    return pid
+
+
+def stop_forward(
+    conn_tag: str,
+    fw_tag: str,
+    process_mgr: ProcessManager,
+) -> bool:
+    """Stop a single forward slave process.
+
+    Returns True if the process was stopped, False if it wasn't running.
+    """
+    name = _forward_name(conn_tag, fw_tag)
+    return process_mgr.stop(name)
+
+
+def start_tunnel(
+    conn: Connection,
+    process_mgr: ProcessManager,
+    workspace: Path,
+) -> int:
+    """Start the ControlMaster + all configured forward slaves.
+
+    Returns the PID of the master process.
+    """
+    master_pid = start_master(conn, process_mgr, workspace)
+
+    for fw in conn.forwards.local:
+        try:
+            start_forward(conn, fw, "local", process_mgr, workspace)
+        except Exception:
+            pass  # individual forward failures don't abort the tunnel
+
+    for fw in conn.forwards.remote:
+        try:
+            start_forward(conn, fw, "remote", process_mgr, workspace)
+        except Exception:
+            pass
+
+    return master_pid
+
+
+def stop_tunnel(tag: str, process_mgr: ProcessManager) -> bool:
+    """Stop all forward slaves for a connection, then stop the ControlMaster.
+
+    Returns True if the master was stopped, False if it wasn't running.
+    """
+    # Stop all forward slaves (susops-fwd-{tag}-*)
+    prefix = f"{FWD_PROCESS_PREFIX}-{tag}-"
+    for name in list(process_mgr.status_all().keys()):
+        if name.startswith(prefix):
+            process_mgr.stop(name)
+
+    return process_mgr.stop(_master_name(tag))
 
 
 def is_tunnel_running(tag: str, process_mgr: ProcessManager) -> bool:
-    """Return True if the SSH tunnel for tag is currently running."""
-    return process_mgr.is_running(_process_name(tag))
+    """Return True if the ControlMaster SSH process for tag is currently running."""
+    return process_mgr.is_running(_master_name(tag))
+
+
+def is_socket_alive(tag: str, workspace: Path) -> bool:
+    """Return True if the ControlMaster socket is responsive.
+
+    Uses `ssh -O check` to verify the master is healthy.
+    """
+    sock = socket_path(tag, workspace)
+    if not sock.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["ssh", "-O", "check", "-o", f"ControlPath={sock}", "placeholder"],
+            capture_output=True,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
 
 
 def test_ssh_connectivity(ssh_host: str, timeout: int = 5) -> bool:
