@@ -326,11 +326,16 @@ class SusOpsManager:
             self._log(f"PAC restore failed: {exc}")
 
     def _restore_shares(self) -> None:
-        """Restart share servers for persisted FileShare entries whose connection is running."""
+        """Restart share servers for persisted FileShare entries whose connection is running.
+
+        Skips entries the user manually stopped (stopped=True).
+        """
         for conn in self.config.connections:
             if not is_tunnel_running(conn.tag, self._process_mgr):
                 continue  # shares are meaningless without a live tunnel
             for fs in conn.file_shares:
+                if fs.stopped:
+                    continue  # user manually stopped this share — don't auto-restart
                 file_path = Path(fs.file_path)
                 if not file_path.exists():
                     self._log(
@@ -390,11 +395,19 @@ class SusOpsManager:
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             return
-        # Avoid duplicates
-        if any(f.file_path == file_path for f in conn.file_shares):
-            return
-        fs = FileShare(file_path=file_path, password=password, port=port)
-        updated = conn.model_copy(update={"file_shares": list(conn.file_shares) + [fs]})
+        # Update existing entry (clear stopped flag on re-share) or append new
+        existing = [f for f in conn.file_shares if f.file_path == file_path]
+        if existing:
+            new_shares = [
+                fs.model_copy(update={"password": password, "port": port, "stopped": False})
+                if fs.file_path == file_path else fs
+                for fs in conn.file_shares
+            ]
+        else:
+            new_shares = list(conn.file_shares) + [
+                FileShare(file_path=file_path, password=password, port=port)
+            ]
+        updated = conn.model_copy(update={"file_shares": new_shares})
         self.config = self.config.model_copy(
             update={
                 "connections": [
@@ -414,6 +427,19 @@ class SusOpsManager:
             else:
                 new_conns.append(conn)
         self.config = self.config.model_copy(update={"connections": new_conns})
+        self._save()
+
+    def _set_file_share_stopped(self, port: int, stopped: bool) -> None:
+        """Update the stopped flag on a persisted FileShare entry."""
+        new_conns = []
+        for conn in self.config.connections:
+            updated = [
+                fs.model_copy(update={"stopped": stopped}) if fs.port == port else fs
+                for fs in conn.file_shares
+            ]
+            new_conns.append(conn.model_copy(update={"file_shares": updated}))
+        self.config = self.config.model_copy(update={"connections": new_conns})
+        self._save()
         self._save()
 
     # ------------------------------------------------------------------ #
@@ -460,6 +486,8 @@ class SusOpsManager:
                 # Start HTTP servers for config-only (stopped) shares, then forward slaves
                 # for all running share servers belonging to this connection.
                 for fs in conn.file_shares:
+                    if fs.stopped:
+                        continue  # user manually stopped — do not auto-restart
                     if fs.port in self._share_servers:
                         continue  # already running
                     fp = Path(fs.file_path)
@@ -868,7 +896,11 @@ class SusOpsManager:
         return info
 
     def stop_share(self, port: int | None = None) -> None:
-        """Stop share server(s) without removing from config (entry shows as stopped)."""
+        """Stop share server(s) without removing from config (entry shows as stopped).
+
+        Sets stopped=True on the config entry so the share is not auto-restarted
+        on the next start() or restore cycle.
+        """
         if port is not None:
             entry = self._share_servers.pop(port, None)
             if entry:
@@ -877,6 +909,7 @@ class SusOpsManager:
                 self._log(f"File share on port {port} stopped")
                 if info.conn_tag:
                     stop_forward(info.conn_tag, f"share-{port}", self._process_mgr)
+                self._set_file_share_stopped(port, True)
                 self._status_server.emit("share", {
                     "port": port,
                     "file": Path(info.file_path).name,

@@ -184,7 +184,10 @@ def test_stop_share_keeps_config_entry(mgr_with_conn, tmp_path):
 
     # stop_share keeps the FileShare entry in config (shows as stopped)
     conn = mgr_with_conn.list_config().connections[0]
-    assert any(f.port == port for f in conn.file_shares)
+    fs = next(f for f in conn.file_shares if f.port == port)
+    assert fs is not None
+    # Entry is marked as manually stopped
+    assert fs.stopped is True
     # But the server is no longer running
     shares = mgr_with_conn.list_shares()
     assert any(s.port == port and not s.running for s in shares)
@@ -288,12 +291,18 @@ def test_stop_share_then_start_again(mgr_with_conn, tmp_path):
     info = mgr_with_conn.share(test_file, "work")
     mgr_with_conn.stop_share(info.port)
 
-    # Config entry persists — re-share with same params
+    # Manually stopped — stopped=True in config
     conn = mgr_with_conn.list_config().connections[0]
     fs = next(f for f in conn.file_shares if f.port == info.port)
-    info2 = mgr_with_conn.share(Path(fs.file_path), "work", password=fs.password, port=fs.port)
+    assert fs.stopped is True
 
+    # Re-sharing clears the stopped flag
+    info2 = mgr_with_conn.share(Path(fs.file_path), "work", password=fs.password, port=fs.port)
     assert info2.running is True
+    conn2 = mgr_with_conn.list_config().connections[0]
+    fs2 = next(f for f in conn2.file_shares if f.port == info2.port)
+    assert fs2.stopped is False
+
     # Clean up
     mgr_with_conn.delete_share(info2.port)
 
@@ -327,6 +336,25 @@ def test_list_shares_shows_running_and_stopped(mgr_with_conn, tmp_path):
     assert any(s.port == 55555 for s in stopped)
 
     mgr_with_conn.stop_share(info.port)
+
+
+def test_stopped_share_not_auto_restarted(mgr_with_conn, tmp_path):
+    """A manually stopped share (stopped=True) must not be restarted by start()."""
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    info = mgr_with_conn.share(test_file, "work")
+    mgr_with_conn.stop_share(info.port)
+
+    # Simulate what start() does: auto-start config-only shares
+    # It should skip this share because stopped=True
+    mgr_with_conn.start("work")
+
+    shares = mgr_with_conn.list_shares()
+    assert any(s.port == info.port and not s.running for s in shares), (
+        "Manually stopped share must remain stopped after start()"
+    )
+    mgr_with_conn.delete_share(info.port)
 
 
 def test_restore_shares_disabled(tmp_path):

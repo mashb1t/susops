@@ -82,6 +82,7 @@ class FileShare(BaseModel):
     file_path: str
     password: str
     port: int = 0  # 0 = auto-assigned; written back after first start
+    stopped: bool = False  # True when manually stopped — not auto-restarted
 
 
 class Connection(BaseModel):
