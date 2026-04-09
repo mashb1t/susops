@@ -8,7 +8,6 @@ Architecture:
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -37,11 +36,6 @@ FWD_PROCESS_PREFIX = "susops-fwd"
 _SOCKET_DIR = "sockets"
 
 
-def _ssh_binary() -> str:
-    """Return 'autossh' if available, else 'ssh'."""
-    return "autossh" if shutil.which("autossh") else "ssh"
-
-
 def _master_name(tag: str) -> str:
     return f"{SSH_PROCESS_PREFIX}-{tag}"
 
@@ -58,16 +52,12 @@ def socket_path(tag: str, workspace: Path) -> Path:
 def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
     """Build the ControlMaster SSH command.
 
-    Uses autossh if available. Establishes SOCKS proxy and ControlMaster socket.
-    No -L/-R forwards — those are handled by separate slave processes.
-    The SOCKS port must already be assigned (non-zero) in conn.socks_proxy_port.
+    Always uses plain ssh. ControlPersist keeps the master alive, and
+    ServerAliveInterval handles dead connections. Reconnection on failure
+    is handled by the facade's polling loop. autossh is incompatible with
+    ControlPersist (it monitors a child that immediately forks and exits).
     """
-    binary = _ssh_binary()
-
-    if binary == "autossh":
-        cmd: list[str] = ["autossh", "-M", "0"]
-    else:
-        cmd = ["ssh"]
+    cmd: list[str] = ["ssh"]
 
     cmd += [
         "-N", "-T",
@@ -112,12 +102,7 @@ def build_ssh_cmd(conn: Connection) -> list[str]:
 
     Kept for backwards compatibility. New code should use build_master_cmd.
     """
-    binary = _ssh_binary()
-
-    if binary == "autossh":
-        cmd: list[str] = ["autossh", "-M", "0"]
-    else:
-        cmd = ["ssh"]
+    cmd: list[str] = ["ssh"]
 
     cmd += [
         "-N", "-T",
