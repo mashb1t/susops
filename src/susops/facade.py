@@ -633,6 +633,26 @@ class SusOpsManager:
             connection_statuses=tuple(statuses),
         )
 
+    def _start_master_only(self, conn_tag: str) -> None:
+        """Start only the SSH ControlMaster for conn_tag — no forwards, PAC, or shares.
+
+        Used by fetch() to establish connectivity without touching any other
+        configured services.  Returns immediately once the socket appears.
+        """
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection '{conn_tag}' not found")
+        if is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace):
+            return  # already up
+        conn = self._ensure_socks_port(conn)
+        pid = start_master(conn, self._process_mgr, self.workspace)
+        self._log(f"[{conn_tag}] Master started for fetch (PID {pid})")
+        sock = socket_path(conn_tag, self.workspace)
+        for _ in range(50):
+            if sock.exists():
+                break
+            time.sleep(0.1)
+
     def stop(self, keep_ports: bool = False, tag: str | None = None) -> StopResult:
         self._reload_config()
         errors = []
@@ -1068,19 +1088,13 @@ class SusOpsManager:
 
         conn = get_connection(self.config, conn_tag)
         forward_started = False
-        tunnel_started_here = False
 
-        # Auto-start tunnel if not running; remember so we can tear it down after
-        if conn and not is_tunnel_running(conn_tag, self._process_mgr):
-            self.start(conn_tag)
-            tunnel_started_here = True
+        # If the tunnel is not already running, start only the ControlMaster —
+        # no forwards, PAC, or file shares — and tear it down after the fetch.
+        tunnel_was_running = is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)
+        if not tunnel_was_running:
+            self._start_master_only(conn_tag)
             conn = get_connection(self.config, conn_tag)
-            # Wait up to 5s for the ControlMaster socket to appear
-            sock = socket_path(conn_tag, self.workspace)
-            for _ in range(50):
-                if sock.exists():
-                    break
-                time.sleep(0.1)
 
         # Use a transient forward slave if ControlMaster socket is alive
         sock = socket_path(conn_tag, self.workspace) if conn else None
@@ -1101,8 +1115,9 @@ class SusOpsManager:
         finally:
             if forward_started:
                 stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
-            if tunnel_started_here:
-                self.stop(tag=conn_tag)
+            if not tunnel_was_running:
+                stop_tunnel(conn_tag, self._process_mgr, self.workspace, conn.ssh_host if conn else None)
+                self._emit("state", {"tag": conn_tag, "running": False, "pid": None})
 
         self._log(f"Fetched file to {result}")
         return result
