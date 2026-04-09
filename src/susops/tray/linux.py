@@ -222,6 +222,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def _build_menu(self) -> None:
         Gtk = self._Gtk
+        self._active_shares: list = []
 
         # ── Status row ────────────────────────────────────────────────────
         self._item_status = Gtk.MenuItem(label="SusOps: checking…")
@@ -310,6 +311,21 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._browser_item = Gtk.MenuItem(label="Launch Browser")
         self._menu.append(self._browser_item)
         self._rebuild_browser_submenu()
+        self._menu.append(Gtk.SeparatorMenuItem())
+
+        # ── File Transfer submenu ─────────────────────────────────────────
+        ft_item = Gtk.MenuItem(label="File Transfer")
+        self._ft_sub = Gtk.Menu()
+        si = Gtk.MenuItem(label="Share File…")
+        si.connect("activate", lambda _: self._on_share_file())
+        self._ft_sub.append(si)
+        si2 = Gtk.MenuItem(label="Fetch File…")
+        si2.connect("activate", lambda _: self._on_fetch_file())
+        self._ft_sub.append(si2)
+        self._ft_sep = Gtk.SeparatorMenuItem()
+        self._ft_sub.append(self._ft_sep)
+        ft_item.set_submenu(self._ft_sub)
+        self._menu.append(ft_item)
         self._menu.append(Gtk.SeparatorMenuItem())
 
         # ── Reset All ─────────────────────────────────────────────────────
@@ -449,6 +465,35 @@ class SusOpsLinuxTray(AbstractTrayApp):
         }.get(state, "⚫")
         self._item_status.set_label(f"{dot} SusOps: {state.value}")
 
+    def _refresh_share_submenu(self) -> bool:
+        """Rebuild the dynamic share items in the File Transfer submenu."""
+        Gtk = self._Gtk
+        # Remove old dynamic items (everything after the separator)
+        sep_reached = False
+        for child in list(self._ft_sub.get_children()):
+            if sep_reached:
+                self._ft_sub.remove(child)
+            if child is self._ft_sep:
+                sep_reached = True
+
+        self._active_shares = self.manager.list_shares()
+        self._ft_sep.set_visible(bool(self._active_shares))
+
+        for info in self._active_shares:
+            name = __import__("pathlib").Path(info.file_path).name
+            dot = "●" if info.running else "○"
+            label = f"{dot} {name} (:{info.port})"
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", self._make_share_info_handler(info))
+            self._ft_sub.append(item)
+
+        self._ft_sub.show_all()
+        return False
+
+    def do_poll(self) -> None:
+        super().do_poll()
+        self._GLib.idle_add(self._refresh_share_submenu)
+
     # ------------------------------------------------------------------ #
     # Dialog handlers
     # ------------------------------------------------------------------ #
@@ -500,6 +545,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(sw_eph, 1, row, 1, 1)
         row += 1
 
+        # Restore File Shares On Start
+        lbl = Gtk.Label(label="Restore Shares On Start:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        sw_restore = Gtk.Switch(halign=Gtk.Align.START)
+        sw_restore.set_active(ac.restore_shares_on_start)
+        grid.attach(sw_restore, 1, row, 1, 1)
+        row += 1
+
         # Logo Style
         lbl = Gtk.Label(label="Logo Style:", xalign=1.0)
         lbl.set_width_chars(24)
@@ -548,6 +602,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             self.manager.update_app_config(
                 stop_on_quit=sw_stop.get_active(),
                 ephemeral_ports=sw_eph.get_active(),
+                restore_shares_on_start=sw_restore.get_active(),
                 logo_style=new_logo,
             )
             self.manager._reload_config()
@@ -922,6 +977,170 @@ class SusOpsLinuxTray(AbstractTrayApp):
         dlg.destroy()
         return selected
 
+    def _on_share_file(self) -> None:
+        self._GLib.idle_add(self._show_share_file_dialog)
+
+    def _show_share_file_dialog(self) -> bool:
+        Gtk = self._Gtk
+        tags = [c.tag for c in self.manager.list_config().connections]
+        if not tags:
+            _alert(Gtk, self._root, "No Connections", "Add a connection first.")
+            return False
+
+        dlg = Gtk.Dialog(title="Share File", transient_for=self._root, modal=True)
+        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Share", Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        dlg.set_default_size(440, -1)
+
+        conn_combo = Gtk.ComboBoxText()
+        for t in tags:
+            conn_combo.append_text(t)
+        conn_combo.set_active(0)
+
+        fc = Gtk.FileChooserButton(title="Select file", action=Gtk.FileChooserAction.OPEN)
+        pw_entry = Gtk.Entry(placeholder_text="auto-generate if blank", activates_default=True)
+        port_entry = Gtk.Entry(placeholder_text="0 (auto)", activates_default=True)
+        port_entry.set_text("0")
+
+        grid, _ = _labeled_grid(Gtk, [
+            ("conn", "Connection *:", conn_combo),
+            ("file", "File *:", fc),
+            ("pw", "Password:", pw_entry),
+            ("port", "Port (0=auto):", port_entry),
+        ])
+        dlg.get_content_area().add(grid)
+        _polish_dialog(Gtk, dlg)
+        dlg.show_all()
+
+        while True:
+            resp = dlg.run()
+            if resp != Gtk.ResponseType.OK:
+                break
+            conn_tag = conn_combo.get_active_text() or ""
+            file_path = fc.get_filename() or ""
+            pw = pw_entry.get_text().strip() or None
+            port_text = port_entry.get_text().strip() or "0"
+            if not conn_tag:
+                _alert(Gtk, dlg, "Missing Field", "Select a connection.", Gtk.MessageType.ERROR)
+                continue
+            if not file_path:
+                _alert(Gtk, dlg, "Missing Field", "Select a file to share.", Gtk.MessageType.ERROR)
+                continue
+            try:
+                port_int = int(port_text)
+            except ValueError:
+                _alert(Gtk, dlg, "Invalid Port", "Port must be a number.", Gtk.MessageType.ERROR)
+                continue
+            dlg.destroy()
+            self.do_share(conn_tag, file_path, password=pw, port=port_int)
+            return False
+
+        dlg.destroy()
+        return False
+
+    def _on_fetch_file(self) -> None:
+        self._GLib.idle_add(self._show_fetch_file_dialog)
+
+    def _show_fetch_file_dialog(self) -> bool:
+        Gtk = self._Gtk
+        tags = [c.tag for c in self.manager.list_config().connections]
+        if not tags:
+            _alert(Gtk, self._root, "No Connections", "Add a connection first.")
+            return False
+
+        dlg = Gtk.Dialog(title="Fetch File", transient_for=self._root, modal=True)
+        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Fetch", Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        dlg.set_default_size(440, -1)
+
+        conn_combo = Gtk.ComboBoxText()
+        for t in tags:
+            conn_combo.append_text(t)
+        conn_combo.set_active(0)
+
+        port_entry = Gtk.Entry(placeholder_text="e.g. 52100", activates_default=True)
+        pw_entry = Gtk.Entry(placeholder_text="", activates_default=True)
+        outfile_entry = Gtk.Entry(placeholder_text="blank = ~/Downloads/<filename>", activates_default=True)
+
+        grid, _ = _labeled_grid(Gtk, [
+            ("conn", "Connection *:", conn_combo),
+            ("port", "Port *:", port_entry),
+            ("pw", "Password *:", pw_entry),
+            ("out", "Save to (optional):", outfile_entry),
+        ])
+        dlg.get_content_area().add(grid)
+        _polish_dialog(Gtk, dlg)
+        dlg.show_all()
+
+        while True:
+            resp = dlg.run()
+            if resp != Gtk.ResponseType.OK:
+                break
+            conn_tag = conn_combo.get_active_text() or ""
+            port_text = port_entry.get_text().strip()
+            pw = pw_entry.get_text().strip()
+            outfile = outfile_entry.get_text().strip() or None
+            if not conn_tag:
+                _alert(Gtk, dlg, "Missing Field", "Select a connection.", Gtk.MessageType.ERROR)
+                continue
+            if not port_text or not pw:
+                _alert(Gtk, dlg, "Missing Field", "Port and password are required.", Gtk.MessageType.ERROR)
+                continue
+            try:
+                port_int = int(port_text)
+            except ValueError:
+                _alert(Gtk, dlg, "Invalid Port", "Port must be a number.", Gtk.MessageType.ERROR)
+                continue
+            dlg.destroy()
+            self.do_fetch(conn_tag, port_int, pw, outfile=outfile)
+            return False
+
+        dlg.destroy()
+        return False
+
+    def _make_share_info_handler(self, info):
+        def handler(_item):
+            self._GLib.idle_add(lambda: self._show_share_info_dialog(info))
+        return handler
+
+    def _show_share_info_dialog(self, info) -> bool:
+        import pathlib
+        Gtk = self._Gtk
+        name = pathlib.Path(info.file_path).name
+        state = "running" if info.running else "stopped"
+        dlg = Gtk.Dialog(title=f"Share: {name}", transient_for=self._root, modal=True)
+        dlg.add_buttons("_Stop Share", Gtk.ResponseType.REJECT, "_Close", Gtk.ResponseType.CLOSE)
+        dlg.set_default_response(Gtk.ResponseType.CLOSE)
+        dlg.set_default_size(380, -1)
+
+        box = dlg.get_content_area()
+        box.set_spacing(4)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(12)
+        box.set_margin_bottom(8)
+
+        for lbl, val in [
+            ("File", info.file_path),
+            ("Port", str(info.port)),
+            ("Password", info.password),
+            ("Connection", info.conn_tag or "—"),
+            ("State", state),
+        ]:
+            row_box = Gtk.Box(spacing=8)
+            row_box.pack_start(Gtk.Label(label=f"{lbl}:", xalign=1.0, width_chars=12), False, False, 0)
+            row_box.pack_start(Gtk.Label(label=val, xalign=0.0, selectable=True), True, True, 0)
+            box.add(row_box)
+
+        _polish_dialog(Gtk, dlg)
+        dlg.show_all()
+        resp = dlg.run()
+        dlg.destroy()
+        if resp == Gtk.ResponseType.REJECT:
+            self.do_stop_share(info.port)
+            self._GLib.idle_add(self._refresh_share_submenu)
+        return False
+
     def _on_reset(self) -> None:
         def _ask():
             Gtk = self._Gtk
@@ -989,10 +1208,47 @@ class SusOpsLinuxTray(AbstractTrayApp):
     # Run
     # ------------------------------------------------------------------ #
 
+    def _start_sse_listener(self) -> None:
+        """Background thread: connect to SSE /events and update UI on events."""
+        import threading, time
+
+        def _listen():
+            backoff = 1.0
+            while True:
+                status_url = self.manager.get_status_url()
+                if not status_url:
+                    time.sleep(2.0)
+                    continue
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(status_url)
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        backoff = 1.0
+                        buf = ""
+                        for raw in resp:
+                            line = raw.decode("utf-8", errors="replace")
+                            buf += line
+                            if buf.endswith("\n\n"):
+                                if "event: state" in buf:
+                                    self._GLib.idle_add(self._on_sse_state)
+                                if "event: share" in buf:
+                                    self._GLib.idle_add(self._refresh_share_submenu)
+                                buf = ""
+                except Exception:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+
+        threading.Thread(target=_listen, daemon=True, name="susops-sse-linux").start()
+
+    def _on_sse_state(self) -> bool:
+        self.do_poll()
+        return False
+
     def run(self) -> None:
         """Start the GTK main loop."""
         self.do_poll()
         self.schedule_poll(5)
+        self._start_sse_listener()
         self._Gtk.main()
 
 
