@@ -73,49 +73,47 @@ src/susops/
 
 ### Component Relations
 
-```
- ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐
- │  Textual TUI │  │  argparse    │  │  GTK3 / rumps Tray App       │
- │  (dashboard, │  │  CLI         │  │  (AbstractTrayApp + platform  │
- │  share, etc.)│  │              │  │   subclass)                  │
- └──────┬───────┘  └──────┬───────┘  └──────────────┬───────────────┘
-        │                 │                         │
-        └────────────────►▼◄────────────────────────┘
-                   ┌──────────────┐
-                   │ SusOpsManager│  facade.py — single public API
-                   │   (facade)   │  owns: config I/O, PID mgmt,
-                   └──────┬───────┘  bandwidth sampling, server lifecycle
-                          │
-          ┌───────────────┼───────────────────┐
-          │               │                   │
-   ┌──────▼──────┐ ┌──────▼──────┐   ┌───────▼───────┐
-   │  ssh.py     │ │  pac.py     │   │  share.py     │
-   │ ControlMaster│ │ PAC server  │   │ ShareServer(s)│
-   │ + slaves    │ │ (aiohttp)   │   │ (aiohttp)     │
-   └──────┬──────┘ └─────────────┘   └───────────────┘
-          │                                    │
-   ┌──────▼──────────────────────────────────┐ │
-   │           Shared async event loop        │◄┘
-   │  (daemon thread; pac + share + status   │
-   │   all schedule coroutines here)         │
-   └──────────────────┬───────────────────────┘
-                      │
-               ┌──────▼──────┐
-               │ status.py   │  SSE /events endpoint
-               │ StatusServer│  broadcasts: state / share / forward
-               └──────┬──────┘
-                      │  Server-Sent Events (HTTP)
-          ┌───────────┴────────────┐
-   ┌──────▼──────┐        ┌────────▼────────┐
-   │  dashboard  │        │  share screen   │
-   │  SSE thread │        │  set_interval   │
-   │  (2s conn.) │        │  (2s poll)      │
-   └─────────────┘        └─────────────────┘
+```mermaid
+flowchart TD
+    TUI["Textual TUI\n(dashboard, share, etc.)"]
+    CLI["argparse CLI"]
+    Tray["GTK3 / rumps Tray App\n(AbstractTrayApp + platform subclass)"]
 
- OS Processes managed via ~/.susops/pids/:
-   susops-ssh-<tag>       ← SSH ControlMaster  (-M -N -D socks_port)
-   susops-fwd-<tag>-<fw>  ← SSH forward slave  (-O forward -L/-R)
-   susops-pac             ← PAC HTTP server
+    Facade["SusOpsManager — facade.py\nconfig I/O · PID mgmt · bandwidth sampling\nserver lifecycle"]
+
+    SSH["ssh.py\nControlMaster + forward slaves"]
+    PAC["pac.py\nPAC server (aiohttp)"]
+    Share["share.py\nShareServer(s) (aiohttp)"]
+
+    Loop["Shared async event loop\ndaemon thread — pac · share · status\nall schedule coroutines here"]
+
+    Status["status.py — StatusServer\nSSE /events endpoint\nbroadcasts: state · share · forward"]
+
+    Dashboard["dashboard screen\nSSE listener thread\n(reconnects on 2 s timeout)"]
+    ShareScreen["share screen\nset_interval 2 s poll"]
+
+    Master["susops-ssh-&lt;tag&gt;\nSSH ControlMaster\n(-M -N -D socks_port)"]
+    Slave["susops-fwd-&lt;tag&gt;-&lt;fw&gt;\nSSH forward slave\n(-O forward -L/-R)"]
+    PacProc["susops-pac\nPAC HTTP server"]
+
+    TUI --> Facade
+    CLI --> Facade
+    Tray --> Facade
+
+    Facade --> SSH
+    Facade --> PAC
+    Facade --> Share
+
+    PAC --> Loop
+    Share --> Loop
+    Loop --> Status
+
+    Status -->|Server-Sent Events| Dashboard
+    Status -->|Server-Sent Events| ShareScreen
+
+    SSH -->|spawns| Master
+    Master -->|multiplexes| Slave
+    PAC -->|spawns| PacProc
 ```
 
 ## Key Design Patterns
