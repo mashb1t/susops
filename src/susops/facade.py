@@ -182,6 +182,10 @@ class SusOpsManager:
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
 
+        # Auto-restart PAC server when tunnels are running but this is a
+        # fresh process (e.g. TUI restarted without stop_on_quit).
+        self._restore_pac()
+
         if self.config.susops_app.restore_shares_on_start:
             self._restore_shares()
 
@@ -292,6 +296,34 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
     # Share persistence helpers
     # ------------------------------------------------------------------ #
+
+    def _restore_pac(self) -> None:
+        """Restart the PAC server if SSH tunnels are running but PAC is dead.
+
+        Called on __init__ so the PAC server is recovered after a TUI restart
+        without stop_on_quit (the daemon thread died with the previous process).
+        """
+        any_tunnel = any(
+            is_tunnel_running(conn.tag, self._process_mgr)
+            for conn in self.config.connections
+        )
+        if not any_tunnel:
+            return
+        port = self.config.pac_server_port
+        if not port:
+            # Port unknown — let start() allocate one when user next calls start
+            return
+        if self._probe_port(port):
+            # A cross-process PAC server is still serving (e.g. tray app)
+            self._log(f"PAC server already running (cross-process) on port {port}")
+            return
+        try:
+            pac_path = write_pac_file(self.config, self.workspace)
+            self._pac_server.start(port, pac_path)
+            self._write_pac_port_file(port)
+            self._log(f"PAC server restored on port {port}")
+        except Exception as exc:
+            self._log(f"PAC restore failed: {exc}")
 
     def _restore_shares(self) -> None:
         """Restart share servers for persisted FileShare entries whose connection is running."""

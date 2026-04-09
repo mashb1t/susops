@@ -1,6 +1,8 @@
 """SusOps Textual TUI application."""
 from __future__ import annotations
 
+import threading
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
@@ -76,13 +78,11 @@ class SusOpsTuiApp(App):
 
     def action_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            self.run_worker(self._do_quit, thread=True)
-        else:
-            self.exit()
-
-    def _do_quit(self) -> None:
-        self.manager.stop()
-        self.call_from_thread(self.exit)
+            # Run stop in a daemon thread so Python won't wait for it if the
+            # user presses ctrl+c before it finishes. SIGTERM is sent to all
+            # processes immediately; the wait loops are best-effort.
+            threading.Thread(target=self.manager.stop, daemon=True).start()
+        self.exit()
 
     def action_start_all(self) -> None:
         self._bg_start()
