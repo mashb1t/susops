@@ -88,6 +88,7 @@ class DashboardScreen(Screen):
         self._rx_history: dict = {}
         self._tx_history: dict = {}
         self._idle_ticks: int = 0  # ticks since last active connection
+        self._sse_active: bool = True
 
     def compose(self) -> ComposeResult:
         #yield Header()
@@ -129,6 +130,7 @@ class DashboardScreen(Screen):
         self.refresh_status()
 
     def on_unmount(self) -> None:
+        self._sse_active = False
         mgr = self.app.manager  # type: ignore[attr-defined]
         mgr.on_log = self._prev_on_log
 
@@ -384,22 +386,32 @@ class DashboardScreen(Screen):
 
     @work(thread=True)
     def _start_sse_listener(self) -> None:
-        """Connect to SSE /events and trigger fast refresh on state/share/forward events."""
+        """Connect to SSE /events and trigger fast refresh on state/share/forward events.
+
+        Uses short connection timeouts (2 s) so the thread wakes up regularly
+        and can exit cleanly when _sse_active is cleared on unmount.
+        """
         import time
+        import urllib.request
         mgr = self.app.manager  # type: ignore[attr-defined]
         backoff = 1.0
-        while True:
+        while self._sse_active:
             status_url = mgr.get_status_url()
             if not status_url:
-                time.sleep(2.0)
+                for _ in range(20):
+                    if not self._sse_active:
+                        return
+                    time.sleep(0.1)
                 continue
             try:
-                import urllib.request
                 req = urllib.request.Request(status_url)
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                # Short timeout so the thread wakes up and can exit promptly
+                with urllib.request.urlopen(req, timeout=2) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:
+                        if not self._sse_active:
+                            return
                         line = raw.decode("utf-8", errors="replace")
                         buf += line
                         if buf.endswith("\n\n"):
@@ -407,7 +419,10 @@ class DashboardScreen(Screen):
                                 self.app.call_from_thread(self.refresh_status)
                             buf = ""
             except Exception:
-                time.sleep(backoff)
+                for _ in range(max(1, int(backoff * 10))):
+                    if not self._sse_active:
+                        return
+                    time.sleep(0.1)
                 backoff = min(backoff * 2, 30.0)
 
     @work(thread=True)

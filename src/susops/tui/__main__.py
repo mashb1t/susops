@@ -5,7 +5,6 @@ Otherwise: dispatch the CLI command and exit with the appropriate code.
 """
 from __future__ import annotations
 
-import os
 import sys
 
 
@@ -31,10 +30,6 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        # Bypass asyncio/ThreadPoolExecutor cleanup which blocks on non-daemon
-        # Textual worker threads. SIGTERM has already been dispatched to all
-        # managed processes; there is nothing meaningful left to clean up.
-        os._exit(0)
     elif args.command is None:
         # Non-TTY with no subcommand: print status
         args.command = "ps"
