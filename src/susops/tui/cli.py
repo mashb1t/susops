@@ -198,8 +198,15 @@ def cmd_share(args, m) -> int:
 
 def cmd_fetch(args, m) -> int:
     try:
+        conn_tag = args.connection
+        if not conn_tag:
+            conns = m.list_config().connections
+            if not conns:
+                print("Error: no connections configured", file=sys.stderr)
+                return 1
+            conn_tag = conns[0].tag
         outfile = Path(args.outfile) if args.outfile else None
-        result = m.fetch(port=args.port, password=args.password, outfile=outfile)
+        result = m.fetch(port=args.port, password=args.password, conn_tag=conn_tag, outfile=outfile)
         print(f"Downloaded to: {result}")
         return 0
     except Exception as e:
