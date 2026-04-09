@@ -53,10 +53,13 @@ def socket_path(tag: str, workspace: Path) -> Path:
 def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
     """Build the ControlMaster SSH command.
 
-    Always uses plain ssh. ControlPersist keeps the master alive, and
-    ServerAliveInterval handles dead connections. Reconnection on failure
-    is handled by the facade's polling loop. autossh is incompatible with
-    ControlPersist (it monitors a child that immediately forks and exits).
+    Always uses plain ssh. ControlPersist is intentionally omitted: with
+    -N the SOCKS proxy holds the TCP connection alive so the master stays
+    in the foreground with a stable, trackable PID. ControlPersist=yes
+    causes the master to immediately fork into background (different PID),
+    making PID tracking unreliable. ServerAliveInterval handles dead
+    connections; reconnection on failure is handled by the facade's
+    polling loop.
     """
     cmd: list[str] = ["ssh"]
 
@@ -65,7 +68,6 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-D", str(conn.socks_proxy_port),
         "-o", "ControlMaster=yes",
         "-o", f"ControlPath={sock}",
-        "-o", "ControlPersist=yes",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
     ]
