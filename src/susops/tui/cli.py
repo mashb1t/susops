@@ -55,7 +55,7 @@ def cmd_start(args, m) -> int:
 
 
 def cmd_stop(args, m) -> int:
-    result = m.stop(keep_ports=args.keep_ports, force=args.force)
+    result = m.stop(keep_ports=args.keep_ports)
     print(result.message)
     return 0 if result.success else 1
 
@@ -117,28 +117,37 @@ def cmd_rm_connection(args, m) -> int:
 
 def cmd_add(args, m) -> int:
     try:
-        if args.local:
+        if args.local or args.remote:
+            # argparse fills positionals left-to-right, so 'host' grabs the
+            # first integer; shift everything back when adding forwards.
             from susops.core.config import PortForward
-            fw = PortForward(
-                src_port=args.local_port,
-                dst_port=args.remote_port,
-                src_addr=args.local_addr,
-                dst_addr=args.remote_addr,
-                tag=args.forward_tag or "",
-            )
-            m.add_local_forward(args.connection or m.config.connections[0].tag, fw)
-            print(f"Added local forward :{args.local_port} → :{args.remote_port}")
-        elif args.remote:
-            from susops.core.config import PortForward
-            fw = PortForward(
-                src_port=args.remote_port,
-                dst_port=args.local_port,
-                src_addr=args.remote_addr,
-                dst_addr=args.local_addr,
-                tag=args.forward_tag or "",
-            )
-            m.add_remote_forward(args.connection or m.config.connections[0].tag, fw)
-            print(f"Added remote forward :{args.remote_port} → :{args.local_port}")
+            try:
+                local_port = int(args.host) if args.local_port is None else args.local_port
+                remote_port = args.local_port if args.remote_port is None and args.local_port != local_port else args.remote_port
+            except (TypeError, ValueError):
+                local_port = args.local_port
+                remote_port = args.remote_port
+            conn_tag = args.connection or m.config.connections[0].tag
+            if args.local:
+                fw = PortForward(
+                    src_port=local_port,
+                    dst_port=remote_port if remote_port is not None else local_port,
+                    src_addr=args.local_addr or "localhost",
+                    dst_addr=args.remote_addr or "localhost",
+                    tag=args.forward_tag or "",
+                )
+                m.add_local_forward(conn_tag, fw)
+                print(f"Added local forward :{fw.src_port} → :{fw.dst_port}")
+            else:
+                fw = PortForward(
+                    src_port=remote_port if remote_port is not None else local_port,
+                    dst_port=local_port,
+                    src_addr=args.remote_addr or "localhost",
+                    dst_addr=args.local_addr or "localhost",
+                    tag=args.forward_tag or "",
+                )
+                m.add_remote_forward(conn_tag, fw)
+                print(f"Added remote forward :{fw.src_port} → :{fw.dst_port}")
         else:
             m.add_pac_host(args.host, conn_tag=args.connection)
             print(f"Added PAC host '{args.host}'")
@@ -150,12 +159,18 @@ def cmd_add(args, m) -> int:
 
 def cmd_rm(args, m) -> int:
     try:
-        if args.local:
-            m.remove_local_forward(args.port)
-            print(f"Removed local forward on port {args.port}")
-        elif args.remote:
-            m.remove_remote_forward(args.port)
-            print(f"Removed remote forward on port {args.port}")
+        if args.local or args.remote:
+            # 'host' positional grabs the port value; shift back
+            try:
+                port = int(args.host) if args.port is None else args.port
+            except (TypeError, ValueError):
+                port = args.port
+            if args.local:
+                m.remove_local_forward(port)
+                print(f"Removed local forward on port {port}")
+            else:
+                m.remove_remote_forward(port)
+                print(f"Removed remote forward on port {port}")
         else:
             m.remove_pac_host(args.host)
             print(f"Removed PAC host '{args.host}'")
@@ -184,7 +199,14 @@ def cmd_test(args, m) -> int:
 
 def cmd_share(args, m) -> int:
     try:
-        info = m.share(Path(args.file), password=args.password or None, port=args.port or None)
+        conn_tag = args.connection
+        if not conn_tag:
+            conns = m.list_config().connections
+            if not conns:
+                print("Error: no connections configured", file=sys.stderr)
+                return 1
+            conn_tag = conns[0].tag
+        info = m.share(Path(args.file), conn_tag=conn_tag, password=args.password or None, port=args.port or None)
         print(f"Sharing: {info.file_path}")
         print(f"URL:      {info.url}")
         print(f"Password: {info.password}")
@@ -192,7 +214,7 @@ def cmd_share(args, m) -> int:
         print("\nFetch with:")
         print(f"  susops fetch {info.port} {info.password}")
         return 0
-    except (FileNotFoundError, RuntimeError) as e:
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
@@ -307,7 +329,6 @@ def build_parser() -> argparse.ArgumentParser:
     # stop
     p = sub.add_parser("stop", help="Stop SSH tunnel(s) and PAC server")
     p.add_argument("--keep-ports", action="store_true", help="Preserve port assignments")
-    p.add_argument("--force", action="store_true", help="Force kill (SIGKILL)")
     p.set_defaults(func=cmd_stop)
 
     # restart
