@@ -27,6 +27,7 @@ from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
     is_tunnel_running,
+    socket_path,
     start_forward,
     start_master,
     start_tunnel,
@@ -928,37 +929,39 @@ class SusOpsManager:
             tag=f"fetch-{port}",
         )
 
-        # Start the fetch forward slave if tunnel is running
         conn = get_connection(self.config, conn_tag)
         forward_started = False
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+
+        # Auto-start tunnel if not running
+        if conn and not is_tunnel_running(conn_tag, self._process_mgr):
+            self.start(conn_tag)
+            conn = get_connection(self.config, conn_tag)
+            # Wait up to 5s for the ControlMaster socket to appear
+            sock = socket_path(conn_tag, self.workspace)
+            for _ in range(50):
+                if sock.exists():
+                    break
+                time.sleep(0.1)
+
+        # Use a transient forward slave if ControlMaster socket is alive
+        sock = socket_path(conn_tag, self.workspace) if conn else None
+        if conn and sock is not None and sock.exists():
             try:
                 start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                # Poll until local port is accessible (up to 5 s)
+                for _ in range(50):
+                    if self._probe_port(port):
+                        break
+                    time.sleep(0.1)
                 forward_started = True
-                time.sleep(0.3)  # brief settle time for the forward to activate
             except Exception as exc:
                 self._log(f"[{conn_tag}] Fetch forward {port} failed: {exc}")
-        else:
-            # Tunnel not running — fall back to config-based forward + restart approach
-            try:
-                self._add_forward(conn_tag, fw, "local")
-            except ValueError:
-                pass  # forward already exists in config
-            conn = get_connection(self.config, conn_tag)
-            if conn and is_tunnel_running(conn_tag, self._process_mgr):
-                self.restart(conn_tag)
 
         try:
             result = fetch_file(host="localhost", port=port, password=password, outfile=outfile)
         finally:
             if forward_started:
                 stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
-            else:
-                # Clean up the config-based forward we may have added
-                try:
-                    self._remove_forward(port, "local")
-                except ValueError:
-                    pass
 
         self._log(f"Fetched file to {result}")
         return result

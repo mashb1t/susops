@@ -52,12 +52,20 @@ class ConfigEditorScreen(Screen):
     def action_open_editor(self) -> None:
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
         config_path = workspace / "config.yaml"
-        try:
-            subprocess.run(["open", str(config_path)], check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            self.app.call_from_thread(
-                self.app.notify, f"Editor failed: {e}", severity="error"
-            )
-            return
-        self.app.call_from_thread(self._load_yaml)
-        self.app.call_from_thread(self.app.notify, "Config saved")
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+        import shutil
+        for candidate in (editor, "nano", "vim", "vi"):
+            if shutil.which(candidate):
+                try:
+                    subprocess.run([candidate, str(config_path)])
+                except Exception as e:
+                    self.app.call_from_thread(
+                        self.app.notify, f"Editor failed: {e}", severity="error"
+                    )
+                    return
+                self.app.call_from_thread(self._load_yaml)
+                self.app.call_from_thread(self.app.notify, "Config reloaded")
+                return
+        self.app.call_from_thread(
+            self.app.notify, "No editor found (set $EDITOR)", severity="error"
+        )
