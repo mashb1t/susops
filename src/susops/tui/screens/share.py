@@ -123,11 +123,11 @@ class ShareScreen(Screen):
         Binding("a", "add_share", "Add share"),
         Binding("f", "fetch_file", "Fetch"),
         Binding("d", "stop_share", "Stop share"),
+        Binding("s", "start_share", "Start share"),
         Binding("r", "refresh", "Refresh"),
     ]
 
     def compose(self) -> ComposeResult:
-        #yield Header()
         with Horizontal(id="share-split"):
             with Vertical(id="share-list-panel"):
                 yield ListView(id="share-list")
@@ -137,9 +137,10 @@ class ShareScreen(Screen):
 
     def on_mount(self) -> None:
         lv = self.query_one("#share-list", ListView)
-        lv.border_title = "Active Shares"
+        lv.border_title = "Shares"
         self._shares: list = []
         self._reload()
+        self._start_sse_listener()
 
     def _reload(self) -> None:
         self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
@@ -147,16 +148,27 @@ class ShareScreen(Screen):
         lv.clear()
         for info in self._shares:
             name = Path(info.file_path).name
-            lv.append(ListItem(Label(f"[green]●[/green] {name}  :{info.port}")))
+            dot = "[green]●[/green]" if info.running else "[dim]○[/dim]"
+            lv.append(ListItem(Label(f"{dot} {name}  :{info.port}")))
+
+        running = sum(1 for i in self._shares if i.running)
+        stopped = len(self._shares) - running
         count = len(self._shares)
-        self.query_one("#share-status", Label).update(
-            f"{count} active share(s)" if count else "No active shares"
-        )
+        if count == 0:
+            status = "No shares"
+        elif stopped == 0:
+            status = f"{count} share(s) running"
+        elif running == 0:
+            status = f"{count} share(s) stopped"
+        else:
+            status = f"{count} shares  ({running} running, {stopped} stopped)"
+
+        self.query_one("#share-status", Label).update(status)
         if self._shares:
             self._show_detail(self._shares[0])
         else:
             self.query_one("#share-detail", Static).update(
-                "[dim]No active shares.\n\nPress [bold]a[/bold] to share a file.[/dim]"
+                "[dim]No shares.\n\nPress [bold]a[/bold] to share a file.[/dim]"
             )
 
     def _conn_hosts(self) -> dict[str, str]:
@@ -168,16 +180,23 @@ class ShareScreen(Screen):
 
     def _show_detail(self, info) -> None:
         name = Path(info.file_path).name
+        state_str = "[green]running[/green]" if info.running else "[dim]stopped[/dim]"
         text = (
             f"[bold]File:[/bold]       {info.file_path}\n"
             f"[bold]Name:[/bold]       {name}\n"
             f"[bold]Port:[/bold]       {info.port}\n"
             f"[bold]URL:[/bold]        {info.url}\n"
             f"[bold]Password:[/bold]   {info.password}\n"
-            f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n\n"
-            f"[bold]Fetch command:[/bold]\n"
-            f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
+            f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n"
+            f"[bold]State:[/bold]      {state_str}\n"
         )
+        if info.running:
+            text += (
+                f"\n[bold]Fetch command:[/bold]\n"
+                f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
+            )
+        else:
+            text += "\n[dim]Press [bold]s[/bold] to restart this share.[/dim]"
         self.query_one("#share-detail", Static).update(text)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
@@ -207,8 +226,46 @@ class ShareScreen(Screen):
         self.app.manager.stop_share(port)  # type: ignore[attr-defined]
         self._reload()
 
+    def action_start_share(self) -> None:
+        """Restart a stopped share."""
+        idx = self.query_one("#share-list", ListView).index
+        if idx is None or idx >= len(self._shares):
+            return
+        info = self._shares[idx]
+        if info.running:
+            return
+        self._do_share(info.file_path, info.conn_tag, info.password, info.port)
+
     def action_refresh(self) -> None:
         self._reload()
+
+    @work(thread=True)
+    def _start_sse_listener(self) -> None:
+        """Background worker: connect to SSE /events and reload on share events."""
+        import time
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        backoff = 1.0
+        while True:
+            status_url = mgr.get_status_url()
+            if not status_url:
+                time.sleep(2.0)
+                continue
+            try:
+                import urllib.request
+                req = urllib.request.Request(status_url)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    backoff = 1.0
+                    buf = ""
+                    for raw in resp:
+                        line = raw.decode("utf-8", errors="replace")
+                        buf += line
+                        if buf.endswith("\n\n"):
+                            if "event: share" in buf:
+                                self.app.call_from_thread(self._reload)
+                            buf = ""
+            except Exception:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
 
     @work(thread=True)
     def _do_share(self, path: str, conn_tag: str, password: str | None, port: int) -> None:
