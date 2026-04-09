@@ -293,8 +293,10 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _restore_shares(self) -> None:
-        """Restart share servers for all persisted FileShare entries on startup."""
+        """Restart share servers for persisted FileShare entries whose connection is running."""
         for conn in self.config.connections:
+            if not is_tunnel_running(conn.tag, self._process_mgr):
+                continue  # shares are meaningless without a live tunnel
             for fs in conn.file_shares:
                 file_path = Path(fs.file_path)
                 if not file_path.exists():
@@ -422,9 +424,32 @@ class SusOpsManager:
                     except Exception as exc:
                         self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
-                # Start forward slaves for active file shares
-                for share_port, (_server, info) in self._share_servers.items():
-                    if info.conn_tag == conn.tag:
+                # Start HTTP servers for config-only (stopped) shares, then forward slaves
+                # for all running share servers belonging to this connection.
+                for fs in conn.file_shares:
+                    if fs.port in self._share_servers:
+                        continue  # already running
+                    fp = Path(fs.file_path)
+                    if not fp.exists():
+                        self._log(f"[{conn.tag}] Share '{fs.file_path}' not found — skipping")
+                        continue
+                    try:
+                        srv = ShareServer()
+                        raw = srv.start(file_path=fp, password=fs.password,
+                                        port=fs.port, workspace=self.workspace)
+                        si = ShareInfo(
+                            file_path=str(fp), port=raw.port, password=fs.password,
+                            url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
+                        )
+                        self._share_servers[raw.port] = (srv, si)
+                        if raw.port != fs.port:
+                            self._update_file_share_port(conn.tag, fs, raw.port)
+                        self._log(f"[{conn.tag}] Started share '{fp.name}' on :{raw.port}")
+                    except Exception as exc:
+                        self._log(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+
+                for share_port, (_server, share_info) in list(self._share_servers.items()):
+                    if share_info.conn_tag == conn.tag:
                         fw = PortForward(
                             src_port=share_port,
                             dst_port=share_port,
