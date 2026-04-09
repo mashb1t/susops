@@ -755,9 +755,8 @@ class SusOpsManager:
     ) -> ShareInfo:
         """Start serving an encrypted file share and persist it to config.
 
-        A remote port forward slave is started for the connection so the
-        SSH server can reach the local share server. If the master is not
-        yet running the forward is stored in config and applied at next start.
+        If the connection's SSH tunnel is not running it is started automatically
+        so the remote forward slave can be established immediately.
         """
         if not file.exists():
             raise FileNotFoundError(f"File not found: {file}")
@@ -777,15 +776,18 @@ class SusOpsManager:
             conn_tag=conn_tag,
             running=True,
         )
+        # Register in memory and config BEFORE checking tunnel state so that
+        # self.start() (below) can pick up this share when iterating _share_servers.
         self._share_servers[info.port] = (server, info)
         self._log(f"Sharing '{file.name}' on port {info.port}")
-
-        # Persist to config
         self._add_file_share_to_config(conn_tag, str(file), pw, info.port)
 
-        # Start the remote forward slave if master is running
         conn = get_connection(self.config, conn_tag)
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+        if conn and not is_tunnel_running(conn_tag, self._process_mgr):
+            # Tunnel not running — start it; start() will also launch the remote forward slave.
+            self.start(conn_tag)
+        elif conn and is_tunnel_running(conn_tag, self._process_mgr):
+            # Tunnel already running — start the slave directly.
             fw = PortForward(
                 src_port=info.port,
                 dst_port=info.port,
