@@ -1,0 +1,330 @@
+"""Tests for susops.tui.cli — dispatch() and individual cmd_* handlers.
+
+These tests bypass the real SusOpsManager where SSH / browsers would be
+required and use a tmp_path workspace instead so they are fully offline.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from io import StringIO
+from pathlib import Path
+
+import pytest
+
+from susops.tui.cli import build_parser, dispatch
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def parse(argv: list[str]) -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(argv)
+
+
+def run(argv: list[str], workspace: Path) -> tuple[int, str, str]:
+    """Parse argv, patch workspace, run dispatch, capture stdout/stderr."""
+    import susops.tui.cli as cli_mod
+    from susops.facade import SusOpsManager
+
+    args = parse(argv)
+    m = SusOpsManager(workspace=workspace)
+
+    out = StringIO()
+    err = StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = args.func(args, m)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    return code, out.getvalue(), err.getvalue()
+
+
+@pytest.fixture
+def ws(tmp_path):
+    return tmp_path
+
+
+@pytest.fixture
+def ws_with_conn(ws):
+    from susops.facade import SusOpsManager
+    m = SusOpsManager(workspace=ws)
+    m.add_connection("work", "user@host.example.com")
+    return ws
+
+
+# ---------------------------------------------------------------------------
+# Parser smoke tests — verify parser builds without error
+# ---------------------------------------------------------------------------
+
+def test_parser_builds():
+    p = build_parser()
+    assert p is not None
+
+
+def test_no_subcommand_returns_1(ws):
+    args = parse([])
+    code = dispatch(args)
+    assert code == 1
+
+
+# ---------------------------------------------------------------------------
+# ps / ls — read-only, always work
+# ---------------------------------------------------------------------------
+
+def test_cmd_ps_no_connections(ws):
+    code, out, _ = run(["ps"], ws)
+    assert code == 3  # STOPPED
+    assert "State:" in out
+
+
+def test_cmd_ps_with_connection(ws_with_conn):
+    code, out, _ = run(["ps"], ws_with_conn)
+    assert "work" in out
+
+
+def test_cmd_ls_empty(ws):
+    code, out, _ = run(["ls"], ws)
+    assert code == 0
+    assert "pac_server_port" in out
+
+
+def test_cmd_ls_with_connection(ws_with_conn):
+    code, out, _ = run(["ls"], ws_with_conn)
+    assert code == 0
+    assert "work" in out
+    assert "user@host.example.com" in out
+
+
+# ---------------------------------------------------------------------------
+# add-connection / rm-connection
+# ---------------------------------------------------------------------------
+
+def test_cmd_add_connection(ws):
+    code, out, _ = run(["add-connection", "dev", "dev@dev.example.com"], ws)
+    assert code == 0
+    assert "dev" in out
+
+
+def test_cmd_add_connection_duplicate(ws_with_conn):
+    code, out, err = run(["add-connection", "work", "other@host.com"], ws_with_conn)
+    assert code == 1
+    assert "Error" in err
+
+
+def test_cmd_rm_connection(ws_with_conn):
+    code, out, _ = run(["rm-connection", "work"], ws_with_conn)
+    assert code == 0
+    assert "work" in out
+
+
+def test_cmd_rm_connection_nonexistent(ws):
+    code, out, err = run(["rm-connection", "ghost"], ws)
+    assert code == 1
+    assert "Error" in err
+
+
+# ---------------------------------------------------------------------------
+# add / rm — PAC hosts and port forwards
+# ---------------------------------------------------------------------------
+
+def test_cmd_add_pac_host(ws_with_conn):
+    code, out, _ = run(["-c", "work", "add", "*.internal.example.com"], ws_with_conn)
+    assert code == 0
+    assert "*.internal.example.com" in out
+
+
+def test_cmd_add_pac_host_duplicate(ws_with_conn):
+    run(["-c", "work", "add", "host.com"], ws_with_conn)
+    code, _, err = run(["-c", "work", "add", "host.com"], ws_with_conn)
+    assert code == 1
+
+
+def test_cmd_rm_pac_host(ws_with_conn):
+    run(["-c", "work", "add", "host.com"], ws_with_conn)
+    code, out, _ = run(["rm", "host.com"], ws_with_conn)
+    assert code == 0
+
+
+def test_cmd_add_local_forward(ws_with_conn):
+    code, out, _ = run(
+        ["-c", "work", "add", "-l", "3306", "3306"],
+        ws_with_conn,
+    )
+    assert code == 0
+    assert "3306" in out
+
+
+def test_cmd_add_remote_forward(ws_with_conn):
+    code, out, _ = run(
+        ["-c", "work", "add", "-r", "8080", "8080"],
+        ws_with_conn,
+    )
+    assert code == 0
+    assert "8080" in out
+
+
+def test_cmd_rm_local_forward(ws_with_conn):
+    run(["-c", "work", "add", "-l", "3307", "3307"], ws_with_conn)
+    code, out, _ = run(["rm", "-l", "3307"], ws_with_conn)
+    assert code == 0
+
+
+def test_cmd_rm_remote_forward(ws_with_conn):
+    run(["-c", "work", "add", "-r", "8081", "8081"], ws_with_conn)
+    code, out, _ = run(["rm", "-r", "8081"], ws_with_conn)
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# stop — was broken (missing force kwarg); verify it now works
+# ---------------------------------------------------------------------------
+
+def test_cmd_stop_no_running_tunnel(ws_with_conn):
+    """stop must not raise when nothing is running."""
+    code, out, _ = run(["stop"], ws_with_conn)
+    assert code == 0
+
+
+def test_cmd_stop_keep_ports(ws_with_conn):
+    code, out, _ = run(["stop", "--keep-ports"], ws_with_conn)
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# restart — no tunnel running → should start and succeed or fail gracefully
+# ---------------------------------------------------------------------------
+
+def test_cmd_restart_no_tunnel(ws_with_conn):
+    """restart with no tunnel running must not raise a TypeError."""
+    args = parse(["restart"])
+    from susops.facade import SusOpsManager
+    m = SusOpsManager(workspace=ws_with_conn)
+    # restart will call start() internally which will try SSH — catch the error
+    # but it must NOT be a TypeError (which would mean a missing kwarg)
+    out = StringIO()
+    err = StringIO()
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = args.func(args, m)
+    except TypeError as exc:
+        pytest.fail(f"TypeError in cmd_restart — likely missing param: {exc}")
+    except Exception:
+        pass  # SSH failure is expected; the important thing is no TypeError
+    finally:
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+
+
+# ---------------------------------------------------------------------------
+# reset — --force skips prompt
+# ---------------------------------------------------------------------------
+
+def test_cmd_reset_force(ws_with_conn):
+    code, out, _ = run(["reset", "--force"], ws_with_conn)
+    assert code == 0
+    assert "reset" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# share / fetch — requires cryptography
+# ---------------------------------------------------------------------------
+
+pytest.importorskip("cryptography", reason="cryptography package required")
+
+
+def test_cmd_share_no_connection_configured(ws, tmp_path):
+    test_file = tmp_path / "f.txt"
+    test_file.write_text("data")
+    code, out, err = run(["share", str(test_file)], ws)
+    assert code == 1
+    assert "Error" in err
+
+
+def test_cmd_share_file_not_found(ws_with_conn):
+    code, out, err = run(["share", "/nonexistent/file.txt"], ws_with_conn)
+    assert code == 1
+    assert "Error" in err
+
+
+def test_cmd_share_and_fetch(ws_with_conn, tmp_path):
+    """End-to-end: share a file via CLI then fetch it via CLI."""
+    from susops.tui.cli import cmd_share, cmd_fetch
+    from susops.facade import SusOpsManager
+
+    test_file = tmp_path / "payload.txt"
+    test_file.write_text("cli test payload")
+
+    m = SusOpsManager(workspace=ws_with_conn)
+
+    # Share
+    share_args = parse(["-c", "work", "share", str(test_file)])
+    out = StringIO()
+    sys.stdout = out
+    try:
+        code = share_args.func(share_args, m)
+    finally:
+        sys.stdout = sys.__stdout__
+
+    assert code == 0
+    output = out.getvalue()
+    # Extract port from "susops fetch <port> <password>" line
+    fetch_line = next(l for l in output.splitlines() if "susops fetch" in l)
+    _, _, port_str, password = fetch_line.split()
+    port = int(port_str)
+
+    # Fetch
+    outfile = tmp_path / "result.txt"
+    fetch_args = parse(["-c", "work", "fetch", str(port), password, str(outfile)])
+    out2 = StringIO()
+    sys.stdout = out2
+    try:
+        code2 = fetch_args.func(fetch_args, m)
+    finally:
+        sys.stdout = sys.__stdout__
+
+    assert code2 == 0
+    assert outfile.read_text() == "cli test payload"
+
+    m.stop_share(port)
+
+
+def test_cmd_fetch_wrong_password(ws_with_conn, tmp_path):
+    from susops.core.share import ShareServer, generate_password
+    from susops.facade import SusOpsManager
+
+    test_file = tmp_path / "secret.txt"
+    test_file.write_text("secret")
+    pw = generate_password()
+
+    server = ShareServer()
+    info = server.start(file_path=test_file, password=pw, port=0)
+    try:
+        outfile = tmp_path / "out.txt"
+        code, _, err = run(
+            ["-c", "work", "fetch", str(info.port), "wrongpassword", str(outfile)],
+            ws_with_conn,
+        )
+        assert code == 1
+        assert "Error" in err
+    finally:
+        server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Browser commands — PAC not running → error path
+# ---------------------------------------------------------------------------
+
+def test_cmd_chrome_no_pac(ws_with_conn):
+    code, _, err = run(["chrome"], ws_with_conn)
+    assert code == 1
+    assert "PAC" in err
+
+
+def test_cmd_firefox_no_pac(ws_with_conn):
+    code, _, err = run(["firefox"], ws_with_conn)
+    assert code == 1
+    assert "PAC" in err

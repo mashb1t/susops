@@ -490,3 +490,78 @@ def test_restore_shares_disabled(tmp_path):
     # No servers should be running since restore is disabled
     running = [s for s in mgr.list_shares() if s.running]
     assert running == []
+
+
+def test_restore_shares_on_start(tmp_path):
+    """With restore_shares_on_start=True and a live tunnel, shares are auto-started."""
+    import os
+    from susops.facade import SusOpsManager
+    from susops.core.config import FileShare, Connection, SusOpsConfig, AppConfig, save_config
+
+    test_file = tmp_path / "restore_me.txt"
+    test_file.write_text("restore content")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    conn = Connection(
+        tag="work",
+        ssh_host="user@host.com",
+        file_shares=[FileShare(file_path=str(test_file), password="pw", port=0)],
+    )
+    cfg = SusOpsConfig(
+        connections=[conn],
+        susops_app=AppConfig(restore_shares_on_start=True),
+    )
+    save_config(cfg, workspace)
+
+    # Fake a running tunnel by writing the current PID as the master PID file
+    pid_dir = workspace / "pids"
+    pid_dir.mkdir(exist_ok=True)
+    (pid_dir / "susops-ssh-work.pid").write_text(str(os.getpid()))
+
+    mgr = SusOpsManager(workspace=workspace)
+    running = [s for s in mgr.list_shares() if s.running]
+    assert len(running) == 1
+    assert running[0].conn_tag == "work"
+
+    mgr.stop_share(running[0].port)
+
+
+def test_restore_shares_missing_file_logs_warning(tmp_path):
+    """A FileShare pointing to a nonexistent file must be skipped with a warning logged."""
+    import os
+    from susops.facade import SusOpsManager
+    from susops.core.config import FileShare, Connection, SusOpsConfig, AppConfig, save_config
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    conn = Connection(
+        tag="work",
+        ssh_host="user@host.com",
+        file_shares=[FileShare(file_path=str(tmp_path / "missing.txt"), password="pw", port=0)],
+    )
+    cfg = SusOpsConfig(
+        connections=[conn],
+        susops_app=AppConfig(restore_shares_on_start=True),
+    )
+    save_config(cfg, workspace)
+
+    # Fake a running tunnel
+    pid_dir = workspace / "pids"
+    pid_dir.mkdir(exist_ok=True)
+    (pid_dir / "susops-ssh-work.pid").write_text(str(os.getpid()))
+
+    logs: list[str] = []
+    mgr = SusOpsManager(workspace=workspace)
+    mgr.on_log = logs.append
+
+    # Re-trigger _restore_shares directly (the init call above already ran it,
+    # but on_log was not yet set; call it again to capture the warning)
+    mgr._restore_shares()
+
+    assert any("not found" in m.lower() or "missing" in m.lower() for m in logs), (
+        f"Expected a warning about missing file; got: {logs}"
+    )
+    # No server should be running for this share
+    assert mgr.list_shares() == [] or all(not s.running for s in mgr.list_shares())
