@@ -1086,15 +1086,16 @@ class SusOpsManager:
             tag=f"fetch-{port}",
         )
 
-        conn = get_connection(self.config, conn_tag)
         forward_started = False
 
-        # If the tunnel is not already running, start only the ControlMaster —
-        # no forwards, PAC, or file shares — and tear it down after the fetch.
+        # Record whether the tunnel was already running so we know whether to
+        # tear it down after the fetch.  Then always call _start_master_only:
+        # it is a no-op when the master is already up, but crucially it waits
+        # for the socket to appear — which the running-connection path previously
+        # skipped, causing the forward to be silently omitted.
         tunnel_was_running = is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)
-        if not tunnel_was_running:
-            self._start_master_only(conn_tag)
-            conn = get_connection(self.config, conn_tag)
+        self._start_master_only(conn_tag)
+        conn = get_connection(self.config, conn_tag)  # refresh after potential port assignment
 
         # Use a transient forward slave if ControlMaster socket is alive
         sock = socket_path(conn_tag, self.workspace) if conn else None
