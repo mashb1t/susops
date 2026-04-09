@@ -66,7 +66,12 @@ class _AddShareDialog(ModalScreen):
 
 
 class _FetchDialog(ModalScreen):
-    """Modal: fetch a shared file."""
+    """Modal: fetch a shared file.
+
+    Performs the download inside the dialog so the user can see progress,
+    retry with corrected inputs on error, and only leaves when the fetch
+    succeeds (or they cancel).  Dismisses with the downloaded Path on success.
+    """
 
     def __init__(self, conn_hosts: dict[str, str], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -95,24 +100,47 @@ class _FetchDialog(ModalScreen):
             return
         port_str = self.query_one("#port", Input).value.strip()
         pw = self.query_one("#password", Input).value.strip()
+        error_label = self.query_one("#error", Label)
         if not port_str or not pw:
-            self.query_one("#error", Label).update("Port and password are required.")
+            error_label.update("Port and password are required.")
             return
         try:
             port = int(port_str)
         except ValueError:
-            self.query_one("#error", Label).update("Port must be a number.")
+            error_label.update("Port must be a number.")
             return
         if not validate_port(port):
-            self.query_one("#error", Label).update("Port must be between 1 and 65535.")
+            error_label.update("Port must be between 1 and 65535.")
             return
         conn_val = self.query_one("#conn", Select).value
         conn = conn_val if isinstance(conn_val, str) else None
         if not conn:
-            self.query_one("#error", Label).update("Connection is required.")
+            error_label.update("Connection is required.")
             return
         outfile = self.query_one("#outfile", Input).value.strip() or None
-        self.dismiss({"port": port, "password": pw, "conn": conn, "outfile": outfile})
+        self._start_fetch(port, pw, conn, outfile)
+
+    def _set_busy(self, busy: bool) -> None:
+        btn = self.query_one("#btn-ok", Button)
+        btn.disabled = busy
+        btn.label = "Fetching…" if busy else "Fetch"
+        for widget_id in ("#port", "#password", "#outfile"):
+            self.query_one(widget_id, Input).disabled = busy
+        self.query_one("#conn", Select).disabled = busy
+
+    @work(thread=True)
+    def _start_fetch(self, port: int, password: str, conn: str, outfile: str | None) -> None:
+        self.app.call_from_thread(self._set_busy, True)
+        self.app.call_from_thread(self.query_one("#error", Label).update, "[dim]Fetching…[/dim]")
+        try:
+            out = Path(outfile) if outfile else None
+            result = self.app.manager.fetch(  # type: ignore[attr-defined]
+                port=port, password=password, conn_tag=conn, outfile=out
+            )
+            self.app.call_from_thread(self.dismiss, result)
+        except Exception as e:
+            self.app.call_from_thread(self._set_busy, False)
+            self.app.call_from_thread(self.query_one("#error", Label).update, f"[red]{e}[/red]")
 
 
 class ShareScreen(Screen):
@@ -255,10 +283,12 @@ class ShareScreen(Screen):
         self.app.push_screen(_AddShareDialog(self._conn_hosts()), _on_result)
 
     def action_fetch_file(self) -> None:
-        def _on_result(data) -> None:
-            if not data:
+        def _on_result(result) -> None:
+            if result is None:
                 return
-            self._do_fetch(data["port"], data["password"], data["conn"], data["outfile"])
+            self.query_one("#share-status", Label).update(
+                f"[green]Downloaded to: {result}[/green]"
+            )
         self.app.push_screen(_FetchDialog(self._conn_hosts()), _on_result)
 
     def action_stop_share(self) -> None:
@@ -301,13 +331,3 @@ class ShareScreen(Screen):
         self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)
         self.app.call_from_thread(self._reload)
 
-    @work(thread=True)
-    def _do_fetch(self, port: int, password: str, conn_tag: str, outfile: str | None) -> None:
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        out = Path(outfile) if outfile else None
-        try:
-            result = mgr.fetch(port=port, password=password, conn_tag=conn_tag, outfile=out)
-            msg = f"[green]Downloaded to: {result}[/green]"
-        except Exception as e:
-            msg = f"[red]Error: {e}[/red]"
-        self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)
