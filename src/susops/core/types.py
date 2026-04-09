@@ -156,9 +156,13 @@ class ShareInfo:
         port: Port number on which the file server is listening
         password: Authentication password for accessing the share
         url: Full HTTP URL for accessing the share (e.g., 'http://localhost:8080')
+        conn_tag: Connection tag used for port forwarding, or None for local-only share
+        running: Whether the share server is currently active
     """
 
     file_path: str
     port: int
     password: str
     url: str
+    conn_tag: str | None = None
+    running: bool = True

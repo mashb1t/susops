@@ -34,6 +34,7 @@ from susops.core.types import LogoStyle
 __all__ = [
     "PortForward",
     "Forwards",
+    "FileShare",
     "Connection",
     "AppConfig",
     "SusOpsConfig",
@@ -75,20 +76,31 @@ class Forwards(BaseModel):
     remote: list[PortForward] = []
 
 
+class FileShare(BaseModel):
+    """A persisted file share associated with a connection."""
+
+    file_path: str
+    password: str
+    port: int = 0  # 0 = auto-assigned; written back after first start
+
+
 class Connection(BaseModel):
     tag: str
     ssh_host: str
     socks_proxy_port: int = 0
     forwards: Forwards = Forwards()
     pac_hosts: list[str] = []
+    file_shares: list[FileShare] = []
 
 
 class AppConfig(BaseModel):
     stop_on_quit: bool = True
     ephemeral_ports: bool = False
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
+    restore_shares_on_start: bool = True
+    status_server_port: int = 0
 
-    @field_validator("stop_on_quit", "ephemeral_ports", mode="before")
+    @field_validator("stop_on_quit", "ephemeral_ports", "restore_shares_on_start", mode="before")
     @classmethod
     def coerce_bool_string(cls, v: Any) -> Any:
         """Handle "1"/"0" string values from old yq-based config."""
