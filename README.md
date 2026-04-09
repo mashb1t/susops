@@ -23,15 +23,64 @@ susops/
   src/susops/
     core/          # Business logic (no UI)
       config.py    # Pydantic v2 models + ruamel.yaml I/O
-      ssh.py       # autossh/ssh subprocess + PID tracking
-      pac.py       # PAC generation + Python HTTP server
-      share.py     # AES-256-CTR encrypted file sharing
-      process.py   # ProcessManager: PID files, start/stop/status
+      ssh.py       # SSH ControlMaster/slave subprocess + PID tracking + socket helpers
+      pac.py       # PAC generation + aiohttp HTTP server (shared async loop)
+      share.py     # AES-256-CTR encrypted file sharing + client fetch (shared async loop)
+      status.py    # SSE StatusServer — broadcasts state/share/forward events via aiohttp
+      process.py   # ProcessManager: PID files, start/stop/status, zombie detection
       ports.py     # Free port allocation, CIDR helpers
-      types.py     # Enums and result dataclasses
+      types.py     # Enums and result dataclasses (ShareInfo with three-state status)
     facade.py      # SusOpsManager — single API for all frontends
     tui/           # Textual TUI + argparse CLI
     tray/          # GTK3 (Linux) and rumps (macOS) tray apps
+```
+
+#### Component relations
+
+```
+ ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐
+ │  Textual TUI │  │  argparse    │  │  GTK3 / rumps Tray App       │
+ │  (dashboard, │  │  CLI         │  │  (AbstractTrayApp + platform  │
+ │  share, etc.)│  │              │  │   subclass)                  │
+ └──────┬───────┘  └──────┬───────┘  └──────────────┬───────────────┘
+        │                 │                         │
+        └────────────────►▼◄────────────────────────┘
+                   ┌──────────────┐
+                   │ SusOpsManager│  facade.py — single public API
+                   │   (facade)   │  config I/O · PID mgmt · bandwidth
+                   └──────┬───────┘  sampling · server lifecycle
+                          │
+          ┌───────────────┼─────────────────────┐
+          │               │                     │
+   ┌──────▼──────┐ ┌──────▼──────┐   ┌──────────▼──────┐
+   │  ssh.py     │ │  pac.py     │   │  share.py        │
+   │ ControlMaster│ │ PAC server  │   │ ShareServer(s)   │
+   │ + fwd slaves│ │ (aiohttp)   │   │ (aiohttp)        │
+   └──────┬──────┘ └──────┬──────┘   └──────────┬───────┘
+          │               │                     │
+          │        ┌──────▼─────────────────────▼──────┐
+          │        │      Shared async event loop        │
+          │        │  one daemon thread for all aiohttp  │
+          │        │  (pac + share servers + SSE)        │
+          │        └──────────────┬───────────────────────┘
+          │                       │
+          │                ┌──────▼──────┐
+          │                │ status.py   │  SSE /events endpoint
+          │                │ StatusServer│  state · share · forward
+          │                └──────┬──────┘
+          │                       │ Server-Sent Events (HTTP)
+          │            ┌──────────┴────────────┐
+          │     ┌──────▼──────┐       ┌────────▼──────┐
+          │     │  dashboard  │       │ share screen  │
+          │     │  SSE thread │       │ set_interval  │
+          │     │ (reconnects │       │ (2 s poll)    │
+          │     │  on timeout)│       └───────────────┘
+          │     └─────────────┘
+          │
+ OS processes managed via ~/.susops/pids/:
+   susops-ssh-<tag>       ← SSH ControlMaster (-M -N -D socks_port)
+   susops-fwd-<tag>-<fw>  ← SSH forward slave (-O forward -L/-R port)
+   susops-pac             ← PAC HTTP server (in-process aiohttp)
 ```
 
 ---
@@ -41,10 +90,10 @@ susops/
 | Component    | Requirement                                                           |
 |--------------|-----------------------------------------------------------------------|
 | Python       | ≥ 3.11                                                                |
-| SSH tunnels  | `autossh` (recommended) or `ssh`                                      |
-| PAC server   | built-in (`http.server`)                                              |
-| TUI          | `textual >= 0.80`, `textual-plotext >= 0.2` (optional extra)          |
-| File sharing | `cryptography >= 42` (optional extra)                                 |
+| SSH tunnels  | `ssh` (OpenSSH, for ControlMaster support)                            |
+| PAC server   | `aiohttp >= 3.9` (shared async loop)                                  |
+| TUI          | `textual >= 8.2`, `textual-plotext >= 1.0` (optional extra)           |
+| File sharing | `cryptography >= 42`, `aiohttp >= 3.9` (optional extra)               |
 | Linux tray   | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
 | macOS tray   | `rumps >= 0.4`                                                        |
 
@@ -127,6 +176,22 @@ susops
 
 ### Keybindings
 
+#### Dashboard — selected connection
+
+| Key | Action                          |
+|-----|---------------------------------|
+| `s` | Start selected connection       |
+| `x` | Stop selected connection        |
+| `r` | Restart selected connection     |
+
+#### Dashboard — all connections
+
+| Key | Action               |
+|-----|----------------------|
+| `S` | Start all tunnels    |
+| `X` | Stop all tunnels     |
+| `R` | Restart all tunnels  |
+
 #### Global
 
 | Key      | Action               |
@@ -134,9 +199,6 @@ susops
 | `c`      | Connection editor    |
 | `f`      | File share screen    |
 | `e`      | Config editor (YAML) |
-| `s`      | Start all tunnels    |
-| `x`      | Stop all tunnels     |
-| `r`      | Restart all tunnels  |
 | `Ctrl+P` | Command palette      |
 | `q`      | Quit                 |
 
@@ -146,7 +208,8 @@ susops
 |----------|-------------------------------------------------|
 | `Escape` | Back to dashboard                               |
 | `a`      | Add item (connection, PAC host, forward, share) |
-| `d`      | Delete selected item                            |
+| `d`      | Delete / stop selected item                     |
+| `f`      | Fetch a remote shared file (share screen)       |
 
 ### Screens
 
@@ -158,7 +221,7 @@ susops
 
 **Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
 
-**Share screen** — split-pane: left list of active shares, right panel with file details, URL, password, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share.
+**Share screen** — split-pane: left list of shares with three-state indicators (green = running, dim = manually stopped, red = offline/connection down), right panel with file details, URL, password, access counts, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share, `s` to restart a stopped share, `x` to delete. Refreshes every 2 seconds via `set_interval` to reflect connection state changes.
 
 **Config editor** — read-only YAML view of `~/.susops/config.yaml`. Press `e` to open in `$EDITOR`.
 
@@ -189,11 +252,13 @@ susops rm-connection <tag>
 #### Lifecycle
 
 ```bash
-susops start [-c TAG]     # Start tunnel(s) + PAC server
-susops stop [--keep-ports] [--force]
+susops start [-c TAG]     # Start tunnel(s) + PAC server (omit -c for all)
+susops stop  [-c TAG] [--keep-ports] [--force]
 susops restart [-c TAG]
 ```
 
+`-c TAG` targets a single connection; omit to operate on all connections.
+When stopping a single connection its associated file shares are also stopped.
 `--keep-ports` preserves assigned port numbers across restarts.
 `--force` sends SIGKILL instead of SIGTERM.
 
@@ -236,8 +301,9 @@ susops test --all          # Test all PAC hosts; exit 0 if all pass
 susops share <file> [password] [port]
 # Prints URL + password + fetch command
 
-# Fetch a shared file
+# Fetch a shared file through an SSH tunnel
 susops fetch <port> <password> [outfile]
+# Auto-starts the connection if not running; stops it again after download
 # Saves to ~/Downloads/<original_filename> if outfile omitted
 ```
 
@@ -350,19 +416,23 @@ All runtime data lives in `~/.susops/`:
 
 ```
 ~/.susops/
-  config.yaml       # persistent config
-  susops.pac        # generated PAC file (regenerated on start/change)
-  pids/             # PID files for each managed process
-    susops-ssh-<tag>.pid
+  config.yaml             # persistent config
+  susops.pac              # generated PAC file (regenerated on start/change)
+  pids/                   # PID files + socket files for each managed process
+    susops-ssh-<tag>.pid  # ControlMaster PID
+    susops-fwd-<tag>-<fw>.pid  # forward slave PIDs
     susops-pac.pid
-  firefox_profile/  # temporary Firefox profile for PAC launch
+    susops-<tag>.sock     # SSH ControlMaster Unix socket
+  logs/                   # per-process log files
+    susops-ssh-<tag>.log
+  firefox_profile/        # temporary Firefox profile for PAC launch
 ```
 
 ---
 
 ## File Sharing
 
-SusOps can share a single file over an encrypted HTTP server, useful for transferring files through an SSH tunnel. Multiple files can be shared simultaneously on different ports.
+SusOps can share files over an encrypted HTTP server, useful for transferring files through an SSH tunnel. Multiple files can be shared simultaneously on different ports.
 
 ```bash
 # On sender
@@ -379,7 +449,16 @@ susops fetch 52100 Xk7mN2qR...
 # Downloaded to: ~/Downloads/secret.tar.gz
 ```
 
-**Protocol:** HTTP Basic auth (`:password`) + gzip compression + AES-256-CTR encryption (PBKDF2-HMAC-SHA256 key derivation, 600,000 iterations). The original filename is also encrypted and stored in `Content-Disposition`. Requires `pip install "susops[crypto]"`.
+**Protocol:** HTTP Basic auth (`:password`) + gzip compression + AES-256-CTR encryption (PBKDF2-HMAC-SHA256 key derivation, 600,000 iterations). The original filename is also encrypted and stored in `Content-Disposition`. Requires `pip install "susops[share]"`.
+
+**Fetch behaviour:** `fetch` auto-starts the SSH ControlMaster if the connection is not running, using a minimal start (no configured forwards, PAC server, or file shares are touched). The connection is stopped again after the download completes. If the connection was already running it is left untouched.
+
+**Share status** in the TUI uses three states:
+- `●` green — server running and accessible
+- `○` dim — manually stopped (will not auto-restart)
+- `○` red — offline because its connection went down (auto-resumes when connection restarts)
+
+Each share tracks successful and failed access counts in memory (shown in the detail panel; not persisted across restarts).
 
 ---
 
@@ -473,13 +552,14 @@ susops/
   src/susops/
     core/
       config.py         # Pydantic v2 + ruamel.yaml
-      ssh.py            # autossh subprocess management
-      pac.py            # PAC generation + HTTP server
-      share.py          # AES-256-CTR file sharing
-      process.py        # PID file-based process manager
+      ssh.py            # SSH ControlMaster/slave management + socket helpers
+      pac.py            # PAC generation + aiohttp HTTP server
+      share.py          # AES-256-CTR file sharing + shared async event loop
+      status.py         # aiohttp SSE StatusServer (/events endpoint)
+      process.py        # PID file-based process manager + zombie detection
       ports.py          # Port utilities (validate_port, is_port_free, CIDR)
       ssh_config.py     # ~/.ssh/config parser
-      types.py          # Enums + result dataclasses
+      types.py          # Enums + result dataclasses (ShareInfo three-state)
     facade.py           # SusOpsManager public API
     tui/
       __main__.py       # Dual-mode entrypoint
@@ -517,7 +597,7 @@ If you used the previous Bash-based `susops.sh`:
 2. The `go-yq` / `yq` dependency is **removed** (replaced by Python + pydantic + ruamel.yaml).
 3. Process detection no longer uses `pgrep -f` / `exec -a` hacks — PID files in `~/.susops/pids/` are used instead.
 4. The PAC HTTP server is now a Python `http.server` daemon thread instead of a `nc` loop.
-5. `autossh` is still used when available; falls back to `ssh` if not found.
+5. `autossh` is no longer used — replaced by plain `ssh` with ControlMaster mode for stable PID tracking and multiplexed forwards.
 6. All CLI commands have the same names and behavior.
 
 ---

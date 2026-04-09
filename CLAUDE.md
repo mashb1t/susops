@@ -48,12 +48,13 @@ src/susops/
   facade.py          # SusOpsManager — only public API any frontend should use
   core/
     config.py        # Pydantic v2 models + ruamel.yaml I/O
-    ssh.py           # autossh/ssh subprocess + PID tracking
-    pac.py           # PAC JS generation + Python HTTP server (daemon thread)
-    share.py         # AES-256-CTR HTTP file sharing + client fetch
-    process.py       # PID-file-based process manager (~/.susops/pids/)
+    ssh.py           # SSH ControlMaster/slave subprocess + PID tracking + socket helpers
+    pac.py           # PAC JS generation + aiohttp HTTP server (shared async loop)
+    share.py         # AES-256-CTR HTTP file sharing + client fetch (shared async loop)
+    status.py        # SSE StatusServer — aiohttp, broadcasts state/share/forward events
+    process.py       # PID-file-based process manager (~/.susops/pids/) + zombie detection
     ports.py         # validate_port(), is_port_free(), free port allocation, CIDR helpers
-    types.py         # ProcessState enum, result dataclasses (StartResult etc.)
+    types.py         # ProcessState enum, result dataclasses (StartResult, ShareInfo etc.)
   tui/
     __main__.py      # dual-mode: TUI if isatty() + no subcommand, else CLI dispatch
     cli.py           # argparse non-interactive CLI
@@ -70,19 +71,95 @@ src/susops/
     mac.py           # rumps implementation of abstract methods
 ```
 
+### Component Relations
+
+```
+ ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐
+ │  Textual TUI │  │  argparse    │  │  GTK3 / rumps Tray App       │
+ │  (dashboard, │  │  CLI         │  │  (AbstractTrayApp + platform  │
+ │  share, etc.)│  │              │  │   subclass)                  │
+ └──────┬───────┘  └──────┬───────┘  └──────────────┬───────────────┘
+        │                 │                         │
+        └────────────────►▼◄────────────────────────┘
+                   ┌──────────────┐
+                   │ SusOpsManager│  facade.py — single public API
+                   │   (facade)   │  owns: config I/O, PID mgmt,
+                   └──────┬───────┘  bandwidth sampling, server lifecycle
+                          │
+          ┌───────────────┼───────────────────┐
+          │               │                   │
+   ┌──────▼──────┐ ┌──────▼──────┐   ┌───────▼───────┐
+   │  ssh.py     │ │  pac.py     │   │  share.py     │
+   │ ControlMaster│ │ PAC server  │   │ ShareServer(s)│
+   │ + slaves    │ │ (aiohttp)   │   │ (aiohttp)     │
+   └──────┬──────┘ └─────────────┘   └───────────────┘
+          │                                    │
+   ┌──────▼──────────────────────────────────┐ │
+   │           Shared async event loop        │◄┘
+   │  (daemon thread; pac + share + status   │
+   │   all schedule coroutines here)         │
+   └──────────────────┬───────────────────────┘
+                      │
+               ┌──────▼──────┐
+               │ status.py   │  SSE /events endpoint
+               │ StatusServer│  broadcasts: state / share / forward
+               └──────┬──────┘
+                      │  Server-Sent Events (HTTP)
+          ┌───────────┴────────────┐
+   ┌──────▼──────┐        ┌────────▼────────┐
+   │  dashboard  │        │  share screen   │
+   │  SSE thread │        │  set_interval   │
+   │  (2s conn.) │        │  (2s poll)      │
+   └─────────────┘        └─────────────────┘
+
+ OS Processes managed via ~/.susops/pids/:
+   susops-ssh-<tag>       ← SSH ControlMaster  (-M -N -D socks_port)
+   susops-fwd-<tag>-<fw>  ← SSH forward slave  (-O forward -L/-R)
+   susops-pac             ← PAC HTTP server
+```
+
 ## Key Design Patterns
 
-**Facade is the only entry point.** Never import from `susops.core.*` in a frontend — always go through `SusOpsManager`. The facade owns config I/O, PID file management, bandwidth sampling, and the PAC/share server lifecycle.
+**Facade is the only entry point.** Never import from `susops.core.*` in a frontend — always go through `SusOpsManager`. The facade owns config I/O, PID file management, bandwidth sampling, and the PAC/share/status server lifecycle.
 
-**Thread safety in the TUI.** All blocking calls (start/stop/restart, share, fetch, editor launch) use `@work(thread=True)`. Results are pushed back with `self.app.call_from_thread(...)`, never `self.call_from_thread(...)` (which doesn't exist on `Screen`).
+**SSH ControlMaster + slaves.** Each connection runs one ControlMaster process (`ssh -M -N -D socks_port`) and zero or more slave forward processes (`ssh -O forward -L/-R`). Slaves attach to the master's Unix socket (`~/.susops/pids/susops-<tag>.sock`). This avoids re-authenticating per-forward and gives independent lifecycle control per forward.
+
+- `start_master(conn, ...)` — starts the ControlMaster, waits for socket
+- `start_forward(conn, fw, direction, ...)` — attaches a slave to the existing socket
+- `stop_forward(conn_tag, fw_tag, ...)` — kills only that slave
+- `stop_tunnel(conn_tag, ...)` — kills all slaves + the master
+- `find_master_pid(tag, workspace)` — scans `/proc/*/cmdline` to recover PID when the PID file is stale
+- `is_socket_alive(tag, workspace)` — runs `ssh -O check` against the socket to verify liveness
+
+**Zombie detection.** `process.py:is_running()` reads `/proc/{pid}/status` and checks for `State: Z`. Zombies are reaped with `os.waitpid(pid, os.WNOHANG)`, their PID file deleted, and `False` returned so callers treat them as stopped. `os.kill(pid, 0)` alone is not sufficient — it returns 0 for zombies.
+
+**Shared async event loop.** A single daemon thread runs a `asyncio` event loop (`_get_loop()` in `share.py`). All `ShareServer` instances, the `PacServer`, and the `StatusServer` schedule their aiohttp coroutines onto this loop via `asyncio.run_coroutine_threadsafe`. This means there is always exactly one background thread for all async I/O regardless of how many shares are active.
+
+**SSE status events.** `StatusServer` (`core/status.py`) is an aiohttp server exposing `GET /events` as a Server-Sent Event stream. The facade calls `_emit(event, data)` on every state change; this pushes a JSON payload to all connected clients. Event types: `state` (connection start/stop), `share` (share start/stop), `forward` (forward change), `bandwidth` (periodic throughput). The dashboard screen maintains an SSE listener thread (reconnects every 2 s on timeout) for instant refresh on events. The share screen uses `set_interval(2.0, self._reload)` instead (simpler, no reconnect churn).
+
+**Thread safety in the TUI.** All blocking calls (start/stop/restart, share, fetch, editor launch) use `@work(thread=True)`. Results are pushed back with `self.app.call_from_thread(...)`, never `self.call_from_thread(...)` (which doesn't exist on `Screen`). The fetch dialog (`_FetchDialog`) is a `ModalScreen` that performs the download itself with `@work(thread=True)`, keeps inputs enabled for retry on error, and dismisses only on success.
+
+**Per-connection vs. all-connections operations.** `start(tag=)`, `stop(tag=)`, `restart(tag=)` all accept an optional tag. When `stop(tag=conn_tag)` is called:
+- Only that connection's tunnel (ControlMaster + all its slaves) is stopped
+- File shares belonging to that connection are also stopped
+- PAC server and other connections are left running
 
 **Bandwidth sampling.** `_BandwidthSampler` (inside `facade.py`) is a daemon thread that reads `read_chars`/`write_chars` from `/proc/pid/io` every 2 s — these include socket I/O, unlike `read_bytes`/`write_bytes` which only count disk. `get_bandwidth(tag)` is a non-blocking dict lookup.
 
-**Multi-share.** `_share_servers: dict[int, tuple[ShareServer, ShareInfo]]` in the facade is keyed by port, allowing concurrent shares on different ports.
+**Multi-share.** `_share_servers: dict[int, tuple[ShareServer, ShareInfo]]` in the facade is keyed by port, allowing concurrent shares on different ports. Each `ShareServer` tracks `access_count` and `failed_count` in memory (not persisted). `list_shares()` attaches live counts to the returned `ShareInfo` via `dataclasses.replace`.
 
-**TUI dashboard.** Split-pane: 32-col `VerticalScroll` sidebar (Connections `ListView`, PAC `Static`, Shares `Static`) + `TabbedContent` detail panel (Stats / Bandwidth with `PlotextPlot` / Forwards `DataTable` / Logs `RichLog`). Selection in the `ListView` drives the right panel via `on_list_view_highlighted`. Auto-refreshes every 3 seconds via `set_interval`.
+**Three-state ShareInfo.** `ShareInfo` has two boolean flags:
+- `running=True` — server is active (green ●)
+- `running=False, stopped=True` — user manually stopped it (dim ○); will NOT auto-restart
+- `running=False, stopped=False` — connection went down (red ○); will auto-restart when connection comes back
 
-**Modal dialogs.** All dialogs subclass `ModalScreen` (not `Screen`) so Textual dims the background automatically. They use `self.dismiss(data_dict)` to return results to the caller via the push_screen callback.
+**Fetch lifecycle.** `fetch()` always calls `_start_master_only(conn_tag)` first (it's a no-op if the master is already up but ensures the socket is ready). The `tunnel_was_running` flag is captured before this call to decide teardown: if the fetch started the connection, `stop_tunnel` is called in the `finally` block to restore the original state. `_start_master_only` starts ONLY the ControlMaster — no configured forwards, PAC, or file shares are touched.
+
+**TUI dashboard.** Split-pane: 36-col `VerticalScroll` sidebar (Connections `ListView`, PAC `Static`, Shares `Static`) + `TabbedContent` detail panel (Stats / Bandwidth with `PlotextPlot` / Forwards `DataTable` / Logs `RichLog`). Selection in the `ListView` drives the right panel via `on_list_view_highlighted`. Auto-refreshes every 2 seconds via `set_interval` with adaptive idle throttling (every 10 s when all connections stopped). SSE listener triggers immediate refresh on events.
+
+**List refresh without deselection.** When refreshing a `ListView` that may not have changed, update labels in-place (`item.query_one(Label).update(text)`) rather than clearing and repopulating. Only rebuild the list when items are added or removed, and restore `lv.index` afterward. This is the pattern used in both the dashboard connection list and the share screen.
+
+**Modal dialogs.** All dialogs subclass `ModalScreen` (not `Screen`) so Textual dims the background automatically. They use `self.dismiss(data)` to return results to the caller via the push_screen callback.
 
 **Port forward bind addresses.** `PortForward` has `src_addr` and `dst_addr` fields (default `"localhost"`). Valid bind options: `localhost`, `172.17.0.1` (Docker bridge), `0.0.0.0`. All frontends validate ports with `validate_port()` from `core/ports.py` and check `is_port_free()` for locally-bound ports before accepting input.
 
@@ -93,7 +170,8 @@ src/susops/
 ## Config & Runtime State
 
 - Config file: `~/.susops/config.yaml` (Pydantic model, ruamel.yaml preserves comments)
-- PID files: `~/.susops/pids/susops-ssh-<tag>.pid`, `susops-pac.pid`
+- PID files: `~/.susops/pids/susops-ssh-<tag>.pid`, `susops-fwd-<tag>-<fw>.pid`, `susops-pac.pid`
+- Socket files: `~/.susops/pids/susops-<tag>.sock` (SSH ControlMaster socket)
 - Port `0` in config means auto-assign at start; the chosen port is written back to config
 - `ephemeral_ports: true` in `susops_app:` section skips the write-back (ports stay 0)
 
@@ -118,7 +196,8 @@ forwards:
 ## Adding a New Feature Checklist
 
 1. Add method to `SusOpsManager` in `facade.py`
-2. Update **TUI** screen(s) that expose the feature
-3. Update **`AbstractTrayApp`** (`tray/base.py`) with a `do_*` method
-4. Update **`linux.py`** and **`mac.py`** to wire the new menu item / dialog
-5. Add tests in `tests/`
+2. Call `_emit(event, data)` for any state change that frontends should react to
+3. Update **TUI** screen(s) that expose the feature
+4. Update **`AbstractTrayApp`** (`tray/base.py`) with a `do_*` method
+5. Update **`linux.py`** and **`mac.py`** to wire the new menu item / dialog
+6. Add tests in `tests/`
