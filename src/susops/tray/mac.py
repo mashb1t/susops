@@ -194,6 +194,15 @@ class SusOpsMacTray(AbstractTrayApp):
         )
         browser_menu["Firefox"] = firefox_menu
 
+        # File Transfer submenu
+        self._ft_menu = rumps.MenuItem("File Transfer")
+        self._ft_menu["Share File…"] = rumps.MenuItem(
+            "Share File…", callback=lambda _: self._prompt_share_file()
+        )
+        self._ft_menu["Fetch File…"] = rumps.MenuItem(
+            "Fetch File…", callback=lambda _: self._prompt_fetch_file()
+        )
+
         self._app.menu = [
             self._item_status,
             None,
@@ -211,12 +220,211 @@ class SusOpsMacTray(AbstractTrayApp):
             test_menu,
             rumps.MenuItem("Show Status", callback=lambda _: self.do_status()),
             browser_menu,
+            self._ft_menu,
             None,
             rumps.MenuItem("Reset All", callback=lambda _: self._confirm_reset()),
             None,
             rumps.MenuItem("About SusOps", callback=lambda _: self._show_about()),
             rumps.MenuItem("Quit", callback=self._on_quit),
         ]
+
+        self._active_shares: list = []
+
+    # ------------------------------------------------------------------ #
+    # File Transfer helpers
+    # ------------------------------------------------------------------ #
+
+    def _refresh_share_submenu(self) -> None:
+        """Rebuild dynamic share items in the File Transfer submenu."""
+        import pathlib
+        # Remove old dynamic share items (keep Share File… and Fetch File…)
+        for key in list(self._ft_menu.keys()):
+            if key not in ("Share File…", "Fetch File…"):
+                del self._ft_menu[key]
+
+        self._active_shares = self.manager.list_shares()
+        if self._active_shares:
+            self._ft_menu["---"] = None  # separator
+        for info in self._active_shares:
+            name = pathlib.Path(info.file_path).name
+            dot = "●" if info.running else "○"
+            label = f"{dot} {name} (:{info.port})"
+            self._ft_menu[label] = self._rumps.MenuItem(
+                label,
+                callback=self._make_share_info_handler(info),
+            )
+
+    def do_poll(self) -> None:
+        super().do_poll()
+        self._refresh_share_submenu()
+
+    def _prompt_share_file(self) -> None:
+        rumps = self._rumps
+        config = self.manager.list_config()
+        tags = [c.tag for c in config.connections]
+        if not tags:
+            self.show_alert("No Connections", "Add a connection first.")
+            return
+
+        win = rumps.Window(
+            message=f"Connection tag ({', '.join(tags)}):",
+            title="Share File",
+            default_text=tags[0],
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r = win.run()
+        if r.clicked == 0:
+            return
+        conn_tag = r.text.strip()
+        if conn_tag not in tags:
+            self.show_alert("Invalid Tag", f"Connection '{conn_tag}' not found.")
+            return
+
+        win2 = rumps.Window(
+            message="Full path to file:",
+            title="Share File",
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r2 = win2.run()
+        if r2.clicked == 0:
+            return
+        file_path = r2.text.strip()
+        if not file_path or not __import__("pathlib").Path(file_path).exists():
+            self.show_alert("File Not Found", f"'{file_path}' does not exist.")
+            return
+
+        win3 = rumps.Window(
+            message="Password (blank = auto-generate):",
+            title="Share File",
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r3 = win3.run()
+        if r3.clicked == 0:
+            return
+        pw = r3.text.strip() or None
+
+        win4 = rumps.Window(
+            message="Port (0 = auto-assign):",
+            title="Share File",
+            default_text="0",
+            ok="Share",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r4 = win4.run()
+        if r4.clicked == 0:
+            return
+        port_text = r4.text.strip() or "0"
+        try:
+            port_int = int(port_text)
+        except ValueError:
+            self.show_alert("Invalid Port", f"'{port_text}' is not a valid port number.")
+            return
+
+        self.do_share(conn_tag, file_path, password=pw, port=port_int)
+
+    def _prompt_fetch_file(self) -> None:
+        rumps = self._rumps
+        config = self.manager.list_config()
+        tags = [c.tag for c in config.connections]
+        if not tags:
+            self.show_alert("No Connections", "Add a connection first.")
+            return
+
+        win = rumps.Window(
+            message=f"Connection tag ({', '.join(tags)}):",
+            title="Fetch File",
+            default_text=tags[0],
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r = win.run()
+        if r.clicked == 0:
+            return
+        conn_tag = r.text.strip()
+        if conn_tag not in tags:
+            self.show_alert("Invalid Tag", f"Connection '{conn_tag}' not found.")
+            return
+
+        win2 = rumps.Window(
+            message="Port number:",
+            title="Fetch File",
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r2 = win2.run()
+        if r2.clicked == 0:
+            return
+        port_text = r2.text.strip()
+        try:
+            port_int = int(port_text)
+        except ValueError:
+            self.show_alert("Invalid Port", f"'{port_text}' is not a valid port number.")
+            return
+
+        win3 = rumps.Window(
+            message="Password:",
+            title="Fetch File",
+            default_text="",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r3 = win3.run()
+        if r3.clicked == 0:
+            return
+        pw = r3.text.strip()
+        if not pw:
+            self.show_alert("Missing Field", "Password is required.")
+            return
+
+        win4 = rumps.Window(
+            message="Save to (blank = ~/Downloads/<filename>):",
+            title="Fetch File",
+            default_text="",
+            ok="Fetch",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r4 = win4.run()
+        if r4.clicked == 0:
+            return
+        outfile = r4.text.strip() or None
+
+        self.do_fetch(conn_tag, port_int, pw, outfile=outfile)
+
+    def _make_share_info_handler(self, info):
+        def handler(_sender):
+            import pathlib
+            name = pathlib.Path(info.file_path).name
+            state = "running" if info.running else "stopped"
+            response = self._rumps.alert(
+                title=f"Share: {name}",
+                message=(
+                    f"File: {info.file_path}\n"
+                    f"Port: {info.port}\n"
+                    f"Password: {info.password}\n"
+                    f"Connection: {info.conn_tag or '—'}\n"
+                    f"State: {state}"
+                ),
+                ok="Stop Share",
+                cancel="Close",
+            )
+            if response == 1:  # OK = Stop Share
+                self.do_stop_share(info.port)
+                self._refresh_share_submenu()
+        return handler
 
     # ------------------------------------------------------------------ #
     # Platform-specific actions
@@ -296,7 +504,25 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         ephemeral = r3.text.strip().lower() in ("yes", "y", "true", "1")
 
-        self.manager.update_app_config(stop_on_quit=stop_on_quit, ephemeral_ports=ephemeral)
+        # Step 4: Restore shares on start
+        win4 = rumps.Window(
+            message="Restore file shares on start? (yes/no)",
+            title="Settings",
+            default_text="yes" if ac.restore_shares_on_start else "no",
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r4 = win4.run()
+        if r4.clicked == 0:
+            return
+        restore_shares = r4.text.strip().lower() in ("yes", "y", "true", "1")
+
+        self.manager.update_app_config(
+            stop_on_quit=stop_on_quit,
+            ephemeral_ports=ephemeral,
+            restore_shares_on_start=restore_shares,
+        )
         self.manager._reload_config()
         self.manager.config = self.manager.config.model_copy(update={"pac_server_port": pac_int})
         self.manager._save()
@@ -600,6 +826,42 @@ class SusOpsMacTray(AbstractTrayApp):
         self._rumps.quit_application()
 
     # ------------------------------------------------------------------ #
+    # SSE listener
+    # ------------------------------------------------------------------ #
+
+    def _start_sse_listener(self) -> None:
+        """Background thread: connect to SSE /events and update UI on events."""
+        import time
+
+        def _listen():
+            backoff = 1.0
+            while True:
+                status_url = self.manager.get_status_url()
+                if not status_url:
+                    time.sleep(2.0)
+                    continue
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(status_url)
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        backoff = 1.0
+                        buf = ""
+                        for raw in resp:
+                            line = raw.decode("utf-8", errors="replace")
+                            buf += line
+                            if buf.endswith("\n\n"):
+                                if "event: state" in buf:
+                                    self.do_poll()
+                                if "event: share" in buf:
+                                    self._refresh_share_submenu()
+                                buf = ""
+                except Exception:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+
+        threading.Thread(target=_listen, daemon=True, name="susops-sse-mac").start()
+
+    # ------------------------------------------------------------------ #
     # Run
     # ------------------------------------------------------------------ #
 
@@ -607,6 +869,7 @@ class SusOpsMacTray(AbstractTrayApp):
         """Start the rumps main loop."""
         self.do_poll()
         self.schedule_poll(5)
+        self._start_sse_listener()
         self._app.run()
 
 
