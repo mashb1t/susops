@@ -74,6 +74,11 @@ class SusOpsTuiApp(App):
     def on_mount(self) -> None:
         self.push_screen("dashboard")
 
+    def action_quit(self) -> None:
+        if self.manager.app_config.stop_on_quit:
+            self.manager.stop()
+        self.exit()
+
     def action_start_all(self) -> None:
         self._bg_start()
 
