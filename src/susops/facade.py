@@ -657,6 +657,23 @@ class SusOpsManager:
             except Exception as exc:
                 errors.append(f"[{conn.tag}] {exc}")
 
+        # Stop share servers for the affected connections
+        stopped_tags = {c.tag for c in connections}
+        for p, (server, info) in list(self._share_servers.items()):
+            if info.conn_tag in stopped_tags:
+                try:
+                    server.stop()
+                    self._log(f"File share on port {p} stopped")
+                    self._emit("share", {
+                        "port": p,
+                        "file": Path(info.file_path).name,
+                        "running": False,
+                        "conn_tag": info.conn_tag,
+                    })
+                    del self._share_servers[p]
+                except Exception as exc:
+                    errors.append(f"Share {p}: {exc}")
+
         if tag is None:
             if self._pac_server.is_running():
                 try:
@@ -681,21 +698,6 @@ class SusOpsManager:
                         pass
                     self._remove_pac_port_file()
                     self._log("PAC server stopped (remote)")
-
-            # Stop all share servers (keep FileShare entries in config for restore)
-            for p, (server, info) in list(self._share_servers.items()):
-                try:
-                    server.stop()
-                    self._log(f"File share on port {p} stopped")
-                    self._emit("share", {
-                        "port": p,
-                        "file": Path(info.file_path).name,
-                        "running": False,
-                        "conn_tag": info.conn_tag,
-                    })
-                except Exception as exc:
-                    errors.append(f"Share {p}: {exc}")
-            self._share_servers.clear()
 
         self._save()
         self._emit_state(self._compute_state())
