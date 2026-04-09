@@ -247,3 +247,88 @@ def test_fetch_removes_local_forward_on_failure(mgr_with_conn):
 def test_fetch_unknown_connection_raises(mgr):
     with pytest.raises(ValueError, match="not found"):
         mgr.fetch(port=12345, password="pw", conn_tag="nonexistent")
+
+
+# ------------------------------------------------------------------ #
+# FileShare persistence
+# ------------------------------------------------------------------ #
+
+def test_share_saves_file_share_to_config(mgr_with_conn, tmp_path):
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    info = mgr_with_conn.share(test_file, "work")
+
+    conn = mgr_with_conn.list_config().connections[0]
+    assert any(fs.port == info.port for fs in conn.file_shares)
+    mgr_with_conn.stop_share(info.port)
+
+
+def test_stop_share_removes_file_share_from_config(mgr_with_conn, tmp_path):
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    info = mgr_with_conn.share(test_file, "work")
+    mgr_with_conn.stop_share(info.port)
+
+    conn = mgr_with_conn.list_config().connections[0]
+    assert not any(fs.port == info.port for fs in conn.file_shares)
+
+
+def test_list_shares_shows_running_and_stopped(mgr_with_conn, tmp_path):
+    from susops.core.share import ShareServer, generate_password
+
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    # Add a running share
+    info = mgr_with_conn.share(test_file, "work")
+
+    # Manually add a stopped FileShare to config (simulate a persisted-but-not-running share)
+    from susops.core.config import FileShare
+    conn = mgr_with_conn.list_config().connections[0]
+    stopped_fs = FileShare(file_path=str(tmp_path / "ghost.txt"), password="pw", port=55555)
+    updated_conn = conn.model_copy(
+        update={"file_shares": list(conn.file_shares) + [stopped_fs]}
+    )
+    mgr_with_conn.config = mgr_with_conn.config.model_copy(
+        update={"connections": [updated_conn]}
+    )
+    mgr_with_conn._save()
+
+    shares = mgr_with_conn.list_shares()
+    running = [s for s in shares if s.running]
+    stopped = [s for s in shares if not s.running]
+
+    assert any(s.port == info.port for s in running)
+    assert any(s.port == 55555 for s in stopped)
+
+    mgr_with_conn.stop_share(info.port)
+
+
+def test_restore_shares_disabled(tmp_path):
+    """With restore_shares_on_start=False, no share servers are started."""
+    from susops.facade import SusOpsManager
+    from susops.core.config import FileShare, Connection, SusOpsConfig, AppConfig, save_config
+
+    # Write a config with a FileShare and restore=False
+    test_file = tmp_path / "file.txt"
+    test_file.write_text("data")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    conn = Connection(
+        tag="work",
+        ssh_host="user@host.com",
+        file_shares=[FileShare(file_path=str(test_file), password="pw", port=0)],
+    )
+    cfg = SusOpsConfig(
+        connections=[conn],
+        susops_app=AppConfig(restore_shares_on_start=False),
+    )
+    save_config(cfg, workspace)
+
+    mgr = SusOpsManager(workspace=workspace)
+    # No servers should be running since restore is disabled
+    running = [s for s in mgr.list_shares() if s.running]
+    assert running == []
