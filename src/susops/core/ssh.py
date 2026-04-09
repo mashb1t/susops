@@ -25,6 +25,7 @@ __all__ = [
     "stop_forward",
     "is_tunnel_running",
     "is_socket_alive",
+    "find_master_pid",
     "socket_path",
     "test_ssh_connectivity",
     "SSH_PROCESS_PREFIX",
@@ -266,6 +267,28 @@ def stop_tunnel(
 def is_tunnel_running(tag: str, process_mgr: ProcessManager) -> bool:
     """Return True if the ControlMaster SSH process for tag is currently running."""
     return process_mgr.is_running(_master_name(tag))
+
+
+def find_master_pid(tag: str, workspace: Path) -> int | None:
+    """Find the PID of the ControlMaster by scanning /proc cmdline (Linux only).
+
+    Used to recover the PID when the PID file is stale but the socket is alive.
+    Returns None if the process cannot be found or /proc is unavailable.
+    """
+    sock_str = str(socket_path(tag, workspace))
+    proc = Path("/proc")
+    if not proc.exists():
+        return None
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            cmdline = (pid_dir / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+            if "ControlMaster=yes" in cmdline and sock_str in cmdline:
+                return int(pid_dir.name)
+        except OSError:
+            continue
+    return None
 
 
 def is_socket_alive(tag: str, workspace: Path) -> bool:

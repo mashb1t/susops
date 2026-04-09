@@ -26,6 +26,7 @@ from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
+    find_master_pid,
     is_socket_alive,
     is_tunnel_running,
     socket_path,
@@ -239,8 +240,13 @@ class SusOpsManager:
         running = is_tunnel_running(conn.tag, self._process_mgr)
         # Fall back to socket liveness when PID file is stale (zombie reaped,
         # or master restarted outside our control).
-        if not running:
-            running = is_socket_alive(conn.tag, self.workspace)
+        if not running and is_socket_alive(conn.tag, self.workspace):
+            running = True
+            # Try to recover the PID from /proc so the dashboard can show it.
+            recovered = find_master_pid(conn.tag, self.workspace)
+            if recovered:
+                name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
+                self._process_mgr._pid_file(name).write_text(str(recovered))
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{conn.tag}")
         return ConnectionStatus(
             tag=conn.tag,
@@ -330,11 +336,20 @@ class SusOpsManager:
 
         Called on __init__ so the PAC server is recovered after a TUI restart
         without stop_on_quit (the daemon thread died with the previous process).
+        Uses both PID-file and socket-liveness checks so a stale PID file
+        (daemon thread deleted it mid-shutdown) doesn't prevent PAC restore.
         """
-        any_tunnel = any(
-            is_tunnel_running(conn.tag, self._process_mgr)
-            for conn in self.config.connections
-        )
+        any_tunnel = False
+        for conn in self.config.connections:
+            if is_tunnel_running(conn.tag, self._process_mgr):
+                any_tunnel = True
+            elif is_socket_alive(conn.tag, self.workspace):
+                any_tunnel = True
+                # PID file is stale — recover PID so future checks don't re-enter here
+                recovered = find_master_pid(conn.tag, self.workspace)
+                if recovered:
+                    name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
+                    self._process_mgr._pid_file(name).write_text(str(recovered))
         if not any_tunnel:
             return
         port = self.config.pac_server_port
