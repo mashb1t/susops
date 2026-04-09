@@ -55,9 +55,12 @@ def _yticks(max_val: float, unit: str, n: int = 6) -> tuple[list[float], list[st
 class DashboardScreen(Screen):
 
     BINDINGS = [
-        Binding("s", "start_all", "Start"),
-        Binding("x", "stop_all", "Stop"),
-        Binding("r", "restart_all", "Restart"),
+        Binding("s", "start", "Start"),
+        Binding("x", "stop", "Stop"),
+        Binding("r", "restart", "Restart"),
+        Binding("S", "start_all", "Start all"),
+        Binding("X", "stop_all", "Stop all"),
+        Binding("R", "restart_all", "Restart all"),
         Binding("c", "push_screen('connections')", "Connections"),
         Binding("e", "push_screen('config')", "Config"),
         Binding("f", "push_screen('share')", "Share"),
@@ -429,6 +432,21 @@ class DashboardScreen(Screen):
                         return
                     time.sleep(0.1)
                 backoff = min(backoff * 2, 30.0)
+
+    @work(thread=True)
+    def action_start(self) -> None:
+        self.app.manager.start(self._selected_tag)  # type: ignore[attr-defined]
+        self.app.call_from_thread(self.refresh_status)
+
+    @work(thread=True)
+    def action_stop(self) -> None:
+        self.app.manager.stop(tag=self._selected_tag)  # type: ignore[attr-defined]
+        self.app.call_from_thread(self.refresh_status)
+
+    @work(thread=True)
+    def action_restart(self) -> None:
+        self.app.manager.restart(self._selected_tag)  # type: ignore[attr-defined]
+        self.app.call_from_thread(self.refresh_status)
 
     @work(thread=True)
     def action_start_all(self) -> None:

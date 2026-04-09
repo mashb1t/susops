@@ -632,12 +632,17 @@ class SusOpsManager:
             connection_statuses=tuple(statuses),
         )
 
-    def stop(self, keep_ports: bool = False) -> StopResult:
+    def stop(self, keep_ports: bool = False, tag: str | None = None) -> StopResult:
         self._reload_config()
         errors = []
 
         ephemeral = self.config.susops_app.ephemeral_ports
-        for conn in self.config.connections:
+        connections = (
+            [get_connection(self.config, tag)] if tag
+            else list(self.config.connections)
+        )
+        connections = [c for c in connections if c is not None]
+        for conn in connections:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
                     self._log(f"[{conn.tag}] Stopped")
@@ -652,44 +657,45 @@ class SusOpsManager:
             except Exception as exc:
                 errors.append(f"[{conn.tag}] {exc}")
 
-        if self._pac_server.is_running():
-            try:
-                self._pac_server.stop()
-                self._remove_pac_port_file()
-                self._log("PAC server stopped")
-                if not keep_ports and ephemeral:
-                    self.config = self.config.model_copy(update={"pac_server_port": 0})
-            except Exception as exc:
-                errors.append(f"PAC: {exc}")
-        else:
-            cross_port = self._read_pac_port_file()
-            if cross_port:
+        if tag is None:
+            if self._pac_server.is_running():
                 try:
-                    import urllib.request
-                    urllib.request.urlopen(
-                        f"http://127.0.0.1:{cross_port}/stop",
-                        data=b"",
-                        timeout=2,
-                    )
-                except Exception:
-                    pass
-                self._remove_pac_port_file()
-                self._log("PAC server stopped (remote)")
+                    self._pac_server.stop()
+                    self._remove_pac_port_file()
+                    self._log("PAC server stopped")
+                    if not keep_ports and ephemeral:
+                        self.config = self.config.model_copy(update={"pac_server_port": 0})
+                except Exception as exc:
+                    errors.append(f"PAC: {exc}")
+            else:
+                cross_port = self._read_pac_port_file()
+                if cross_port:
+                    try:
+                        import urllib.request
+                        urllib.request.urlopen(
+                            f"http://127.0.0.1:{cross_port}/stop",
+                            data=b"",
+                            timeout=2,
+                        )
+                    except Exception:
+                        pass
+                    self._remove_pac_port_file()
+                    self._log("PAC server stopped (remote)")
 
-        # Stop all share servers (keep FileShare entries in config for restore)
-        for p, (server, info) in list(self._share_servers.items()):
-            try:
-                server.stop()
-                self._log(f"File share on port {p} stopped")
-                self._emit("share", {
-                    "port": p,
-                    "file": Path(info.file_path).name,
-                    "running": False,
-                    "conn_tag": info.conn_tag,
-                })
-            except Exception as exc:
-                errors.append(f"Share {p}: {exc}")
-        self._share_servers.clear()
+            # Stop all share servers (keep FileShare entries in config for restore)
+            for p, (server, info) in list(self._share_servers.items()):
+                try:
+                    server.stop()
+                    self._log(f"File share on port {p} stopped")
+                    self._emit("share", {
+                        "port": p,
+                        "file": Path(info.file_path).name,
+                        "running": False,
+                        "conn_tag": info.conn_tag,
+                    })
+                except Exception as exc:
+                    errors.append(f"Share {p}: {exc}")
+            self._share_servers.clear()
 
         self._save()
         self._emit_state(self._compute_state())
@@ -699,7 +705,7 @@ class SusOpsManager:
         )
 
     def restart(self, tag: str | None = None) -> StartResult:
-        self.stop(keep_ports=True)
+        self.stop(keep_ports=True, tag=tag)
         time.sleep(0.5)
         return self.start(tag)
 
