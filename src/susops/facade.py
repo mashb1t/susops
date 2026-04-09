@@ -1019,6 +1019,7 @@ class SusOpsManager:
                         url=f"http://localhost:{fs.port}",
                         conn_tag=conn.tag,
                         running=False,
+                        stopped=fs.stopped,
                     ))
 
         return result

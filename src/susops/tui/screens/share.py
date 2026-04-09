@@ -153,20 +153,31 @@ class ShareScreen(Screen):
         lv.clear()
         for info in self._shares:
             name = Path(info.file_path).name
-            dot = "[green]●[/green]" if info.running else "[dim]○[/dim]"
+            if info.running:
+                dot = "[green]●[/green]"
+            elif info.stopped:
+                dot = "[dim]○[/dim]"
+            else:
+                dot = "[red]○[/red]"
             lv.append(ListItem(Label(f"{dot} {name}  :{info.port}")))
 
-        running = sum(1 for i in self._shares if i.running)
-        stopped = len(self._shares) - running
+        n_running = sum(1 for i in self._shares if i.running)
+        n_stopped = sum(1 for i in self._shares if not i.running and i.stopped)
+        n_offline = sum(1 for i in self._shares if not i.running and not i.stopped)
         count = len(self._shares)
         if count == 0:
             status = "No shares"
-        elif stopped == 0:
+        elif n_running == count:
             status = f"{count} share(s) running"
-        elif running == 0:
-            status = f"{count} share(s) stopped"
         else:
-            status = f"{count} shares  ({running} running, {stopped} stopped)"
+            parts = []
+            if n_running:
+                parts.append(f"{n_running} running")
+            if n_stopped:
+                parts.append(f"{n_stopped} stopped")
+            if n_offline:
+                parts.append(f"{n_offline} offline")
+            status = f"{count} shares  ({', '.join(parts)})"
 
         self.query_one("#share-status", Label).update(status)
         if self._shares:
@@ -185,7 +196,12 @@ class ShareScreen(Screen):
 
     def _show_detail(self, info) -> None:
         name = Path(info.file_path).name
-        state_str = "[green]running[/green]" if info.running else "[dim]stopped[/dim]"
+        if info.running:
+            state_str = "[green]running[/green]"
+        elif info.stopped:
+            state_str = "[dim]stopped[/dim]"
+        else:
+            state_str = "[red]offline[/red]"
         text = (
             f"[bold]File:[/bold]       {info.file_path}\n"
             f"[bold]Name:[/bold]       {name}\n"
@@ -201,8 +217,10 @@ class ShareScreen(Screen):
                 f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
                 f"\n\n[dim]Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
             )
-        else:
+        elif info.stopped:
             text += "\n[dim]Press [bold]s[/bold] to restart · [bold]x[/bold] to delete[/dim]"
+        else:
+            text += "\n[dim]Will auto-resume when connection starts · Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
         self.query_one("#share-detail", Static).update(text)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
