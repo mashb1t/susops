@@ -1068,10 +1068,12 @@ class SusOpsManager:
 
         conn = get_connection(self.config, conn_tag)
         forward_started = False
+        tunnel_started_here = False
 
-        # Auto-start tunnel if not running
+        # Auto-start tunnel if not running; remember so we can tear it down after
         if conn and not is_tunnel_running(conn_tag, self._process_mgr):
             self.start(conn_tag)
+            tunnel_started_here = True
             conn = get_connection(self.config, conn_tag)
             # Wait up to 5s for the ControlMaster socket to appear
             sock = socket_path(conn_tag, self.workspace)
@@ -1099,6 +1101,8 @@ class SusOpsManager:
         finally:
             if forward_started:
                 stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
+            if tunnel_started_here:
+                self.stop(tag=conn_tag)
 
         self._log(f"Fetched file to {result}")
         return result
