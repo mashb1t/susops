@@ -506,6 +506,12 @@ class SusOpsManager:
                         if raw.port != fs.port:
                             self._update_file_share_port(conn.tag, fs, raw.port)
                         self._log(f"[{conn.tag}] Started share '{fp.name}' on :{raw.port}")
+                        self._status_server.emit("share", {
+                            "port": raw.port,
+                            "file": fp.name,
+                            "running": True,
+                            "conn_tag": conn.tag,
+                        })
                     except Exception as exc:
                         self._log(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
 

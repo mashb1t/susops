@@ -1,19 +1,17 @@
-"""Config editor screen — YAML view with live edit."""
+"""Config editor screen — YAML view with option to open in system editor."""
 from __future__ import annotations
 
-import os
+import shutil
 import subprocess
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, TextArea
-from textual.containers import Horizontal
-from textual import work
+from textual.widgets import Footer, TextArea
 
 
 class ConfigEditorScreen(Screen):
-    """Shows current config.yaml with option to open."""
+    """Shows current config.yaml and opens it in the system default editor."""
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
@@ -26,7 +24,6 @@ class ConfigEditorScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        #yield Header()
         area = TextArea(language="yaml", id="config-area", read_only=True)
         area.border_title = "config.yaml"
         yield area
@@ -38,34 +35,19 @@ class ConfigEditorScreen(Screen):
     def _load_yaml(self) -> None:
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
         config_path = workspace / "config.yaml"
-        if config_path.exists():
-            content = config_path.read_text()
-        else:
-            content = "# No config file found"
+        content = config_path.read_text() if config_path.exists() else "# No config file found"
         self.query_one("#config-area", TextArea).load_text(content)
 
     def action_reload(self) -> None:
         self._load_yaml()
         self.app.notify("Config reloaded")
 
-    @work(thread=True)
     def action_open_editor(self) -> None:
+        """Open config.yaml with the system default file handler (non-blocking)."""
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
         config_path = workspace / "config.yaml"
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
-        import shutil
-        for candidate in (editor, "nano", "vim", "vi"):
-            if shutil.which(candidate):
-                try:
-                    subprocess.run([candidate, str(config_path)])
-                except Exception as e:
-                    self.app.call_from_thread(
-                        self.app.notify, f"Editor failed: {e}", severity="error"
-                    )
-                    return
-                self.app.call_from_thread(self._load_yaml)
-                self.app.call_from_thread(self.app.notify, "Config reloaded")
+        for opener in ("xdg-open", "open"):
+            if shutil.which(opener):
+                subprocess.Popen([opener, str(config_path)])
                 return
-        self.app.call_from_thread(
-            self.app.notify, "No editor found (set $EDITOR)", severity="error"
-        )
+        self.app.notify("No file opener found (xdg-open / open)", severity="error")

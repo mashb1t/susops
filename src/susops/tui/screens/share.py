@@ -140,8 +140,12 @@ class ShareScreen(Screen):
         lv = self.query_one("#share-list", ListView)
         lv.border_title = "Shares"
         self._shares: list = []
+        self._sse_active: bool = True
         self._reload()
         self._start_sse_listener()
+
+    def on_unmount(self) -> None:
+        self._sse_active = False
 
     def _reload(self) -> None:
         self._shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
@@ -251,30 +255,38 @@ class ShareScreen(Screen):
 
     @work(thread=True)
     def _start_sse_listener(self) -> None:
-        """Background worker: connect to SSE /events and reload on share events."""
+        """Background worker: connect to SSE /events and reload on share/state events."""
         import time
+        import urllib.request
         mgr = self.app.manager  # type: ignore[attr-defined]
         backoff = 1.0
-        while True:
+        while self._sse_active:
             status_url = mgr.get_status_url()
             if not status_url:
-                time.sleep(2.0)
+                for _ in range(20):
+                    if not self._sse_active:
+                        return
+                    time.sleep(0.1)
                 continue
             try:
-                import urllib.request
                 req = urllib.request.Request(status_url)
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=2) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:
+                        if not self._sse_active:
+                            return
                         line = raw.decode("utf-8", errors="replace")
                         buf += line
                         if buf.endswith("\n\n"):
-                            if "event: share" in buf:
+                            if "event: share" in buf or "event: state" in buf:
                                 self.app.call_from_thread(self._reload)
                             buf = ""
             except Exception:
-                time.sleep(backoff)
+                for _ in range(max(1, int(backoff * 10))):
+                    if not self._sse_active:
+                        return
+                    time.sleep(0.1)
                 backoff = min(backoff * 2, 30.0)
 
     @work(thread=True)
