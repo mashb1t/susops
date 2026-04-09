@@ -113,7 +113,7 @@ class DashboardScreen(Screen):
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
         self.query_one("#pac-info", Static).border_title = "PAC Server"
-        self.query_one("#shares-info", Static).border_title = "Active Shares"
+        self.query_one("#shares-info", Static).border_title = "Shares"
         self.query_one("#fwd-table", DataTable).add_columns(
             "Direction", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label"
         )
@@ -123,6 +123,10 @@ class DashboardScreen(Screen):
         self.set_interval(2.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
+
+    def on_screen_resume(self) -> None:
+        """Refresh immediately when returning to dashboard from another screen."""
+        self.refresh_status()
 
     def on_unmount(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
@@ -275,7 +279,8 @@ class DashboardScreen(Screen):
             share_lines = []
             for info in shares:
                 name = Path(info.file_path).name
-                share_lines.append(f"[green]●[/green] {name}  {info.port}")
+                dot = "[green]●[/green]" if info.running else "[dim]○[/dim]"
+                share_lines.append(f"{dot} {name}  :{info.port}")
             shares_widget.update("\n".join(share_lines))
 
         # Refresh detail panel for currently selected tag
