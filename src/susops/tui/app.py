@@ -76,8 +76,13 @@ class SusOpsTuiApp(App):
 
     def action_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            self.manager.stop()
-        self.exit()
+            self.run_worker(self._do_quit, thread=True)
+        else:
+            self.exit()
+
+    def _do_quit(self) -> None:
+        self.manager.stop()
+        self.call_from_thread(self.exit)
 
     def action_start_all(self) -> None:
         self._bg_start()

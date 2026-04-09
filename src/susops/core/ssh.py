@@ -233,8 +233,17 @@ def start_tunnel(
     return master_pid
 
 
-def stop_tunnel(tag: str, process_mgr: ProcessManager) -> bool:
+def stop_tunnel(
+    tag: str,
+    process_mgr: ProcessManager,
+    workspace: Path | None = None,
+    ssh_host: str | None = None,
+) -> bool:
     """Stop all forward slaves for a connection, then stop the ControlMaster.
+
+    If workspace and ssh_host are provided, sends ``ssh -O exit`` first so
+    that the ControlPersist background master exits cleanly instead of
+    remaining as a zombie.
 
     Returns True if the master was stopped, False if it wasn't running.
     """
@@ -243,6 +252,21 @@ def stop_tunnel(tag: str, process_mgr: ProcessManager) -> bool:
     for name in list(process_mgr.status_all().keys()):
         if name.startswith(prefix):
             process_mgr.stop(name)
+
+    # Tell the ControlPersist background master to exit gracefully before
+    # we SIGTERM autossh; without this the backgrounded ssh master keeps
+    # running after autossh dies.
+    if workspace is not None and ssh_host is not None:
+        sock = socket_path(tag, workspace)
+        if sock.exists():
+            try:
+                subprocess.run(
+                    ["ssh", "-O", "exit", "-o", f"ControlPath={sock}", ssh_host],
+                    capture_output=True,
+                    timeout=3,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
 
     return process_mgr.stop(_master_name(tag))
 

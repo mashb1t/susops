@@ -68,6 +68,16 @@ class ProcessManager:
             pid_file = self._pid_file(name)
             if pid_file.exists():
                 pid_file.unlink()
+            # Reap the zombie if this process is our direct child.
+            # Popen objects are not stored, so Python never calls wait()
+            # automatically, leaving the exited process as a zombie until
+            # the parent exits.
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass  # not our child or already reaped
+            except OSError:
+                pass
         return True
 
     def is_running(self, name: str) -> bool:

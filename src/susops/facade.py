@@ -524,7 +524,7 @@ class SusOpsManager:
         ephemeral = self.config.susops_app.ephemeral_ports
         for conn in self.config.connections:
             try:
-                if stop_tunnel(conn.tag, self._process_mgr):
+                if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
                     self._log(f"[{conn.tag}] Stopped")
                     self._status_server.emit("state", {"tag": conn.tag, "running": False, "pid": None})
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
@@ -623,9 +623,10 @@ class SusOpsManager:
 
     def remove_connection(self, tag: str) -> None:
         self._reload_config()
-        if get_connection(self.config, tag) is None:
+        conn = get_connection(self.config, tag)
+        if conn is None:
             raise ValueError(f"Connection '{tag}' not found")
-        stop_tunnel(tag, self._process_mgr)
+        stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
         self.config = self.config.model_copy(
             update={"connections": [c for c in self.config.connections if c.tag != tag]}
         )
