@@ -107,3 +107,59 @@ def test_double_start_raises(tmp_path):
     with pytest.raises(RuntimeError, match="already running"):
         server.start(file_path=test_file, password="pw", port=0)
     server.stop()
+
+
+def test_access_count_starts_at_zero(tmp_path):
+    test_file = tmp_path / "f.txt"
+    test_file.write_text("data")
+    server = ShareServer()
+    server.start(file_path=test_file, password="pw", port=0)
+    assert server.access_count == 0
+    assert server.failed_count == 0
+    server.stop()
+
+
+def test_access_count_increments_on_successful_fetch(tmp_path):
+    test_file = tmp_path / "f.txt"
+    test_file.write_text("hello")
+    pw = generate_password()
+    server = ShareServer()
+    info = server.start(file_path=test_file, password=pw, port=0)
+
+    fetch_file(host="localhost", port=info.port, password=pw, outfile=tmp_path / "out.txt")
+
+    assert server.access_count == 1
+    assert server.failed_count == 0
+    server.stop()
+
+
+def test_failed_count_increments_on_wrong_password(tmp_path):
+    test_file = tmp_path / "f.txt"
+    test_file.write_text("secret")
+    server = ShareServer()
+    info = server.start(file_path=test_file, password="correct", port=0)
+
+    with pytest.raises(Exception):
+        fetch_file(host="localhost", port=info.port, password="wrong", outfile=tmp_path / "out.txt")
+
+    assert server.failed_count == 1
+    assert server.access_count == 0
+    server.stop()
+
+
+def test_multiple_fetches_accumulate_counts(tmp_path):
+    test_file = tmp_path / "f.txt"
+    test_file.write_text("data")
+    pw = generate_password()
+    server = ShareServer()
+    info = server.start(file_path=test_file, password=pw, port=0)
+
+    for i in range(3):
+        fetch_file(host="localhost", port=info.port, password=pw, outfile=tmp_path / f"out{i}.txt")
+
+    with pytest.raises(Exception):
+        fetch_file(host="localhost", port=info.port, password="bad", outfile=tmp_path / "fail.txt")
+
+    assert server.access_count == 3
+    assert server.failed_count == 1
+    server.stop()

@@ -74,3 +74,30 @@ def test_force_stop(mgr):
     # SIGKILL should work regardless
     mgr.stop("unkillable", force=True)
     assert not mgr.is_running("unkillable")
+
+
+@pytest.mark.skipif(not os.path.exists("/proc"), reason="zombie detection requires /proc (Linux only)")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_is_running_returns_false_for_zombie(mgr, tmp_path):
+    """is_running() must return False for zombie processes and clean up the PID file."""
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)  # child exits immediately → becomes zombie
+
+    # Give the OS a moment to transition the child to zombie state
+    time.sleep(0.15)
+
+    # Manually register the zombie PID in the process manager
+    (tmp_path / "pids" / "zombie.pid").write_text(str(pid))
+
+    result = mgr.is_running("zombie")
+
+    assert result is False
+    # PID file must have been cleaned up
+    assert mgr.get_pid("zombie") is None
+
+    # Reap in case is_running didn't (should be a no-op if already reaped)
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass

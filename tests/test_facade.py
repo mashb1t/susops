@@ -357,6 +357,113 @@ def test_stopped_share_not_auto_restarted(mgr_with_conn, tmp_path):
     mgr_with_conn.delete_share(info.port)
 
 
+def test_stop_tag_also_stops_connection_shares(mgr_with_conn, tmp_path):
+    """stop(tag=) must stop file shares belonging to that connection."""
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    info = mgr_with_conn.share(test_file, "work")
+    assert any(s.running for s in mgr_with_conn.list_shares())
+
+    # Stop the connection by tag — should also stop its shares
+    mgr_with_conn.stop(tag="work")
+
+    shares = mgr_with_conn.list_shares()
+    assert not any(s.port == info.port and s.running for s in shares), (
+        "Share must be stopped when its connection is stopped by tag"
+    )
+
+
+def test_stop_tag_does_not_stop_other_connection_shares(tmp_path):
+    """stop(tag='a') must leave shares belonging to other connections running."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("a", "user@a.example.com")
+    mgr.add_connection("b", "user@b.example.com")
+
+    file_a = tmp_path / "a.txt"
+    file_b = tmp_path / "b.txt"
+    file_a.write_text("aaa")
+    file_b.write_text("bbb")
+
+    info_a = mgr.share(file_a, "a")
+    info_b = mgr.share(file_b, "b")
+
+    # Stop only connection 'a'
+    mgr.stop(tag="a")
+
+    shares = mgr.list_shares()
+    assert not any(s.port == info_a.port and s.running for s in shares), (
+        "Share for connection 'a' must be stopped"
+    )
+    assert any(s.port == info_b.port and s.running for s in shares), (
+        "Share for connection 'b' must still be running"
+    )
+
+    mgr.stop_share(info_b.port)
+
+
+def test_three_state_share_offline(mgr_with_conn, tmp_path):
+    """A FileShare in config with stopped=False but no running server is 'offline'."""
+    from susops.core.config import FileShare
+
+    # Inject a FileShare into config without starting a server (simulates
+    # connection having gone down without a manual stop)
+    conn = mgr_with_conn.list_config().connections[0]
+    offline_fs = FileShare(file_path=str(tmp_path / "ghost.txt"), password="pw", port=55500, stopped=False)
+    mgr_with_conn.config = mgr_with_conn.config.model_copy(
+        update={"connections": [conn.model_copy(update={"file_shares": list(conn.file_shares) + [offline_fs]})]}
+    )
+    mgr_with_conn._save()
+
+    shares = mgr_with_conn.list_shares()
+    offline = next(s for s in shares if s.port == 55500)
+    assert offline.running is False
+    assert offline.stopped is False  # not manually stopped → offline state
+
+
+def test_list_shares_populates_access_count(mgr_with_conn, tmp_path):
+    """list_shares() must reflect live access_count from the running ShareServer."""
+    from susops.core.share import fetch_file
+
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("content")
+
+    info = mgr_with_conn.share(test_file, "work")
+
+    # Fetch twice to drive the counter
+    for i in range(2):
+        fetch_file(host="localhost", port=info.port, password=info.password,
+                   outfile=tmp_path / f"out{i}.txt")
+
+    shares = mgr_with_conn.list_shares()
+    share = next(s for s in shares if s.port == info.port)
+    assert share.access_count == 2
+    assert share.failed_count == 0
+
+    mgr_with_conn.stop_share(info.port)
+
+
+def test_list_shares_populates_failed_count(mgr_with_conn, tmp_path):
+    """list_shares() must reflect live failed_count from the running ShareServer."""
+    from susops.core.share import fetch_file
+
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("content")
+
+    info = mgr_with_conn.share(test_file, "work")
+
+    with pytest.raises(Exception):
+        fetch_file(host="localhost", port=info.port, password="wrong",
+                   outfile=tmp_path / "fail.txt")
+
+    shares = mgr_with_conn.list_shares()
+    share = next(s for s in shares if s.port == info.port)
+    assert share.failed_count == 1
+    assert share.access_count == 0
+
+    mgr_with_conn.stop_share(info.port)
+
+
 def test_restore_shares_disabled(tmp_path):
     """With restore_shares_on_start=False, no share servers are started."""
     from susops.facade import SusOpsManager
