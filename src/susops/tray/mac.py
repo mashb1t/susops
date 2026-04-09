@@ -821,9 +821,10 @@ class SusOpsMacTray(AbstractTrayApp):
             self.run_in_background(lambda: self.do_reset(), lambda _: None)
 
     def _show_about(self) -> None:
+        import susops
         self.show_output_dialog(
             "About SusOps",
-            "SusOps — SSH Tunnel & PAC Manager\n\n"
+            f"SusOps {susops.__version__} — SSH Tunnel & PAC Manager\n\n"
             "GitHub: https://github.com/mashb1t/susops\n"
             "Copyright © Manuel Schmid",
         )

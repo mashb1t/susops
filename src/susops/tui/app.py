@@ -44,7 +44,11 @@ class SusOpsTuiApp(App):
     """SusOps Textual TUI — SSH tunnel + PAC proxy manager."""
 
     TITLE = "SusOps"
-    SUB_TITLE = "SSH Tunnel & PAC Manager"
+
+    @property
+    def SUB_TITLE(self) -> str:  # type: ignore[override]
+        import susops
+        return f"SSH Tunnel & PAC Manager  v{susops.__version__}"
 
     CSS_PATH = "app.tcss"
 

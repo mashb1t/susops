@@ -1188,9 +1188,13 @@ class SusOpsLinuxTray(AbstractTrayApp):
                            margin_top=16, margin_bottom=12,
                            halign=Gtk.Align.CENTER)
             box.add(vbox)
+            import susops
             name_lbl = Gtk.Label()
             name_lbl.set_markup("<b><big>SusOps</big></b>")
             vbox.pack_start(name_lbl, False, False, 2)
+            ver_lbl = Gtk.Label(label=f"Version {susops.__version__}")
+            ver_lbl.get_style_context().add_class("dim-label")
+            vbox.pack_start(ver_lbl, False, False, 0)
             desc = Gtk.Label(label="SSH Tunnel & PAC Manager")
             desc.get_style_context().add_class("dim-label")
             vbox.pack_start(desc, False, False, 0)
