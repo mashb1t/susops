@@ -288,7 +288,7 @@ class ShareScreen(Screen):
                 continue
             try:
                 req = urllib.request.Request(status_url)
-                with urllib.request.urlopen(req, timeout=2) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:

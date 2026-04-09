@@ -71,7 +71,13 @@ class StatusServer:
 
             try:
                 while True:
-                    msg = await queue.get()
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        # Send a keepalive comment so the client socket stays
+                        # alive and doesn't hit its read timeout.
+                        await resp.write(b": ping\n\n")
+                        continue
                     if msg is None:
                         break
                     await resp.write(msg.encode())

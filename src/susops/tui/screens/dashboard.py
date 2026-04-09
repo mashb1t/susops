@@ -406,7 +406,7 @@ class DashboardScreen(Screen):
             try:
                 req = urllib.request.Request(status_url)
                 # Short timeout so the thread wakes up and can exit promptly
-                with urllib.request.urlopen(req, timeout=2) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:
