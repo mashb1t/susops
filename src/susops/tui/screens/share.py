@@ -107,12 +107,12 @@ class _FetchDialog(ModalScreen):
             self.query_one("#error", Label).update("Port must be between 1 and 65535.")
             return
         conn_val = self.query_one("#conn", Select).value
-        host = "localhost"
-        if isinstance(conn_val, str):
-            raw = self._conn_hosts.get(conn_val, conn_val)
-            host = raw.split("@")[-1]
+        conn = conn_val if isinstance(conn_val, str) else None
+        if not conn:
+            self.query_one("#error", Label).update("Connection is required.")
+            return
         outfile = self.query_one("#outfile", Input).value.strip() or None
-        self.dismiss({"port": port, "password": pw, "host": host, "outfile": outfile})
+        self.dismiss({"port": port, "password": pw, "conn": conn, "outfile": outfile})
 
 
 class ShareScreen(Screen):
@@ -168,23 +168,15 @@ class ShareScreen(Screen):
 
     def _show_detail(self, info) -> None:
         name = Path(info.file_path).name
-        fetch_local = f"susops fetch {info.port} {info.password}"
-        conn_hosts = self._conn_hosts()
-        remote_lines = ""
-        if conn_hosts:
-            remote_lines = "\n[bold]Remote fetch (via connection):[/bold]"
-            for tag, ssh_host in conn_hosts.items():
-                host = ssh_host.split("@")[-1]
-                remote_lines += f"\n  [dim]{tag}: susops fetch {info.port} {info.password} --host {host}[/dim]"
         text = (
-            f"[bold]File:[/bold]     {info.file_path}\n"
-            f"[bold]Name:[/bold]     {name}\n"
-            f"[bold]Port:[/bold]     {info.port}\n"
-            f"[bold]URL:[/bold]      {info.url}\n"
-            f"[bold]Password:[/bold] {info.password}\n\n"
-            f"[bold]Local fetch:[/bold]\n"
-            f"  [dim]{fetch_local}[/dim]"
-            f"{remote_lines}"
+            f"[bold]File:[/bold]       {info.file_path}\n"
+            f"[bold]Name:[/bold]       {name}\n"
+            f"[bold]Port:[/bold]       {info.port}\n"
+            f"[bold]URL:[/bold]        {info.url}\n"
+            f"[bold]Password:[/bold]   {info.password}\n"
+            f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n\n"
+            f"[bold]Fetch command:[/bold]\n"
+            f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
         )
         self.query_one("#share-detail", Static).update(text)
 
@@ -197,14 +189,14 @@ class ShareScreen(Screen):
         def _on_result(data) -> None:
             if not data:
                 return
-            self._do_share(data["path"], data["password"], data["port"])
+            self._do_share(data["path"], data["conn"], data["password"], data["port"])
         self.app.push_screen(_AddShareDialog(self._conn_hosts()), _on_result)
 
     def action_fetch_file(self) -> None:
         def _on_result(data) -> None:
             if not data:
                 return
-            self._do_fetch(data["port"], data["password"], data["host"], data["outfile"])
+            self._do_fetch(data["port"], data["password"], data["conn"], data["outfile"])
         self.app.push_screen(_FetchDialog(self._conn_hosts()), _on_result)
 
     def action_stop_share(self) -> None:
@@ -219,10 +211,10 @@ class ShareScreen(Screen):
         self._reload()
 
     @work(thread=True)
-    def _do_share(self, path: str, password: str | None, port: int) -> None:
+    def _do_share(self, path: str, conn_tag: str, password: str | None, port: int) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         try:
-            info = mgr.share(Path(path), password=password, port=port or None)
+            info = mgr.share(Path(path), conn_tag, password=password, port=port or None)
             msg = f"[green]Sharing {Path(path).name} on :{info.port}  pw: {info.password}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
@@ -230,11 +222,11 @@ class ShareScreen(Screen):
         self.app.call_from_thread(self._reload)
 
     @work(thread=True)
-    def _do_fetch(self, port: int, password: str, host: str, outfile: str | None) -> None:
+    def _do_fetch(self, port: int, password: str, conn_tag: str, outfile: str | None) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
         out = Path(outfile) if outfile else None
         try:
-            result = mgr.fetch(port=port, password=password, host=host, outfile=out)
+            result = mgr.fetch(port=port, password=password, conn_tag=conn_tag, outfile=out)
             msg = f"[green]Downloaded to: {result}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"

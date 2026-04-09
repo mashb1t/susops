@@ -183,7 +183,6 @@ class DashboardScreen(Screen):
         share_str = f"  [dim]shares: {len(shares)}[/dim]" if shares else ""
         self.query_one("#status-bar", Static).update(
             f"[{color}]●[/{color}] {running_count}/{total_count} running"
-            f"  PAC: {pac_str}:{pac_port_str}"
             f"{share_str}"
         )
 
@@ -275,7 +274,7 @@ class DashboardScreen(Screen):
             share_lines = []
             for info in shares:
                 name = Path(info.file_path).name
-                share_lines.append(f"[green]●[/green] {name}  :{info.port}")
+                share_lines.append(f"[green]●[/green] {name}  {info.port}")
             shares_widget.update("\n".join(share_lines))
 
         # Refresh detail panel for currently selected tag

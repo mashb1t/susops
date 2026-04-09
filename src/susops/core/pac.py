@@ -70,7 +70,7 @@ class _PacHandler(BaseHTTPRequestHandler):
 
     pac_path: Path  # set by PacServer before creating HTTPServer
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path not in ("/susops.pac", "/"):
             self.send_response(404)
             self.end_headers()
@@ -88,7 +88,7 @@ class _PacHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         """POST /stop — remote shutdown so other processes can stop this server."""
         if self.path != "/stop":
             self.send_response(404)
@@ -99,7 +99,7 @@ class _PacHandler(BaseHTTPRequestHandler):
         # Shut down in a background thread so the response can be sent first
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
-    def log_message(self, fmt: str, *args: object) -> None:  # noqa: N802
+    def log_message(self, fmt: str, *args: object) -> None:
         pass  # suppress default access log
 
 
