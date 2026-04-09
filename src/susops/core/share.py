@@ -1,7 +1,7 @@
 """Encrypted file sharing server and client for SusOps.
 
 Replaces the bash implementation that used nc + openssl + gzip.
-Uses Python's http.server + cryptography library for AES-256-CTR encryption.
+Uses aiohttp for async HTTP serving + cryptography library for AES-256-CTR encryption.
 
 Protocol (same as original):
 - HTTP Basic auth with credentials ":password" (empty username)
@@ -9,22 +9,24 @@ Protocol (same as original):
 - Original filename is AES-encrypted and base64-encoded in Content-Disposition
 - Served as application/octet-stream
 
-Requires: cryptography>=42 (install with pip install susops[crypto])
+Requires: cryptography>=42, aiohttp>=3.9 (install with pip install susops[share])
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import gzip
 import os
 import secrets
 import string
-import tempfile
 import threading
-import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from susops.core.types import ShareInfo
+
+if TYPE_CHECKING:
+    pass
 
 __all__ = ["ShareServer", "fetch_file", "generate_password", "ShareInfo"]
 
@@ -35,7 +37,17 @@ def _require_crypto() -> None:
     except ImportError as e:
         raise ImportError(
             "File sharing requires the 'cryptography' package. "
-            "Install with: pip install 'susops[crypto]'"
+            "Install with: pip install 'susops[share]'"
+        ) from e
+
+
+def _require_aiohttp() -> None:
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "File sharing requires the 'aiohttp' package. "
+            "Install with: pip install 'susops[share]'"
         ) from e
 
 
@@ -118,57 +130,43 @@ def generate_password(length: int = 24) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-class _ShareHandler(BaseHTTPRequestHandler):
-    """HTTP handler that serves a single encrypted file with Basic auth."""
+# ---------------------------------------------------------------------------
+# Shared event loop — all ShareServer instances and the StatusServer reuse one
+# daemon thread + asyncio loop to avoid creating multiple threads.
+# ---------------------------------------------------------------------------
 
-    def _check_auth(self) -> bool:
-        auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Basic "):
-            return False
-        try:
-            decoded = base64.b64decode(auth_header[6:]).decode()
-            _, _, pw = decoded.partition(":")
-            return pw == self.server.share_password  # type: ignore[attr-defined]
-        except Exception:
-            return False
+_loop: asyncio.AbstractEventLoop | None = None
+_loop_lock = threading.Lock()
 
-    def do_GET(self) -> None:  # noqa: N802
-        if not self._check_auth():
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="susops share"')
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
 
-        encrypted_data: bytes = self.server.share_data  # type: ignore[attr-defined]
-        encrypted_filename: str = self.server.share_filename_enc  # type: ignore[attr-defined]
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(encrypted_data)))
-        self.send_header(
-            "Content-Disposition",
-            f'attachment; filename="{encrypted_filename}"',
-        )
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(encrypted_data)
-
-    def log_message(self, fmt: str, *args: object) -> None:  # noqa: N802
-        pass
+def _get_loop() -> asyncio.AbstractEventLoop:
+    """Return (and lazily initialise) the shared daemon event loop."""
+    global _loop
+    with _loop_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            t = threading.Thread(
+                target=_loop.run_forever,
+                name="susops-async-loop",
+                daemon=True,
+            )
+            t.start()
+        return _loop
 
 
 class ShareServer:
-    """HTTP file share server with AES-256-CTR encryption.
+    """Async HTTP file share server with AES-256-CTR encryption.
 
-    The file is encrypted in memory and served via HTTP Basic auth.
-    Replaces the bash nc + openssl + FIFO approach.
+    The file is encrypted in memory and served via HTTP Basic auth using aiohttp.
+    Multiple ShareServer instances share one background event loop thread.
     """
 
     def __init__(self) -> None:
-        self._server: HTTPServer | None = None
-        self._thread: threading.Thread | None = None
+        self._runner = None
         self._port: int = 0
+        self._encrypted_data: bytes = b""
+        self._encrypted_filename: str = ""
+        self._password: str = ""
 
     def start(
         self,
@@ -177,32 +175,25 @@ class ShareServer:
         port: int = 0,
         workspace: Path | None = None,
     ) -> ShareInfo:
-        """Encrypt and start serving the file.
+        """Encrypt and start serving the file asynchronously.
 
         Returns ShareInfo with the URL and credentials.
         """
         _require_crypto()
+        _require_aiohttp()
 
-        if self._server is not None:
+        if self._runner is not None:
             raise RuntimeError("Share server is already running")
 
-        encrypted_data = _compress_and_encrypt(file_path, password)
-        encrypted_filename = _encrypt_filename(file_path.name, password)
+        self._encrypted_data = _compress_and_encrypt(file_path, password)
+        self._encrypted_filename = _encrypt_filename(file_path.name, password)
+        self._password = password
 
-        server = HTTPServer(("127.0.0.1", port), _ShareHandler)
-        server.share_data = encrypted_data  # type: ignore[attr-defined]
-        server.share_password = password  # type: ignore[attr-defined]
-        server.share_filename_enc = encrypted_filename  # type: ignore[attr-defined]
-
-        self._server = server
-        self._port = server.server_address[1]
-
-        self._thread = threading.Thread(
-            target=server.serve_forever,
-            name="susops-share-server",
-            daemon=True,
+        loop = _get_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._start_async(port), loop
         )
-        self._thread.start()
+        self._port = future.result(timeout=10)
 
         return ShareInfo(
             file_path=str(file_path),
@@ -211,19 +202,63 @@ class ShareServer:
             url=f"http://localhost:{self._port}",
         )
 
+    async def _start_async(self, port: int) -> int:
+        from aiohttp import web
+
+        async def handle(request: web.Request) -> web.Response:
+            auth = request.headers.get("Authorization", "")
+            if not auth.startswith("Basic "):
+                return web.Response(
+                    status=401,
+                    headers={"WWW-Authenticate": 'Basic realm="susops share"'},
+                )
+            try:
+                decoded = base64.b64decode(auth[6:]).decode()
+                _, _, pw = decoded.partition(":")
+            except Exception:
+                return web.Response(status=401)
+            if pw != self._password:
+                return web.Response(
+                    status=401,
+                    headers={"WWW-Authenticate": 'Basic realm="susops share"'},
+                )
+
+            return web.Response(
+                body=self._encrypted_data,
+                content_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{self._encrypted_filename}"',
+                    "Connection": "close",
+                },
+            )
+
+        app = web.Application()
+        app.router.add_get("/", handle)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+        self._runner = runner
+        # Resolve the actual bound port (important when port=0)
+        return site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+
     def stop(self) -> None:
         """Stop the share server."""
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        if self._runner is not None:
+            loop = _get_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                self._runner.cleanup(), loop
+            )
+            try:
+                future.result(timeout=5)
+            except Exception:
+                pass
+            self._runner = None
         self._port = 0
 
     def is_running(self) -> bool:
-        return self._server is not None and self._thread is not None and self._thread.is_alive()
+        return self._runner is not None
 
     def get_port(self) -> int:
         return self._port
@@ -248,23 +283,43 @@ def fetch_file(
     """
     _require_crypto()
 
+    loop = _get_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        _fetch_async(host, port, password, outfile), loop
+    )
+    return future.result(timeout=60)
+
+
+async def _fetch_async(
+    host: str,
+    port: int,
+    password: str,
+    outfile: Path | None,
+) -> Path:
+    _require_aiohttp()
+    import aiohttp
+
     url = f"http://{host}:{port}"
     credentials = base64.b64encode(f":{password}".encode()).decode()
-    req = urllib.request.Request(url, headers={"Authorization": f"Basic {credentials}"})
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"Share server returned HTTP {resp.status}")
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers={"Authorization": f"Basic {credentials}"},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Share server returned HTTP {resp.status}")
 
-        content_disp = resp.headers.get("Content-Disposition", "")
-        encrypted_filename = ""
-        for part in content_disp.split(";"):
-            part = part.strip()
-            if part.startswith("filename="):
-                encrypted_filename = part[9:].strip('"')
-                break
+            content_disp = resp.headers.get("Content-Disposition", "")
+            encrypted_filename = ""
+            for part in content_disp.split(";"):
+                part = part.strip()
+                if part.startswith("filename="):
+                    encrypted_filename = part[9:].strip('"')
+                    break
 
-        encrypted_data = resp.read()
+            encrypted_data = await resp.read()
 
     decrypted = _decrypt_and_decompress(encrypted_data, password)
 

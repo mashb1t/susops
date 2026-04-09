@@ -27,6 +27,10 @@ tray-linux = []
 tray-mac = [
     "rumps>=0.4",
 ]
+share = [
+    "cryptography>=42",
+    "aiohttp>=3.9",
+]
 crypto = [
     "cryptography>=42",
 ]
