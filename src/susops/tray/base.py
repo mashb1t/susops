@@ -314,6 +314,77 @@ class AbstractTrayApp(ABC):
                 subprocess.Popen([opener, str(config_path)])
                 return
 
+    # ------------------------------------------------------------------ #
+    # File sharing
+    # ------------------------------------------------------------------ #
+
+    def do_share(
+        self,
+        conn_tag: str,
+        file_path: str,
+        password: str | None = None,
+        port: int = 0,
+    ) -> None:
+        def _run():
+            try:
+                info = self.manager.share(
+                    __import__("pathlib").Path(file_path),
+                    conn_tag,
+                    password=password or None,
+                    port=port or None,
+                )
+                return info, None
+            except Exception as exc:
+                return None, str(exc)
+
+        def _done(result):
+            info, err = result
+            if err:
+                self.show_alert("Share Failed", err)
+            elif info:
+                self.show_alert(
+                    "Share Started",
+                    f"Sharing {__import__('pathlib').Path(info.file_path).name}\n"
+                    f"Port:     {info.port}\n"
+                    f"Password: {info.password}",
+                )
+
+        self.run_in_background(_run, _done)
+
+    def do_stop_share(self, port: int | None = None) -> None:
+        def _run():
+            self.manager.stop_share(port)
+        self.run_in_background(_run)
+
+    def do_fetch(
+        self,
+        conn_tag: str,
+        port: int,
+        password: str,
+        outfile: str | None = None,
+    ) -> None:
+        def _run():
+            try:
+                out = __import__("pathlib").Path(outfile) if outfile else None
+                result = self.manager.fetch(
+                    port=port, password=password, conn_tag=conn_tag, outfile=out
+                )
+                return str(result), None
+            except Exception as exc:
+                return None, str(exc)
+
+        def _done(result):
+            path, err = result
+            if err:
+                self.show_alert("Fetch Failed", err)
+            else:
+                self.show_alert("Download Complete", f"Saved to:\n{path}")
+
+        self.run_in_background(_run, _done)
+
+    def do_list_shares(self) -> list:
+        return self.manager.list_shares()
+
     def do_reset(self, force: bool = False) -> None:
         self.manager.reset()
         self.show_alert("Reset", "Workspace has been reset.")
