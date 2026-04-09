@@ -210,7 +210,6 @@ class SusOpsMacTray(AbstractTrayApp):
             None,
             add_menu,
             rm_menu,
-            rumps.MenuItem("List All", callback=lambda _: self.do_list_all()),
             rumps.MenuItem("Open Config File", callback=lambda _: self.do_open_config_file()),
             None,
             self._item_start,
@@ -409,6 +408,7 @@ class SusOpsMacTray(AbstractTrayApp):
             import pathlib
             name = pathlib.Path(info.file_path).name
             state = "running" if info.running else "stopped"
+            toggle_label = "Stop" if info.running else "Start"
             response = self._rumps.alert(
                 title=f"Share: {name}",
                 message=(
@@ -418,11 +418,18 @@ class SusOpsMacTray(AbstractTrayApp):
                     f"Connection: {info.conn_tag or '—'}\n"
                     f"State: {state}"
                 ),
-                ok="Stop Share",
+                ok=toggle_label,
                 cancel="Close",
+                other="Delete",
             )
-            if response == 1:  # OK = Stop Share
-                self.do_stop_share(info.port)
+            if response == 1:  # OK = Stop/Start
+                if info.running:
+                    self.do_stop_share(info.port)
+                else:
+                    self.do_share(info.conn_tag or "", info.file_path, info.password, info.port)
+                self._refresh_share_submenu()
+            elif response == 0:  # other = Delete
+                self.do_delete_share(info.port)
                 self._refresh_share_submenu()
         return handler
 

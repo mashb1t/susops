@@ -75,7 +75,6 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-o", "ControlMaster=yes",
         "-o", f"ControlPath={sock}",
         "-o", "ControlPersist=yes",
-        "-o", "ExitOnForwardFailure=yes",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
     ]

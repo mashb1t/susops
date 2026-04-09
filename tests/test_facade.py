@@ -174,7 +174,7 @@ def test_share_records_conn_tag(mgr_with_conn, tmp_path):
     mgr_with_conn.stop_share(info.port)
 
 
-def test_stop_share_removes_remote_forward(mgr_with_conn, tmp_path):
+def test_stop_share_keeps_config_entry(mgr_with_conn, tmp_path):
     test_file = tmp_path / "data.txt"
     test_file.write_text("hello")
 
@@ -182,12 +182,15 @@ def test_stop_share_removes_remote_forward(mgr_with_conn, tmp_path):
     port = info.port
     mgr_with_conn.stop_share(port)
 
+    # stop_share keeps the FileShare entry in config (shows as stopped)
     conn = mgr_with_conn.list_config().connections[0]
-    # FileShare entry must be removed from config after stop
-    assert not any(f.port == port for f in conn.file_shares)
+    assert any(f.port == port for f in conn.file_shares)
+    # But the server is no longer running
+    shares = mgr_with_conn.list_shares()
+    assert any(s.port == port and not s.running for s in shares)
 
 
-def test_stop_all_shares_removes_all_remote_forwards(mgr_with_conn, tmp_path):
+def test_stop_all_shares_keeps_config_entries(mgr_with_conn, tmp_path):
     f1 = tmp_path / "a.txt"
     f2 = tmp_path / "b.txt"
     f1.write_text("a")
@@ -195,11 +198,14 @@ def test_stop_all_shares_removes_all_remote_forwards(mgr_with_conn, tmp_path):
 
     i1 = mgr_with_conn.share(f1, "work")
     i2 = mgr_with_conn.share(f2, "work")
-    mgr_with_conn.stop_share()  # stop all
+    mgr_with_conn.stop_share()  # stop all (keeps config entries)
 
+    # Entries still in config, but not running
     conn = mgr_with_conn.list_config().connections[0]
-    # All FileShare entries must be removed after stop_share()
-    assert not any(f.port in (i1.port, i2.port) for f in conn.file_shares)
+    assert any(f.port == i1.port for f in conn.file_shares)
+    assert any(f.port == i2.port for f in conn.file_shares)
+    shares = mgr_with_conn.list_shares()
+    assert all(not s.running for s in shares if s.port in (i1.port, i2.port))
 
 
 def test_share_unknown_connection_raises(mgr, tmp_path):
@@ -264,15 +270,32 @@ def test_share_saves_file_share_to_config(mgr_with_conn, tmp_path):
     mgr_with_conn.stop_share(info.port)
 
 
-def test_stop_share_removes_file_share_from_config(mgr_with_conn, tmp_path):
+def test_delete_share_removes_file_share_from_config(mgr_with_conn, tmp_path):
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+
+    info = mgr_with_conn.share(test_file, "work")
+    mgr_with_conn.delete_share(info.port)
+
+    conn = mgr_with_conn.list_config().connections[0]
+    assert not any(fs.port == info.port for fs in conn.file_shares)
+
+
+def test_stop_share_then_start_again(mgr_with_conn, tmp_path):
     test_file = tmp_path / "data.txt"
     test_file.write_text("hello")
 
     info = mgr_with_conn.share(test_file, "work")
     mgr_with_conn.stop_share(info.port)
 
+    # Config entry persists — re-share with same params
     conn = mgr_with_conn.list_config().connections[0]
-    assert not any(fs.port == info.port for fs in conn.file_shares)
+    fs = next(f for f in conn.file_shares if f.port == info.port)
+    info2 = mgr_with_conn.share(Path(fs.file_path), "work", password=fs.password, port=fs.port)
+
+    assert info2.running is True
+    # Clean up
+    mgr_with_conn.delete_share(info2.port)
 
 
 def test_list_shares_shows_running_and_stopped(mgr_with_conn, tmp_path):

@@ -266,11 +266,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         rm_item.set_submenu(rm_sub)
         self._menu.append(rm_item)
 
-        # ── List All / Open Config ─────────────────────────────────────────
-        i = Gtk.MenuItem(label="List All")
-        i.connect("activate", lambda _: self.do_list_all())
-        self._menu.append(i)
-
+        # ── Open Config ───────────────────────────────────────────────────
         i = Gtk.MenuItem(label="Open Config File")
         i.connect("activate", lambda _: self.do_open_config_file())
         self._menu.append(i)
@@ -1109,7 +1105,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         name = pathlib.Path(info.file_path).name
         state = "running" if info.running else "stopped"
         dlg = Gtk.Dialog(title=f"Share: {name}", transient_for=self._root, modal=True)
-        dlg.add_buttons("_Stop Share", Gtk.ResponseType.REJECT, "_Close", Gtk.ResponseType.CLOSE)
+        # Buttons: Stop/Start (context-sensitive), Delete, Close
+        _RESP_TOGGLE = 10   # Stop if running, Start if stopped
+        _RESP_DELETE = 11
+        if info.running:
+            dlg.add_button("_Stop", _RESP_TOGGLE)
+        else:
+            dlg.add_button("_Start", _RESP_TOGGLE)
+        dlg.add_button("_Delete", _RESP_DELETE)
+        dlg.add_button("_Close", Gtk.ResponseType.CLOSE)
         dlg.set_default_response(Gtk.ResponseType.CLOSE)
         dlg.set_default_size(380, -1)
 
@@ -1136,8 +1140,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
         dlg.show_all()
         resp = dlg.run()
         dlg.destroy()
-        if resp == Gtk.ResponseType.REJECT:
-            self.do_stop_share(info.port)
+        if resp == _RESP_TOGGLE:
+            if info.running:
+                self.do_stop_share(info.port)
+            else:
+                self.do_share(info.conn_tag or "", info.file_path, info.password, info.port)
+            self._GLib.idle_add(self._refresh_share_submenu)
+        elif resp == _RESP_DELETE:
+            self.do_delete_share(info.port)
             self._GLib.idle_add(self._refresh_share_submenu)
         return False
 

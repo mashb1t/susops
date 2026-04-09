@@ -122,8 +122,9 @@ class ShareScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_share", "Add share"),
         Binding("f", "fetch_file", "Fetch"),
-        Binding("d", "stop_share", "Stop share"),
-        Binding("s", "start_share", "Start share"),
+        Binding("d", "stop_share", "Stop"),
+        Binding("s", "start_share", "Start"),
+        Binding("x", "delete_share", "Delete"),
         Binding("r", "refresh", "Refresh"),
     ]
 
@@ -194,9 +195,10 @@ class ShareScreen(Screen):
             text += (
                 f"\n[bold]Fetch command:[/bold]\n"
                 f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
+                f"\n\n[dim]Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
             )
         else:
-            text += "\n[dim]Press [bold]s[/bold] to restart this share.[/dim]"
+            text += "\n[dim]Press [bold]s[/bold] to restart · [bold]x[/bold] to delete[/dim]"
         self.query_one("#share-detail", Static).update(text)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
@@ -224,6 +226,14 @@ class ShareScreen(Screen):
             return
         port = self._shares[idx].port
         self.app.manager.stop_share(port)  # type: ignore[attr-defined]
+        self._reload()
+
+    def action_delete_share(self) -> None:
+        idx = self.query_one("#share-list", ListView).index
+        if idx is None or idx >= len(self._shares):
+            return
+        port = self._shares[idx].port
+        self.app.manager.delete_share(port)  # type: ignore[attr-defined]
         self._reload()
 
     def action_start_share(self) -> None:

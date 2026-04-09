@@ -92,25 +92,39 @@ class _BandwidthSampler:
         sys_rx = float(net.bytes_recv)
         sys_tx = float(net.bytes_sent)
 
+        # Build tag → list[pid] covering master + all slave processes.
+        # Forward slaves are NOT OS children of the master (start_new_session=True),
+        # so proc.children() misses them.
+        all_entries = self._mgr.status_all()
+        master_tags: dict[str, int] = {}
+        for key in all_entries:
+            if key.startswith(SSH_PROCESS_PREFIX + "-"):
+                tag = key[len(SSH_PROCESS_PREFIX) + 1:]
+                pid = self._mgr.get_pid(key)
+                if pid:
+                    master_tags[tag] = pid
+
+        tag_pids: dict[str, list[int]] = {tag: [pid] for tag, pid in master_tags.items()}
+        for key in all_entries:
+            if key.startswith(FWD_PROCESS_PREFIX + "-"):
+                remainder = key[len(FWD_PROCESS_PREFIX) + 1:]
+                for tag in master_tags:
+                    if remainder.startswith(tag + "-"):
+                        pid = self._mgr.get_pid(key)
+                        if pid:
+                            tag_pids[tag].append(pid)
+                        break
+
         proc_chars: dict[str, float] = {}
-        for key, _running in self._mgr.status_all().items():
-            if not key.startswith(SSH_PROCESS_PREFIX):
-                continue
-            tag = key[len(SSH_PROCESS_PREFIX) + 1:]
-            pid = self._mgr.get_pid(key)
-            if pid is None:
-                continue
-            try:
-                proc = psutil.Process(pid)
-                all_procs = [proc] + proc.children(recursive=True)
-                chars = sum(
-                    getattr(p.io_counters(), "read_chars", 0)
-                    for p in all_procs
-                    if p.is_running()
-                )
-                proc_chars[tag] = float(chars)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
-                pass
+        for tag, pids in tag_pids.items():
+            chars = 0.0
+            for pid in pids:
+                try:
+                    proc = psutil.Process(pid)
+                    chars += float(getattr(proc.io_counters(), "read_chars", 0))
+                except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+                    pass
+            proc_chars[tag] = chars
 
         with self._lock:
             if self._prev_net is not None:
@@ -793,18 +807,15 @@ class SusOpsManager:
         return info
 
     def stop_share(self, port: int | None = None) -> None:
-        """Stop a specific share by port, or all shares if port is None."""
+        """Stop share server(s) without removing from config (entry shows as stopped)."""
         if port is not None:
             entry = self._share_servers.pop(port, None)
             if entry:
                 entry[0].stop()
                 info = entry[1]
                 self._log(f"File share on port {port} stopped")
-                # Stop the forward slave
                 if info.conn_tag:
                     stop_forward(info.conn_tag, f"share-{port}", self._process_mgr)
-                # Remove from config
-                self._remove_file_share_from_config(port)
                 self._status_server.emit("share", {
                     "port": port,
                     "file": Path(info.file_path).name,
@@ -817,7 +828,6 @@ class SusOpsManager:
                 self._log(f"File share on port {p} stopped")
                 if info.conn_tag:
                     stop_forward(info.conn_tag, f"share-{p}", self._process_mgr)
-                self._remove_file_share_from_config(p)
                 self._status_server.emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
@@ -825,6 +835,17 @@ class SusOpsManager:
                     "conn_tag": info.conn_tag,
                 })
             self._share_servers.clear()
+
+    def delete_share(self, port: int) -> None:
+        """Stop and permanently remove a share from config."""
+        self.stop_share(port)
+        self._remove_file_share_from_config(port)
+        self._status_server.emit("share", {
+            "port": port,
+            "file": "",
+            "running": False,
+            "conn_tag": None,
+        })
 
     def list_shares(self) -> list[ShareInfo]:
         """Return info for all shares: running (in-memory) and stopped (config-only)."""
@@ -982,23 +1003,36 @@ class SusOpsManager:
         conn = get_connection(self.config, tag)
         socks_port = conn.socks_proxy_port if conn else 0
 
-        try:
-            proc = psutil.Process(pid)
-            all_procs = [proc] + proc.children(recursive=True)
-            cpu = sum(p.cpu_percent(interval=None) for p in all_procs if p.is_running())
-            mem_mb = sum(p.memory_info().rss for p in all_procs if p.is_running()) / 1_048_576
-            active_conns = 0
-            if socks_port:
-                try:
-                    active_conns = sum(
-                        1 for c in psutil.net_connections("tcp")
-                        if c.laddr.port == socks_port and c.status == "ESTABLISHED"
-                    )
-                except (psutil.AccessDenied, OSError):
-                    pass
-            return {"cpu": cpu, "mem_mb": mem_mb, "conns": active_conns}
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return {}
+        # Collect master PID + all forward slave PIDs for this tag.
+        # Slaves are not OS children (start_new_session=True), so children() misses them.
+        all_pids = [pid]
+        prefix = f"{FWD_PROCESS_PREFIX}-{tag}-"
+        for key in self._process_mgr.status_all():
+            if key.startswith(prefix):
+                slave_pid = self._process_mgr.get_pid(key)
+                if slave_pid:
+                    all_pids.append(slave_pid)
+
+        cpu = 0.0
+        mem_mb = 0.0
+        for p_pid in all_pids:
+            try:
+                proc = psutil.Process(p_pid)
+                cpu += proc.cpu_percent(interval=None)
+                mem_mb += proc.memory_info().rss / 1_048_576
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        active_conns = 0
+        if socks_port:
+            try:
+                active_conns = sum(
+                    1 for c in psutil.net_connections("tcp")
+                    if c.laddr.port == socks_port and c.status == "ESTABLISHED"
+                )
+            except (psutil.AccessDenied, OSError):
+                pass
+        return {"cpu": cpu, "mem_mb": mem_mb, "conns": active_conns}
 
     def get_pac_url(self) -> str:
         port = self._pac_server.get_port() or self.config.pac_server_port
