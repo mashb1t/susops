@@ -10,8 +10,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     DataTable,
-    Footer,
-    Header,
     Label,
     ListItem,
     ListView,
@@ -53,6 +51,28 @@ def _yticks(max_val: float, unit: str, n: int = 6) -> tuple[list[float], list[st
     return ticks, labels
 
 
+def _fmt_bytes(b: float) -> str:
+    """Format raw bytes as a human-readable string (e.g. 1.2 GB, 450 MB, 12 kB)."""
+    if b >= 1_073_741_824:
+        return f"{b / 1_073_741_824:.1f}GB"
+    if b >= 1_048_576:
+        return f"{b / 1_048_576:.1f}MB"
+    if b >= 1024:
+        return f"{b / 1024:.0f}kB"
+    return f"{b:.0f}B"
+
+
+def _fmt_uptime(seconds: float) -> str:
+    """Format elapsed seconds as 'Xh Ym', 'Xm', or 'Xs'."""
+    if seconds >= 3600:
+        h = int(seconds / 3600)
+        m = int((seconds % 3600) / 60)
+        return f"{h}h {m}m"
+    if seconds >= 60:
+        return f"{int(seconds / 60)}m"
+    return f"{int(seconds)}s"
+
+
 class DashboardScreen(Screen):
 
     BINDINGS = [
@@ -69,19 +89,21 @@ class DashboardScreen(Screen):
 
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
-    #status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
-    #split { height: 1fr; }
-    #sidebar { width: 36; background: $surface-darken-1; border-right: solid $primary-darken-2; }
-    #pac-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
-    #shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; }
-    #detail-tabs { width: 1fr; }
-    #bw-container { height: 1fr; }
+    #main-split { height: 1fr; }
+    #conn-panel { width: 22; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1; border-title-align: left; }
+    #detail-panel { width: 1fr; }
+    #detail-tabs  { height: 1fr; }
+    #stats-content { height: auto; padding: 1 2; }
+    #bw-container  { height: 1fr; min-height: 8; }
     #rx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
     #tx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 0; }
-    #stats-content { height: auto; padding: 1 2; }
-    #fwd-table { height: 1fr; margin: 1; }
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
-    #conn-list { height: auto; min-height: 3; border: round $primary-darken-1; margin: 1 0 1 0; border-title-align: left; }
+    #context-panel { width: 26; background: $surface-darken-1; border-left: solid $primary-darken-2; }
+    #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
+    #domain-content { padding: 0 1; }
+    #forward-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
+    #share-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 0 1 1 1; border-title-align: left; }
     """
 
     def __init__(self, **kwargs) -> None:
@@ -95,33 +117,33 @@ class DashboardScreen(Screen):
         self._sse_active: bool = True
 
     def compose(self) -> ComposeResult:
-        #yield Header()
-        with Horizontal(id="split"):
-            with VerticalScroll(id="sidebar"):
-                yield Static("", id="status-bar")
+        with Horizontal(id="main-split"):
+            # Left: connection list
+            with Vertical(id="conn-panel"):
                 yield ListView(id="conn-list")
-                yield Static("", id="pac-info")
-                yield Static("", id="shares-info")
-            with TabbedContent(id="detail-tabs"):
-                with TabPane("Stats", id="tab-stats"):
-                    yield Static("Select a connection.", id="stats-content")
-                with TabPane("Bandwidth", id="tab-bw"):
-                    with Horizontal(id="bw-container"):
-                        yield PlotextPlot(id="rx-chart")
-                        yield PlotextPlot(id="tx-chart")
-                with TabPane("Forwards", id="tab-fwd"):
-                    yield DataTable(id="fwd-table", cursor_type="row")
-                with TabPane("Logs", id="tab-logs"):
-                    yield RichLog(id="detail-logs", highlight=True, markup=True)
+            # Centre: stats + bandwidth + logs
+            with Vertical(id="detail-panel"):
+                with TabbedContent(id="detail-tabs"):
+                    with TabPane("Stats", id="tab-stats"):
+                        yield Static("", id="stats-content")
+                        with Horizontal(id="bw-container"):
+                            yield PlotextPlot(id="rx-chart")
+                            yield PlotextPlot(id="tx-chart")
+                    with TabPane("Logs", id="tab-logs"):
+                        yield RichLog(id="detail-logs", highlight=True, markup=True)
+            # Right: context panel (domains / forwards / shares)
+            with Vertical(id="context-panel"):
+                with VerticalScroll(id="domain-section"):
+                    yield Static("", id="domain-content", markup=True)
+                yield Static("", id="forward-content", markup=True)
+                yield Static("", id="share-content", markup=True)
         yield from compose_footer()
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
-        self.query_one("#pac-info", Static).border_title = "PAC Server"
-        self.query_one("#shares-info", Static).border_title = "Shares"
-        self.query_one("#fwd-table", DataTable).add_columns(
-            "Direction", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label"
-        )
+        self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
+        self.query_one("#forward-content", Static).border_title = "Forwards"
+        self.query_one("#share-content", Static).border_title = "Shares"
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log

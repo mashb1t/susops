@@ -9,17 +9,7 @@ Footer { background: $surface-darken-2; }
 .footer-version { width: auto; padding: 0 1; background: $surface-darken-2; color: $text-muted; content-align: center middle; }
 
 /* ── Dashboard ── */
-#status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
-#conn-list { height: auto; min-height: 3; border: round $primary-darken-1; margin: 1 0 1 0; border-title-align: left; }
 #conn-list > ListItem { height: 1; padding: 0 1; }
-#pac-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; border-title-align: left; }
-#shares-info { height: auto; padding: 0 1; margin: 0 0 1 0; border: round $primary-darken-1; border-title-align: left; }
-#bw-container { height: 1fr; }
-#rx-chart { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
-#tx-chart { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1; }
-#stats-content { height: auto; padding: 1 2; }
-#fwd-table { height: 1fr; margin: 1; }
-#detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
 
 /* ── Connection editor ── */
 .tab-actions { height: 3; layout: horizontal; padding: 0 1; background: $surface-darken-1; }
