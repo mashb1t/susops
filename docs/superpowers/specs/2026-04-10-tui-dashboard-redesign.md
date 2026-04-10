@@ -108,21 +108,24 @@ The bandwidth charts share available vertical space. If the terminal is short, t
 
 Title updates to the selected connection name, or `All` when in global view.
 
-Three stacked sections:
+Three stacked sections with deliberate height allocation, designed for realistic data volumes (10+ domains, 2-3 forwards, 1-2 shares):
 
-**Domain / IP / CIDR** (renamed from "PAC Hosts")
+**Domain / IP / CIDR** (renamed from "PAC Hosts") — `height: 1fr`, scrollable
+- Takes all remaining vertical space after Forwards and Shares are allocated.
+- Scrollable with a `↓ N more` indicator when content overflows.
 - In All view: each entry prefixed with `[conn]` tag.
 - In connection view: entries for that connection only, no prefix.
 
-**Forwards**
+**Forwards** — fixed height (~5 rows), always visible, pinned above Shares
 - In All view: each forward prefixed with `[conn]` tag, direction arrow `→` (local) or `←` (remote).
 - In connection view: forwards for that connection only.
 
-**Shares**
-- In All view: all shares with their status dot, filename, and port.
+**Shares** — fixed height (~3 rows), always visible, pinned at bottom
+- Status dot, filename, port for each share.
+- In All view: all shares across connections.
 - In connection view: shares belonging to that connection only.
 
-All three sections are read-only in this panel (add/delete/manage via the dedicated screens or modals). The right panel is purely informational.
+Forwards and Shares are always visible regardless of domain count — they are never pushed off screen. All three sections are read-only in this panel; add/delete/manage via dedicated screens or modals.
 
 ---
 
@@ -153,8 +156,8 @@ Share, Config, and the command palette are unchanged. The dashboard becomes the 
 
 ## Constraints & Notes
 
-- Textual 8.2.3 layout: three `Horizontal` children with fixed/1fr widths. Right panel uses stacked `Static` widgets with `border_title` for section headings.
-- Right panel sections (Domains, Forwards, Shares) are `VerticalScroll` to handle overflow gracefully.
+- Textual 8.2.3 layout: three `Horizontal` children with fixed/1fr widths.
+- Right panel is a `Vertical` container. Domain section is a `VerticalScroll` with `height: 1fr`. Forwards and Shares are fixed-height `VerticalScroll` containers (~5 and ~3 rows respectively) always pinned at the bottom.
 - The `All` row is a special `ListItem` rendered differently (no status dot, italic or dimmed style).
 - SSE events continue to drive instant refresh on state changes.
 - Bandwidth chart vertical space concern noted — evaluate during implementation and adjust panel heights if needed.
