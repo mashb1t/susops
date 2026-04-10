@@ -3,10 +3,20 @@ from __future__ import annotations
 
 import threading
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
-from textual.widgets import Footer, Header
+from textual.theme import Theme
+
+_SUSOPS_THEME = Theme(
+    name="susops",
+    primary="#ff5500",
+    secondary="#ff7722",
+    accent="#ff8800",
+    dark=True,
+    background="#000000",
+    luminosity_spread=0.12,
+)
 
 from susops.tui.screens.config_editor import ConfigEditorScreen
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
@@ -78,6 +88,8 @@ class SusOpsTuiApp(App):
         self.manager = SusOpsManager(verbose=verbose)
 
     def on_mount(self) -> None:
+        self.register_theme(_SUSOPS_THEME)
+        self.theme = "susops"
         self.push_screen("dashboard")
 
     def action_quit(self) -> None:
