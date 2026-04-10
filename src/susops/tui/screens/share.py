@@ -162,7 +162,10 @@ class ShareScreen(Screen):
                 yield ListView(id="share-list")
             yield Static("", id="share-detail", markup=True)
         yield Label("", id="share-status")
-        yield Footer()
+        import susops
+        with Horizontal(classes="footer-row"):
+            yield Footer()
+            yield Static(f"v{susops.__version__}", classes="footer-version")
 
     def on_mount(self) -> None:
         lv = self.query_one("#share-list", ListView)

@@ -6,8 +6,9 @@ import subprocess
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Footer, TextArea
+from textual.widgets import Footer, Static, TextArea
 
 
 class ConfigEditorScreen(Screen):
@@ -27,7 +28,10 @@ class ConfigEditorScreen(Screen):
         area = TextArea(language="yaml", id="config-area", read_only=True)
         area.border_title = "config.yaml"
         yield area
-        yield Footer()
+        import susops
+        with Horizontal(classes="footer-row"):
+            yield Footer()
+            yield Static(f"v{susops.__version__}", classes="footer-version")
 
     def on_mount(self) -> None:
         self._load_yaml()

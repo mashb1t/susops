@@ -4,6 +4,9 @@
 Screen { background: $background; }
 Header { background: $primary-darken-3; }
 Footer { background: $surface-darken-2; }
+.footer-row { dock: bottom; height: 1; }
+.footer-row Footer { dock: none; width: 1fr; height: 1; }
+.footer-version { width: auto; padding: 0 1; background: $surface-darken-2; color: $text-muted; content-align: center middle; }
 
 /* ── Dashboard ── */
 #status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }

@@ -201,7 +201,10 @@ class ConnectionEditorScreen(Screen):
             with TabPane("Remote Forwards", id="tab-remote"):
                 yield DataTable(id="tbl-remote", cursor_type="row")
         yield Static("", id="detail-preview")
-        yield Footer()
+        import susops
+        with Horizontal(classes="footer-row"):
+            yield Footer()
+            yield Static(f"v{susops.__version__}", classes="footer-version")
 
     def on_mount(self) -> None:
         self.query_one("#detail-preview", Static).border_title = "Details"
