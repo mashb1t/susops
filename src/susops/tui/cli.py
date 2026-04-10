@@ -13,6 +13,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import susops
+
 from susops.core.types import ProcessState
 
 
@@ -315,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-c", "--connection", metavar="TAG",
         help="Target a specific connection by tag",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"susops {susops.__version__}",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
