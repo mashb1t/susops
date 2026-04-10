@@ -601,4 +601,4 @@ If you used the previous Bash-based `susops.sh`:
 
 ## License
 
-MIT
+[GNU General Public License v3.0](https://github.com/mashb1t/susops/blob/main/LICENSE)
