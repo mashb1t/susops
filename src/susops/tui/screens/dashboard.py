@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 
+from rich.markup import escape as markup_escape
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -175,7 +177,7 @@ class DashboardScreen(Screen):
 
     def _on_new_log(self, msg: str) -> None:
         try:
-            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
+            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, markup_escape(msg))
         except Exception:
             pass
 
@@ -470,17 +472,19 @@ class DashboardScreen(Screen):
             # Global view — prefix each item with [conn] tag
             for conn in (config.connections if config else []):
                 for host in conn.pac_hosts:
-                    domain_lines.append(f"[dim][{ conn.tag}][/dim] {host}")
+                    tag_label = markup_escape(f"[{conn.tag}]")
+                    domain_lines.append(f"[dim]{tag_label}[/dim] {host}")
             for t, data in self._conn_data.items():
+                conn_label = markup_escape(f"[{t}]")
                 for fw in data.get("forwards_local", []):
                     label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
                     forward_lines.append(
-                        f"[dim][[]{ t}][/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
+                        f"[dim]{conn_label}[/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
                     )
                 for fw in data.get("forwards_remote", []):
                     label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
                     forward_lines.append(
-                        f"[dim][[]{ t}][/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
+                        f"[dim]{conn_label}[/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
                     )
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
