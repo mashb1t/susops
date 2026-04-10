@@ -549,3 +549,14 @@ class DashboardScreen(Screen):
     def action_restart_all(self) -> None:
         self.app.manager.restart()  # type: ignore[attr-defined]
         self.app.call_from_thread(self.refresh_status)
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.
+
+        When _selected_tag is None, the lowercase s/x/r actions already call
+        mgr.start/stop/restart(None) and operate on all connections. The uppercase
+        S/X/R variants are redundant in this state, so hide them from the footer.
+        """
+        if action in ("start_all", "stop_all", "restart_all") and self._selected_tag is None:
+            return False
+        return True
