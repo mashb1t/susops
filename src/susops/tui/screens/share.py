@@ -252,10 +252,10 @@ class ShareScreen(Screen):
         text = (
             f"[bold]File:[/bold]       {info.file_path}\n"
             f"[bold]Name:[/bold]       {name}\n"
-            f"[bold]Port:[/bold]       {info.port}\n"
-            f"[bold]URL:[/bold]        {info.url}\n"
-            f"[bold]Password:[/bold]   {info.password}\n"
             f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n"
+            f"[bold]Port:[/bold]       {info.port}\n"
+            f"[bold]Password:[/bold]   {info.password}\n"
+            f"[bold]URL:[/bold]        {info.url}\n"
             f"[bold]State:[/bold]      {state_str}\n"
             f"[bold]Access:[/bold]     {access_str}\n"
         )

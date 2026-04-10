@@ -293,7 +293,7 @@ class DashboardScreen(Screen):
 
         # PAC server status
         if result.pac_running and result.pac_port:
-            pac_text = f"[green]●[/green] :{ result.pac_port}/susops.pac"
+            pac_text = f"[green]●[/green] http://localhost:{result.pac_port}/susops.pac"
         else:
             pac_text = "[dim]○ stopped[/dim]"
         self.query_one("#pac-info", Static).update(pac_text)
@@ -497,6 +497,8 @@ class DashboardScreen(Screen):
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                 name = Path(info.file_path).name
+                # TODO output as clickable link to open file locally
+                #share_lines.append(f"{dot} [{info.file_path}]({name})  {info.port}")
                 share_lines.append(f"{dot} {name}  {info.port}")
         else:
             # Per-connection view — no prefix
