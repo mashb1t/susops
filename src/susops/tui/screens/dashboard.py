@@ -307,13 +307,13 @@ class DashboardScreen(Screen):
         total_tx_bytes = sum(d["bw_total"][1] for d in self._conn_data.values())
 
         lines = [
-            f"[bold]All Connections[/bold]   {running} running / {total} total",
+            f"[bold]All Connections[/bold]  {running} running / {total} total",
             "",
-            f"  CPU total      {total_cpu:.1f}%",
-            f"  Memory total   {total_mem:.1f} MB",
+            f"  CPU total    {total_cpu:.1f}%{'':14} Memory  {total_mem:.1f} MB",
             "",
             f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<10}  total  [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
             f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<10}  total  [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
+            f"  [dim]resets on stop[/dim]",
             "",
             f"  [dim]{'─' * 36}[/dim]",
         ]
@@ -470,17 +470,17 @@ class DashboardScreen(Screen):
             # Global view — prefix each item with [conn] tag
             for conn in (config.connections if config else []):
                 for host in conn.pac_hosts:
-                    domain_lines.append(f"[dim][{conn.tag}][/dim] {host}")
+                    domain_lines.append(f"[dim][{ conn.tag}][/dim] {host}")
             for t, data in self._conn_data.items():
                 for fw in data.get("forwards_local", []):
                     label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
                     forward_lines.append(
-                        f"[dim][{t}][/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
+                        f"[dim][[]{ t}][/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
                     )
                 for fw in data.get("forwards_remote", []):
                     label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
                     forward_lines.append(
-                        f"[dim][{t}][/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
+                        f"[dim][[]{ t}][/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
                     )
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
