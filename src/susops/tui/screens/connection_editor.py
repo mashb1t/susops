@@ -193,7 +193,7 @@ class ConnectionEditorScreen(Screen):
         with TabbedContent(id="editor-tabs"):
             with TabPane("Connections", id="tab-connections"):
                 yield DataTable(id="tbl-connections", cursor_type="row")
-            with TabPane("PAC Hosts", id="tab-pac"):
+            with TabPane("Domain / IP / CIDR", id="tab-pac"):
                 yield DataTable(id="tbl-pac", cursor_type="row")
             with TabPane("Local Forwards", id="tab-local"):
                 yield DataTable(id="tbl-local", cursor_type="row")
@@ -210,7 +210,7 @@ class ConnectionEditorScreen(Screen):
 
     def _setup_tables(self) -> None:
         tbl = self.query_one("#tbl-connections", DataTable)
-        tbl.add_columns("Status", "Tag", "SSH Host", "SOCKS Port", "PAC Hosts", "Forwards")
+        tbl.add_columns("Status", "Tag", "SSH Host", "SOCKS Port", "Domains", "Forwards")
 
         tbl = self.query_one("#tbl-pac", DataTable)
         tbl.add_columns("Host", "Connection")
@@ -322,7 +322,7 @@ class ConnectionEditorScreen(Screen):
                 if conn:
                     preview.update(
                         f"SSH host: {conn.ssh_host}  |  Port: {conn.socks_proxy_port or 'auto'}"
-                        f"  |  PAC hosts: {len(conn.pac_hosts)}"
+                        f"  |  Domains: {len(conn.pac_hosts)}"
                         f"  |  Forwards: {len(conn.forwards.local) + len(conn.forwards.remote)}"
                     )
                 else:
