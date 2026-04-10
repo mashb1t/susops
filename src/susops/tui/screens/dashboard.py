@@ -415,6 +415,8 @@ class DashboardScreen(Screen):
             self._selected_tag = None  # All row
         elif index - 1 < len(self._conn_tags):
             self._selected_tag = self._conn_tags[index - 1]
+        else:
+            self._selected_tag = None  # Stale index — fall back to All
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
 
