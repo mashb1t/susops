@@ -5,11 +5,12 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Select, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
 from textual import work
 from susops.core.ports import is_port_free, validate_port
+from susops.tui.screens import compose_footer
 
 
 class _AddShareDialog(ModalScreen):
@@ -162,10 +163,7 @@ class ShareScreen(Screen):
                 yield ListView(id="share-list")
             yield Static("", id="share-detail", markup=True)
         yield Label("", id="share-status")
-        import susops
-        with Horizontal(classes="footer-row"):
-            yield Footer()
-            yield Static(f"v{susops.__version__}", classes="footer-version")
+        yield from compose_footer()
 
     def on_mount(self) -> None:
         lv = self.query_one("#share-list", ListView)

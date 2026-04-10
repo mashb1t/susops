@@ -9,8 +9,6 @@ from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
-    Footer,
-    Header,
     Input,
     Label,
     Select,
@@ -20,6 +18,7 @@ from textual.widgets import (
 )
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
+from susops.tui.screens import compose_footer
 
 
 class _AddConnectionDialog(ModalScreen):
@@ -201,10 +200,7 @@ class ConnectionEditorScreen(Screen):
             with TabPane("Remote Forwards", id="tab-remote"):
                 yield DataTable(id="tbl-remote", cursor_type="row")
         yield Static("", id="detail-preview")
-        import susops
-        with Horizontal(classes="footer-row"):
-            yield Footer()
-            yield Static(f"v{susops.__version__}", classes="footer-version")
+        yield from compose_footer()
 
     def on_mount(self) -> None:
         self.query_one("#detail-preview", Static).border_title = "Details"

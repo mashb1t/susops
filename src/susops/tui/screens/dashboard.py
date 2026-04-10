@@ -24,6 +24,7 @@ from textual import work
 from textual_plotext import PlotextPlot
 
 from susops.core.types import ProcessState, StatusResult
+from susops.tui.screens import compose_footer
 
 
 def _fmt_bps(bps: float) -> str:
@@ -112,10 +113,7 @@ class DashboardScreen(Screen):
                     yield DataTable(id="fwd-table", cursor_type="row")
                 with TabPane("Logs", id="tab-logs"):
                     yield RichLog(id="detail-logs", highlight=True, markup=True)
-        import susops
-        with Horizontal(classes="footer-row"):
-            yield Footer()
-            yield Static(f"v{susops.__version__}", classes="footer-version")
+        yield from compose_footer()
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
