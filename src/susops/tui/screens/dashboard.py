@@ -89,7 +89,7 @@ class DashboardScreen(Screen):
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
     #main-split { height: 1fr; }
-    #conn-panel { width: 22; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #conn-panel { width: 40; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
     #detail-tabs  { height: 1fr; }
@@ -98,7 +98,7 @@ class DashboardScreen(Screen):
     #rx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
     #tx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 0; }
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
-    #context-panel { width: 26; background: $surface-darken-1; border-left: solid $primary-darken-2; }
+    #context-panel { width: 40; background: $surface-darken-1; border-left: solid $primary-darken-2; }
     #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #domain-content { padding: 0 1; }
     #forward-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
@@ -330,10 +330,46 @@ class DashboardScreen(Screen):
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
-        # All view — aggregate stats, hide bandwidth charts
+        # All view — aggregate stats + combined bandwidth charts
         if tag is None:
             self.query_one("#stats-content", Static).update(self._render_all_stats())
-            self.query_one("#bw-container", Horizontal).display = False
+            total_rx = sum(d["bw"][0] for d in self._conn_data.values())
+            total_tx = sum(d["bw"][1] for d in self._conn_data.values())
+            tags = list(self._conn_data.keys())
+            if tags:
+                width = len(list(self._rx_history.get(tags[0], [0.0] * 60)))
+                rx_agg = [
+                    sum(self._rx_history.get(t, [0.0] * width)[i] for t in tags)
+                    for i in range(width)
+                ]
+                tx_agg = [
+                    sum(self._tx_history.get(t, [0.0] * width)[i] for t in tags)
+                    for i in range(width)
+                ]
+            else:
+                rx_agg = [0.0] * 60
+                tx_agg = [0.0] * 60
+            self.query_one("#bw-container", Horizontal).display = True
+            rx_chart = self.query_one("#rx-chart", PlotextPlot)
+            tx_chart = self.query_one("#tx-chart", PlotextPlot)
+            rx_scaled, rx_unit = _scale_data(rx_agg)
+            rx_max = max(1.0, max(rx_scaled))
+            rx_ticks, rx_labels = _yticks(rx_max, rx_unit)
+            rx_chart.plt.clear_data()
+            rx_chart.plt.title(f"RX total  {_fmt_bps(total_rx)}")
+            rx_chart.plt.ylim(0, rx_max)
+            rx_chart.plt.yticks(rx_ticks, rx_labels)
+            rx_chart.plt.plot(rx_scaled, color="green")
+            rx_chart.refresh()
+            tx_scaled, tx_unit = _scale_data(tx_agg)
+            tx_max = max(1.0, max(tx_scaled))
+            tx_ticks, tx_labels = _yticks(tx_max, tx_unit)
+            tx_chart.plt.clear_data()
+            tx_chart.plt.title(f"TX total  {_fmt_bps(total_tx)}")
+            tx_chart.plt.ylim(0, tx_max)
+            tx_chart.plt.yticks(tx_ticks, tx_labels)
+            tx_chart.plt.plot(tx_scaled, color="yellow")
+            tx_chart.refresh()
             return
 
         if tag not in self._conn_data:
