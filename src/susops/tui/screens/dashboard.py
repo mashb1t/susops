@@ -90,7 +90,8 @@ class DashboardScreen(Screen):
     DashboardScreen { layout: vertical; }
     #main-split { height: 1fr; }
     #conn-panel { width: 50; background: $surface-darken-1; border-right: solid $primary-darken-2; }
-    #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1; border-title-align: left; }
+    #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
+    #pac-info   { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
     #detail-tabs  { height: 1fr; }
     #stats-content { height: auto; padding: 1 2; }
@@ -119,9 +120,10 @@ class DashboardScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-split"):
-            # Left: connection list
+            # Left: connection list + PAC status
             with Vertical(id="conn-panel"):
                 yield ListView(id="conn-list")
+                yield Static(id="pac-info", markup=True)
             # Centre: stats + bandwidth + logs
             with Vertical(id="detail-panel"):
                 with TabbedContent(id="detail-tabs"):
@@ -142,6 +144,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
+        self.query_one("#pac-info", Static).border_title = "PAC"
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
@@ -287,6 +290,13 @@ class DashboardScreen(Screen):
             self._selected_tag = None  # All
         else:
             self._selected_tag = self._conn_tags[min(idx - 1, len(self._conn_tags) - 1)]
+
+        # PAC server status
+        if result.pac_running and result.pac_port:
+            pac_text = f"[green]●[/green] :{ result.pac_port}/susops.pac"
+        else:
+            pac_text = "[dim]○ stopped[/dim]"
+        self.query_one("#pac-info", Static).update(pac_text)
 
         # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)
