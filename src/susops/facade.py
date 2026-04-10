@@ -66,6 +66,7 @@ class _BandwidthSampler:
     ) -> None:
         self._mgr = process_mgr
         self._rates: dict[str, tuple[float, float]] = {}
+        self._totals: dict[str, tuple[float, float]] = {}  # tag -> (rx_total_bytes, tx_total_bytes)
         self._prev_net: tuple[float, float, float] | None = None
         self._prev_chars: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -157,12 +158,30 @@ class _BandwidthSampler:
                                 pass
                     self._rates = new_rates
 
+                    # Accumulate cumulative byte totals (rate × elapsed time = bytes this interval)
+                    for tag, (rx, tx) in new_rates.items():
+                        prev_rx, prev_tx = self._totals.get(tag, (0.0, 0.0))
+                        self._totals[tag] = (prev_rx + rx * dt, prev_tx + tx * dt)
+
             self._prev_net = (sys_rx, sys_tx, now)
             self._prev_chars = dict(proc_chars)
 
     def get_rate(self, tag: str) -> tuple[float, float]:
         with self._lock:
             return self._rates.get(tag, (0.0, 0.0))
+
+    def get_totals(self, tag: str) -> tuple[float, float]:
+        """Return (rx_total_bytes, tx_total_bytes) accumulated since last reset."""
+        with self._lock:
+            return self._totals.get(tag, (0.0, 0.0))
+
+    def reset_totals(self, tag: str | None = None) -> None:
+        """Reset cumulative counters. Pass tag=None to reset all."""
+        with self._lock:
+            if tag is None:
+                self._totals.clear()
+            else:
+                self._totals.pop(tag, None)
 
 
 class SusOpsManager:
@@ -182,6 +201,7 @@ class SusOpsManager:
         self._bw_sampler = _BandwidthSampler(
             self._process_mgr, on_sample=self._on_bandwidth
         )
+        self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
@@ -583,6 +603,7 @@ class SusOpsManager:
                     tag=conn.tag, running=True, pid=pid,
                     socks_port=conn.socks_proxy_port,
                 ))
+                self._start_times[conn.tag] = time.monotonic()
                 self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
             except Exception as exc:
                 msg = f"[{conn.tag}] Failed: {exc}"
@@ -667,6 +688,8 @@ class SusOpsManager:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
                     self._log(f"[{conn.tag}] Stopped")
+                    self._bw_sampler.reset_totals(conn.tag)
+                    self._start_times.pop(conn.tag, None)
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     updated = conn.model_copy(update={"socks_proxy_port": 0})
@@ -1175,6 +1198,15 @@ class SusOpsManager:
 
     def get_bandwidth(self, tag: str) -> tuple[float, float]:
         return self._bw_sampler.get_rate(tag)
+
+    def get_bandwidth_totals(self, tag: str) -> tuple[float, float]:
+        """Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop."""
+        return self._bw_sampler.get_totals(tag)
+
+    def get_uptime(self, tag: str) -> float | None:
+        """Return seconds since connection started, or None if not recorded."""
+        start = self._start_times.get(tag)
+        return time.monotonic() - start if start is not None else None
 
     def get_process_info(self, tag: str) -> dict:
         try:
