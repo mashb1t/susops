@@ -185,11 +185,11 @@ class AbstractTrayApp(ABC):
             lines = []
             for cs in result.connection_statuses:
                 dot = "●" if cs.running else "○"
-                port = f" (:{cs.socks_port})" if cs.socks_port else ""
+                port = f" ({cs.socks_port})" if cs.socks_port else ""
                 pid = f" pid={cs.pid}" if cs.pid else ""
                 lines.append(f"  {dot} [{cs.tag}]{port}{pid}")
             pac = "●" if result.pac_running else "○"
-            pac_port = f" (:{result.pac_port})" if result.pac_port else ""
+            pac_port = f" ({result.pac_port})" if result.pac_port else ""
             lines.append(f"  {pac} PAC server{pac_port}")
             lines.append(f"State: {result.state.value}")
             return "\n".join(lines)

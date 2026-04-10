@@ -9,10 +9,11 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
+from rich.markup import escape as markup_escape
+
 from susops.core.config import (
     Connection,
     FileShare,
-    Forwards,
     PortForward,
     SusOpsConfig,
     get_connection,
@@ -33,7 +34,6 @@ from susops.core.ssh import (
     socket_path,
     start_forward,
     start_master,
-    start_tunnel,
     stop_forward,
     stop_tunnel,
     test_ssh_connectivity,
@@ -60,9 +60,9 @@ class _BandwidthSampler:
     INTERVAL = 2.0
 
     def __init__(
-        self,
-        process_mgr: ProcessManager,
-        on_sample: Callable[[str, float, float], None] | None = None,
+            self,
+            process_mgr: ProcessManager,
+            on_sample: Callable[[str, float, float], None] | None = None,
     ) -> None:
         self._mgr = process_mgr
         self._rates: dict[str, tuple[float, float]] = {}
@@ -218,6 +218,8 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _log(self, msg: str) -> None:
+        msg = markup_escape(msg)
+
         self._log_buffer.append(msg)
         if self.on_log:
             self.on_log(msg)
@@ -330,9 +332,9 @@ class SusOpsManager:
         return port
 
     def _compute_state(
-        self,
-        statuses: tuple[ConnectionStatus, ...] | None = None,
-        pac_running: bool | None = None,
+            self,
+            statuses: tuple[ConnectionStatus, ...] | None = None,
+            pac_running: bool | None = None,
     ) -> ProcessState:
         if statuses is None:
             statuses = tuple(self._connection_status(c) for c in self.config.connections)
@@ -427,12 +429,12 @@ class SusOpsManager:
                     self._share_servers[actual_port] = (server, info)
                     if actual_port != fs.port:
                         self._update_file_share_port(conn.tag, fs, actual_port)
-                    self._log(f"[{conn.tag}] Restored share '{file_path.name}' on :{actual_port}")
+                    self._log(f"[{conn.tag}] Restored share '{file_path.name}' on port {actual_port}")
                 except Exception as exc:
                     self._log(f"[{conn.tag}] Failed to restore share '{fs.file_path}': {exc}")
 
     def _update_file_share_port(
-        self, conn_tag: str, fs: FileShare, new_port: int
+            self, conn_tag: str, fs: FileShare, new_port: int
     ) -> None:
         """Update the stored port for a FileShare entry in config."""
         conn = get_connection(self.config, conn_tag)
@@ -454,7 +456,7 @@ class SusOpsManager:
         self._save()
 
     def _add_file_share_to_config(
-        self, conn_tag: str, file_path: str, password: str, port: int
+            self, conn_tag: str, file_path: str, password: str, port: int
     ) -> None:
         conn = get_connection(self.config, conn_tag)
         if conn is None:
@@ -575,7 +577,7 @@ class SusOpsManager:
                         self._share_servers[raw.port] = (srv, si)
                         if raw.port != fs.port:
                             self._update_file_share_port(conn.tag, fs, raw.port)
-                        self._log(f"[{conn.tag}] Started share '{fp.name}' on :{raw.port}")
+                        self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
                         self._emit("share", {
                             "port": raw.port,
                             "file": fp.name,
@@ -941,11 +943,11 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def share(
-        self,
-        file: Path,
-        conn_tag: str,
-        password: str | None = None,
-        port: int | None = None,
+            self,
+            file: Path,
+            conn_tag: str,
+            password: str | None = None,
+            port: int | None = None,
     ) -> ShareInfo:
         """Start serving an encrypted file share and persist it to config.
 
@@ -1086,11 +1088,11 @@ class SusOpsManager:
         return bool(self._share_servers)
 
     def fetch(
-        self,
-        port: int,
-        password: str,
-        conn_tag: str,
-        outfile: Path | None = None,
+            self,
+            port: int,
+            password: str,
+            conn_tag: str,
+            outfile: Path | None = None,
     ) -> Path:
         """Download and decrypt a shared file via a transient local forward slave.
 

@@ -478,7 +478,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         for info in self._active_shares:
             name = __import__("pathlib").Path(info.file_path).name
             dot = "●" if info.running else "○"
-            label = f"{dot} {name} (:{info.port})"
+            label = f"{dot} {name} ({info.port})"
             item = Gtk.MenuItem(label=label)
             item.connect("activate", self._make_share_info_handler(info))
             self._ft_sub.append(item)
@@ -922,7 +922,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         items = []
         for c in config.connections:
             for fw in c.forwards.local:
-                items.append(f"[{c.tag}] :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+                items.append(f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
         selected = self._pick_from_list("Remove Local Forward", "Local Forward:", items)
         if selected:
             m = re.search(r":(\d+)→", selected)
@@ -938,7 +938,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         items = []
         for c in config.connections:
             for fw in c.forwards.remote:
-                items.append(f"[{c.tag}] :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+                items.append(f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
         selected = self._pick_from_list("Remove Remote Forward", "Remote Forward:", items)
         if selected:
             m = re.search(r":(\d+)→", selected)

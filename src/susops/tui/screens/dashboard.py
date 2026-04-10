@@ -5,7 +5,7 @@ from collections import deque
 from pathlib import Path
 
 from rich.markup import escape as markup_escape
-
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -19,7 +19,6 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-from textual import work
 from textual_plotext import PlotextPlot
 
 from susops.core.types import StatusResult
@@ -75,7 +74,6 @@ def _fmt_uptime(seconds: float) -> str:
 
 
 class DashboardScreen(Screen):
-
     BINDINGS = [
         Binding("s", "start", "Start"),
         Binding("x", "stop", "Stop"),
@@ -91,7 +89,7 @@ class DashboardScreen(Screen):
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
     #main-split { height: 1fr; }
-    #conn-panel { width: 40; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #conn-panel { width: 50; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
     #detail-tabs  { height: 1fr; }
@@ -100,7 +98,7 @@ class DashboardScreen(Screen):
     #rx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
     #tx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 0; }
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
-    #context-panel { width: 40; background: $surface-darken-1; border-left: solid $primary-darken-2; }
+    #context-panel { width: 50; background: $surface-darken-1; border-left: solid $primary-darken-2; }
     #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #domain-content { padding: 0 1; }
     #forward-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
@@ -177,7 +175,7 @@ class DashboardScreen(Screen):
 
     def _on_new_log(self, msg: str) -> None:
         try:
-            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, markup_escape(msg))
+            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
         except Exception:
             pass
 
@@ -203,14 +201,14 @@ class DashboardScreen(Screen):
         )
 
     def _apply_status(
-        self,
-        result: StatusResult,
-        extras: dict,
-        bw: dict,
-        bw_totals: dict,
-        uptimes: dict,
-        shares: list,
-        config,
+            self,
+            result: StatusResult,
+            extras: dict,
+            bw: dict,
+            bw_totals: dict,
+            uptimes: dict,
+            shares: list,
+            config,
     ) -> None:
         self._last_config = config
         self._last_shares = shares
@@ -265,7 +263,7 @@ class DashboardScreen(Screen):
             dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
-            label_texts.append(f"{dot} {cs.tag:<12} {port_str:<5} {_fmt_bps(rx):>6}↓")
+            label_texts.append(f"{dot} {cs.tag:<27} {port_str:<5} {_fmt_bps(rx):>6}↓")
 
         if new_tags == self._conn_tags:
             # Same connections — update connection rows in-place (index 0 is the All row, skip it)
@@ -311,7 +309,7 @@ class DashboardScreen(Screen):
         lines = [
             f"[bold]All Connections[/bold]  {running} running / {total} total",
             "",
-            f"  CPU total    {total_cpu:.1f}%{'':14} Memory  {total_mem:.1f} MB",
+            f"  CPU total    {total_cpu:.1f}%{'':6} Memory  {total_mem:.1f} MB",
             "",
             f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<10}  total  [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
             f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<10}  total  [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
@@ -325,9 +323,9 @@ class DashboardScreen(Screen):
             rx, tx = data["bw"]
             rx_t, tx_t = data["bw_total"]
             lines.append(
-                f"  {dot} {tag:<8}  "
-                f"[green]↓[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
-                f"[yellow]↑[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
+                f"  {dot} {tag:<27}  "
+                f"[green]↓ RX[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
+                f"[yellow]↑ TX[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
             )
         return "\n".join(lines)
 
@@ -407,7 +405,7 @@ class DashboardScreen(Screen):
             "",
             f"  SSH host    {ssh_host:<16} SOCKS  {socks_port_str}",
             f"  PID         {pid_str:<16} Uptime {uptime_str}",
-            f"  CPU         {cpu:.1f}%{'':14} Memory {mem_mb:.1f} MB",
+            f"  CPU         {cpu:.1f}%{'':12} Memory {mem_mb:.1f} MB",
             f"  Connections {conns:<16} Fwds   {fwd_summary}",
             "",
             f"  [green]↓ RX[/green]  rate  {_fmt_bps(rx):<10}  total  [cyan]{_fmt_bytes(rx_total)}[/cyan]",
@@ -484,12 +482,12 @@ class DashboardScreen(Screen):
                 for fw in data.get("forwards_remote", []):
                     label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
                     forward_lines.append(
-                        f"[dim]{conn_label}[/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
+                        f"[dim]{conn_label}[/dim] [yellow]←[/yellow] {fw.src_port}←{fw.dst_port}{label}"
                     )
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                 name = Path(info.file_path).name
-                share_lines.append(f"{dot} {name}  :{info.port}")
+                share_lines.append(f"{dot} {name}  {info.port}")
         else:
             # Per-connection view — no prefix
             conn = conn_map.get(tag)
@@ -505,13 +503,13 @@ class DashboardScreen(Screen):
             for fw in data.get("forwards_remote", []):
                 label = f"  [dim]{fw.tag}[/dim]" if fw.tag else ""
                 forward_lines.append(
-                    f"[yellow]←[/yellow] {fw.src_port} ← :{fw.dst_port}{label}"
+                    f"[yellow]←[/yellow] {fw.src_port} ← {fw.dst_port}{label}"
                 )
             for info in shares:
                 if info.conn_tag == tag:
                     dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                     name = Path(info.file_path).name
-                    share_lines.append(f"{dot} {name}  :{info.port}")
+                    share_lines.append(f"{dot} {name}  {info.port}")
 
         domain_text = "\n".join(domain_lines) if domain_lines else "[dim]—[/dim]"
         forward_text = "\n".join(forward_lines) if forward_lines else "[dim]—[/dim]"

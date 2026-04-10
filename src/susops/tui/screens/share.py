@@ -184,7 +184,7 @@ class ShareScreen(Screen):
                 dot = "[dim]○[/dim]"
             else:
                 dot = "[red]○[/red]"
-            return f"{dot} {name}  :{info.port}"
+            return f"{dot} {name}  {info.port}"
 
         new_ports = [i.port for i in new_shares]
         old_ports = [i.port for i in self._shares]
@@ -326,7 +326,7 @@ class ShareScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         try:
             info = mgr.share(Path(path), conn_tag, password=password, port=port or None)
-            msg = f"[green]Sharing {Path(path).name} on :{info.port}  pw: {info.password}[/green]"
+            msg = f"[green]Sharing {Path(path).name} on port {info.port},  pw: {info.password}[/green]"
         except Exception as e:
             msg = f"[red]Error: {e}[/red]"
         self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)

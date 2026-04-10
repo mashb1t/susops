@@ -98,7 +98,7 @@ class ConnectionCard(Static):
     def refresh_status(self, status: ConnectionStatus, proc_info: dict | None = None, forwards: list | None = None) -> None:
         dot_color = "green" if status.running else "red"
         dot = f"[{dot_color}]●[/{dot_color}]"
-        port_str = f"  SOCKS :{status.socks_port}" if status.socks_port else ""
+        port_str = f"  SOCKS {status.socks_port}" if status.socks_port else ""
         pid_str = f"  pid={status.pid}" if status.pid else ""
         self._title = f"{dot} [bold]{status.tag}[/bold]{port_str}{pid_str}"
 
@@ -119,7 +119,7 @@ class ConnectionCard(Static):
             parts = []
             for fw in forwards:
                 label = f" [{fw.tag}]" if fw.tag else ""
-                parts.append(f":{fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}")
+                parts.append(f"{fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}")
             self._fwd_info = (
                 f"[dim]Forwards: {', '.join(parts)}[/dim]" if parts else ""
             )

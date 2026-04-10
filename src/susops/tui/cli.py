@@ -30,11 +30,11 @@ def _print_status(result) -> int:
     state = result.state
     for cs in result.connection_statuses:
         icon = "●" if cs.running else "○"
-        port = f" (:{cs.socks_port})" if cs.socks_port else ""
+        port = f" ({cs.socks_port})" if cs.socks_port else ""
         pid = f" pid={cs.pid}" if cs.pid else ""
         print(f"  {icon} SSH [{cs.tag}]{port}{pid}")
     pac_icon = "●" if result.pac_running else "○"
-    pac_port = f" (:{result.pac_port})" if result.pac_port else ""
+    pac_port = f" ({result.pac_port})" if result.pac_port else ""
     print(f"  {pac_icon} PAC server{pac_port}")
     print(f"State: {state.value}")
 
@@ -139,7 +139,7 @@ def cmd_add(args, m) -> int:
                     tag=args.forward_tag or "",
                 )
                 m.add_local_forward(conn_tag, fw)
-                print(f"Added local forward :{fw.src_port} → :{fw.dst_port}")
+                print(f"Added local forward {fw.src_port} → {fw.dst_port}")
             else:
                 fw = PortForward(
                     src_port=remote_port if remote_port is not None else local_port,
@@ -149,7 +149,7 @@ def cmd_add(args, m) -> int:
                     tag=args.forward_tag or "",
                 )
                 m.add_remote_forward(conn_tag, fw)
-                print(f"Added remote forward :{fw.src_port} → :{fw.dst_port}")
+                print(f"Added remote forward {fw.src_port} → {fw.dst_port}")
         else:
             m.add_pac_host(args.host, conn_tag=args.connection)
             print(f"Added PAC host '{args.host}'")
