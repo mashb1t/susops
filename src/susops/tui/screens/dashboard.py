@@ -68,6 +68,9 @@ class DashboardScreen(Screen):
 
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
+    #footer-row { dock: bottom; height: 1; }
+    #footer-row Footer { dock: none; width: 1fr; height: 1; }
+    #footer-version { width: auto; padding: 0 1; background: $surface-darken-2; color: $text-muted; content-align: center middle; }
     #status-bar { height: 1; padding: 0 1; background: $surface-darken-2; color: $text-muted; }
     #split { height: 1fr; }
     #sidebar { width: 36; background: $surface-darken-1; border-right: solid $primary-darken-2; }
@@ -112,7 +115,10 @@ class DashboardScreen(Screen):
                     yield DataTable(id="fwd-table", cursor_type="row")
                 with TabPane("Logs", id="tab-logs"):
                     yield RichLog(id="detail-logs", highlight=True, markup=True)
-        yield Footer()
+        import susops
+        with Horizontal(id="footer-row"):
+            yield Footer()
+            yield Static(f"v{susops.__version__}", id="footer-version")
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
