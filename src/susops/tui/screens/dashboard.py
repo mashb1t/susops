@@ -183,19 +183,27 @@ class DashboardScreen(Screen):
 
         extras: dict[str, dict] = {}
         bw: dict[str, tuple[float, float]] = {}
+        bw_totals: dict[str, tuple[float, float]] = {}
+        uptimes: dict[str, float | None] = {}
         for cs in result.connection_statuses:
             extras[cs.tag] = mgr.get_process_info(cs.tag)
             bw[cs.tag] = mgr.get_bandwidth(cs.tag)
+            bw_totals[cs.tag] = mgr.get_bandwidth_totals(cs.tag)
+            uptimes[cs.tag] = mgr.get_uptime(cs.tag)
 
         shares = mgr.list_shares()
         config = mgr.list_config()
-        self.app.call_from_thread(self._apply_status, result, extras, bw, shares, config)
+        self.app.call_from_thread(
+            self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config
+        )
 
     def _apply_status(
         self,
         result: StatusResult,
         extras: dict,
         bw: dict,
+        bw_totals: dict,
+        uptimes: dict,
         shares: list,
         config,
     ) -> None:
@@ -214,6 +222,8 @@ class DashboardScreen(Screen):
                 "cs": cs,
                 "proc_info": extras.get(cs.tag) or {},
                 "bw": bw.get(cs.tag, (0.0, 0.0)),
+                "bw_total": bw_totals.get(cs.tag, (0.0, 0.0)),
+                "uptime": uptimes.get(cs.tag),
                 "forwards_local": forwards_local,
                 "forwards_remote": forwards_remote,
                 "conn": conn,
@@ -276,48 +286,97 @@ class DashboardScreen(Screen):
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
 
-    def _update_detail_panel(self, tag: str | None) -> None:
-        if not tag or tag not in self._conn_data:
-            self.query_one("#stats-content", Static).update(
-                "[dim]Select a connection from the sidebar.[/dim]"
+    def _render_all_stats(self) -> str:
+        """Render aggregate stats for the 'All' view."""
+        running = sum(1 for d in self._conn_data.values() if d["cs"].running)
+        total = len(self._conn_data)
+        if total == 0:
+            return "[dim]No connections configured.[/dim]"
+
+        total_cpu = sum(d["proc_info"].get("cpu", 0.0) for d in self._conn_data.values())
+        total_mem = sum(d["proc_info"].get("mem_mb", 0.0) for d in self._conn_data.values())
+        total_rx = sum(d["bw"][0] for d in self._conn_data.values())
+        total_tx = sum(d["bw"][1] for d in self._conn_data.values())
+        total_rx_bytes = sum(d["bw_total"][0] for d in self._conn_data.values())
+        total_tx_bytes = sum(d["bw_total"][1] for d in self._conn_data.values())
+
+        lines = [
+            f"[bold]All Connections[/bold]   {running} running / {total} total",
+            "",
+            f"  CPU total      {total_cpu:.1f}%",
+            f"  Memory total   {total_mem:.1f} MB",
+            "",
+            f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<10}  total  [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
+            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<10}  total  [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
+            "",
+            f"  [dim]{'─' * 36}[/dim]",
+        ]
+        for tag, data in self._conn_data.items():
+            cs = data["cs"]
+            dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
+            rx, tx = data["bw"]
+            rx_t, tx_t = data["bw_total"]
+            lines.append(
+                f"  {dot} {tag:<8}  "
+                f"[green]↓[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
+                f"[yellow]↑[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
             )
+        return "\n".join(lines)
+
+    def _update_detail_panel(self, tag: str | None) -> None:
+        # All view — aggregate stats, hide bandwidth charts
+        if tag is None:
+            self.query_one("#stats-content", Static).update(self._render_all_stats())
+            self.query_one("#bw-container", Horizontal).display = False
             return
 
+        if tag not in self._conn_data:
+            self.query_one("#stats-content", Static).update(
+                "[dim]Select a connection.[/dim]"
+            )
+            self.query_one("#bw-container", Horizontal).display = False
+            return
+
+        self.query_one("#bw-container", Horizontal).display = True
         data = self._conn_data[tag]
         cs = data["cs"]
         proc_info = data["proc_info"]
         conn = data.get("conn")
         forwards_local = data.get("forwards_local", [])
         forwards_remote = data.get("forwards_remote", [])
+        rx, tx = data["bw"]
+        rx_total, tx_total = data["bw_total"]
+        uptime = data.get("uptime")
 
-        # Stats tab
         cpu = proc_info.get("cpu", 0.0) if proc_info else 0.0
         mem_mb = proc_info.get("mem_mb", 0.0) if proc_info else 0.0
         conns = proc_info.get("conns", 0) if proc_info else 0
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
-        status_str = "[green]running[/green]" if cs.running else "[red]stopped[/red]"
+        status_str = "[green]● running[/green]" if cs.running else "[red]○ stopped[/red]"
+        uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"
+        fwd_summary = f"{len(forwards_local)}L {len(forwards_remote)}R"
 
         stats_lines = [
             f"[bold]{tag}[/bold]  {status_str}",
             "",
-            f"  SSH host   : {ssh_host}",
-            f"  SOCKS port : {socks_port_str}",
-            f"  PID        : {pid_str}",
-            f"  CPU        : {cpu:.1f}%",
-            f"  Memory     : {mem_mb:.1f} MB",
-            f"  Connections: {conns}",
+            f"  SSH host    {ssh_host:<16} SOCKS  {socks_port_str}",
+            f"  PID         {pid_str:<16} Uptime {uptime_str}",
+            f"  CPU         {cpu:.1f}%{'':14} Memory {mem_mb:.1f} MB",
+            f"  Connections {conns:<16} Fwds   {fwd_summary}",
+            "",
+            f"  [green]↓ RX[/green]  rate  {_fmt_bps(rx):<10}  total  [cyan]{_fmt_bytes(rx_total)}[/cyan]",
+            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(tx):<10}  total  [cyan]{_fmt_bytes(tx_total)}[/cyan]",
+            f"  [dim]resets on stop[/dim]",
         ]
         self.query_one("#stats-content", Static).update("\n".join(stats_lines))
 
-        # Bandwidth tab
+        # Bandwidth charts
         rx_data = list(self._rx_history.get(tag, [0.0] * 60))
         tx_data = list(self._tx_history.get(tag, [0.0] * 60))
         rx_chart = self.query_one("#rx-chart", PlotextPlot)
         tx_chart = self.query_one("#tx-chart", PlotextPlot)
-
-        rx, tx = data["bw"]
         rx_scaled, rx_unit = _scale_data(rx_data)
         rx_max = max(1.0, max(rx_scaled))
         rx_ticks, rx_labels = _yticks(rx_max, rx_unit)
@@ -327,7 +386,6 @@ class DashboardScreen(Screen):
         rx_chart.plt.yticks(rx_ticks, rx_labels)
         rx_chart.plt.plot(rx_scaled, color="green")
         rx_chart.refresh()
-
         tx_scaled, tx_unit = _scale_data(tx_data)
         tx_max = max(1.0, max(tx_scaled))
         tx_ticks, tx_labels = _yticks(tx_max, tx_unit)
@@ -338,7 +396,7 @@ class DashboardScreen(Screen):
         tx_chart.plt.plot(tx_scaled, color="yellow")
         tx_chart.refresh()
 
-        # Logs tab — show all logs (no per-connection filter)
+        # Logs
         log_widget = self.query_one("#detail-logs", RichLog)
         log_widget.clear()
         mgr = self.app.manager  # type: ignore[attr-defined]
