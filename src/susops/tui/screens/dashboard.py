@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 from collections import deque
-from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
-    DataTable,
     Label,
     ListItem,
     ListView,
@@ -21,7 +19,7 @@ from textual.widgets import (
 from textual import work
 from textual_plotext import PlotextPlot
 
-from susops.core.types import ProcessState, StatusResult
+from susops.core.types import StatusResult
 from susops.tui.screens import compose_footer
 
 
@@ -201,24 +199,6 @@ class DashboardScreen(Screen):
         shares: list,
         config,
     ) -> None:
-        state_colors = {
-            ProcessState.RUNNING: "green",
-            ProcessState.STOPPED_PARTIALLY: "yellow",
-            ProcessState.STOPPED: "red",
-            ProcessState.ERROR: "red",
-            ProcessState.INITIAL: "dim",
-        }
-        color = state_colors.get(result.state, "dim")
-        running_count = sum(1 for cs in result.connection_statuses if cs.running)
-        total_count = len(result.connection_statuses)
-        pac_str = "[green]up[/green]" if result.pac_running else "[red]down[/red]"
-        pac_port_str = f"{result.pac_port}" if result.pac_port else ""
-        share_str = f"  [dim]shares: {len(shares)}[/dim]" if shares else ""
-        self.query_one("#status-bar", Static).update(
-            f"[{color}]●[/{color}] {running_count}/{total_count} running"
-            f"{share_str}"
-        )
-
         # Build conn_data with forwards from config
         conn_map = {c.tag: c for c in config.connections}
         new_conn_data: dict = {}
@@ -262,70 +242,45 @@ class DashboardScreen(Screen):
         conn_list = self.query_one("#conn-list", ListView)
         new_tags = [cs.tag for cs in result.connection_statuses]
 
-        label_texts = []
+        label_texts: list[str] = []
         for cs in result.connection_statuses:
             dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
-            label_texts.append(f"{dot} {cs.tag:<12} {port_str:<6} {_fmt_bps(rx):>9}↓")
+            label_texts.append(f"{dot} {cs.tag:<12} {port_str:<5} {_fmt_bps(rx):>6}↓")
 
         if new_tags == self._conn_tags:
-            # Same connections — update text in-place, selection stays intact
-            for item, text in zip(conn_list.query(ListItem), label_texts):
+            # Same connections — update connection rows in-place (index 0 is the All row, skip it)
+            items = list(conn_list.query(ListItem))
+            for item, text in zip(items[1:], label_texts):
                 item.query_one(Label).update(text)
         else:
-            # Connections added/removed — rebuild and restore cursor
-            cur = conn_list.index or 0
+            # Tags changed — rebuild list, preserve whether All or a connection was selected
+            prev_index = conn_list.index if conn_list.index is not None else 0
             conn_list.clear()
-            self._conn_tags = new_tags
+            conn_list.append(ListItem(Label("[dim]All[/dim]")))
             for text in label_texts:
                 conn_list.append(ListItem(Label(text)))
-            if self._conn_tags:
-                conn_list.index = min(cur, len(self._conn_tags) - 1)
+            self._conn_tags = new_tags
+            # Restore selection: clamp to valid range (All row = 0, connections = 1..N)
+            conn_list.index = min(prev_index, len(self._conn_tags))
 
-        if self._conn_tags:
-            idx = conn_list.index or 0
-            self._selected_tag = self._conn_tags[min(idx, len(self._conn_tags) - 1)]
+        # Derive _selected_tag from current list position
+        idx = conn_list.index if conn_list.index is not None else 0
+        if idx == 0 or not self._conn_tags:
+            self._selected_tag = None  # All
         else:
-            self._selected_tag = None
+            self._selected_tag = self._conn_tags[min(idx - 1, len(self._conn_tags) - 1)]
 
-        # Update PAC info (keep to 2 lines — sidebar is only 32 chars wide)
-        host_count = sum(len(c.pac_hosts) for c in config.connections)
-        pac_dot = "[green]●[/green]" if result.pac_running else "[red]○[/red]"
-        pac_port_display = f" {result.pac_port}" if result.pac_port else ""
-        pac_line = f"{pac_dot} PAC{pac_port_display}"
-        if result.pac_running:
-            pac_line += f"  [dim]{host_count} host(s)[/dim]"
-        self.query_one("#pac-info", Static).update(pac_line)
-
-        # Update shares info
-        shares_widget = self.query_one("#shares-info", Static)
-        if not shares:
-            shares_widget.display = False
-        else:
-            shares_widget.display = True
-            share_lines = []
-            for info in shares:
-                name = Path(info.file_path).name
-                if info.running:
-                    dot = "[green]●[/green]"
-                elif info.stopped:
-                    dot = "[dim]○[/dim]"
-                else:
-                    dot = "[red]○[/red]"
-                share_lines.append(f"{dot} {name}  :{info.port}")
-            shares_widget.update("\n".join(share_lines))
-
-        # Refresh detail panel for currently selected tag
+        # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)
+        self._update_context_panel(self._selected_tag)
 
     def _update_detail_panel(self, tag: str | None) -> None:
         if not tag or tag not in self._conn_data:
             self.query_one("#stats-content", Static).update(
                 "[dim]Select a connection from the sidebar.[/dim]"
             )
-            fwd_table = self.query_one("#fwd-table", DataTable)
-            fwd_table.clear()
             return
 
         data = self._conn_data[tag]
@@ -390,30 +345,18 @@ class DashboardScreen(Screen):
         for line in mgr.get_logs(500):
             log_widget.write(line)
 
-        # Forwards tab
-        fwd_table = self.query_one("#fwd-table", DataTable)
-        fwd_table.clear()
-        for fw in forwards_local:
-            fwd_table.add_row(
-                "local",
-                str(fw.src_port), fw.src_addr,
-                str(fw.dst_port), fw.dst_addr,
-                fw.tag or "",
-            )
-        for fw in forwards_remote:
-            fwd_table.add_row(
-                "remote",
-                str(fw.src_port), fw.src_addr,
-                str(fw.dst_port), fw.dst_addr,
-                fw.tag or "",
-            )
-
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         index = event.list_view.index
-        if index is not None and index < len(self._conn_tags):
-            tag = self._conn_tags[index]
-            self._selected_tag = tag
-            self._update_detail_panel(tag)
+        if index is None or index == 0:
+            self._selected_tag = None  # All row
+        elif index - 1 < len(self._conn_tags):
+            self._selected_tag = self._conn_tags[index - 1]
+        self._update_detail_panel(self._selected_tag)
+        self._update_context_panel(self._selected_tag)
+
+    def _update_context_panel(self, tag: str | None) -> None:
+        """Populate domain/forward/share sections. tag=None means show all."""
+        pass  # implemented in Task 6
 
     @work(thread=True)
     def _start_sse_listener(self) -> None:
