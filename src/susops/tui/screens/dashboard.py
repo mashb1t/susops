@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -113,6 +114,8 @@ class DashboardScreen(Screen):
         self._tx_history: dict = {}
         self._idle_ticks: int = 0  # ticks since last active connection
         self._sse_active: bool = True
+        self._last_config = None
+        self._last_shares: list = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-split"):
@@ -207,6 +210,9 @@ class DashboardScreen(Screen):
         shares: list,
         config,
     ) -> None:
+        self._last_config = config
+        self._last_shares = shares
+
         # Build conn_data with forwards from config
         conn_map = {c.tag: c for c in config.connections}
         new_conn_data: dict = {}
@@ -413,8 +419,65 @@ class DashboardScreen(Screen):
         self._update_context_panel(self._selected_tag)
 
     def _update_context_panel(self, tag: str | None) -> None:
-        """Populate domain/forward/share sections. tag=None means show all."""
-        pass  # implemented in Task 6
+        """Populate domain/forward/share sections. tag=None shows all connections."""
+        config = getattr(self, "_last_config", None)
+        shares = getattr(self, "_last_shares", [])
+        conn_map = {c.tag: c for c in config.connections} if config else {}
+
+        domain_lines: list[str] = []
+        forward_lines: list[str] = []
+        share_lines: list[str] = []
+
+        if tag is None:
+            # Global view — prefix each item with [conn] tag
+            for conn in (config.connections if config else []):
+                for host in conn.pac_hosts:
+                    domain_lines.append(f"[dim][{conn.tag}][/dim] {host}")
+            for t, data in self._conn_data.items():
+                for fw in data.get("forwards_local", []):
+                    label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
+                    forward_lines.append(
+                        f"[dim][{t}][/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
+                    )
+                for fw in data.get("forwards_remote", []):
+                    label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
+                    forward_lines.append(
+                        f"[dim][{t}][/dim] [yellow]←[/yellow] {fw.src_port}←:{fw.dst_port}{label}"
+                    )
+            for info in shares:
+                dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
+                name = Path(info.file_path).name
+                share_lines.append(f"{dot} {name}  :{info.port}")
+        else:
+            # Per-connection view — no prefix
+            conn = conn_map.get(tag)
+            if conn:
+                for host in conn.pac_hosts:
+                    domain_lines.append(host)
+            data = self._conn_data.get(tag, {})
+            for fw in data.get("forwards_local", []):
+                label = f"  [dim]{fw.tag}[/dim]" if fw.tag else ""
+                forward_lines.append(
+                    f"[green]→[/green] {fw.src_port} → {fw.dst_addr}:{fw.dst_port}{label}"
+                )
+            for fw in data.get("forwards_remote", []):
+                label = f"  [dim]{fw.tag}[/dim]" if fw.tag else ""
+                forward_lines.append(
+                    f"[yellow]←[/yellow] {fw.src_port} ← :{fw.dst_port}{label}"
+                )
+            for info in shares:
+                if info.conn_tag == tag:
+                    dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
+                    name = Path(info.file_path).name
+                    share_lines.append(f"{dot} {name}  :{info.port}")
+
+        domain_text = "\n".join(domain_lines) if domain_lines else "[dim]—[/dim]"
+        forward_text = "\n".join(forward_lines) if forward_lines else "[dim]—[/dim]"
+        share_text = "\n".join(share_lines) if share_lines else "[dim]—[/dim]"
+
+        self.query_one("#domain-content", Static).update(domain_text)
+        self.query_one("#forward-content", Static).update(forward_text)
+        self.query_one("#share-content", Static).update(share_text)
 
     @work(thread=True)
     def _start_sse_listener(self) -> None:
