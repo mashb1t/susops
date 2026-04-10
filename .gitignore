@@ -18,3 +18,4 @@ env/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.superpowers/
