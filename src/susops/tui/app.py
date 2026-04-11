@@ -8,7 +8,9 @@ from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
 
 from susops.core.types import ProcessState
-from susops.tui.screens.config_editor import ConfigEditorScreen
+from susops.tui.screens.connection_editor import ConnectionEditorScreen
+from susops.tui.screens.dashboard import DashboardScreen
+from susops.tui.screens.share import ShareScreen
 
 _LOGO_MARKUP: dict[ProcessState, str] = {
     ProcessState.RUNNING: "[green]S[/green]usOps",
@@ -16,10 +18,6 @@ _LOGO_MARKUP: dict[ProcessState, str] = {
     ProcessState.STOPPED: "[red]S[/red]usOps",
     ProcessState.ERROR: "[bold red]S[/bold red]usOps",
 }
-from susops.tui.screens.connection_editor import ConnectionEditorScreen
-from susops.tui.screens.dashboard import DashboardScreen
-from susops.tui.screens.pac_viewer import PacViewerScreen
-from susops.tui.screens.share import ShareScreen
 
 
 class _SusOpsCommands(Provider):
@@ -34,8 +32,8 @@ class _SusOpsCommands(Provider):
             ("Dashboard", lambda: app.push_screen("dashboard"), "Go to dashboard"),
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
             ("Share", lambda: app.push_screen("share"), "Share/fetch files"),
-            ("Config", lambda: app.push_screen("config"), "Edit config"),
-            ("PAC file", lambda: app.push_screen("pac"), "View PAC proxy config"),
+            ("Config", lambda: app.action_show_config(), "View config.yaml"),
+            ("PAC file", lambda: app.action_show_pac(), "View PAC proxy config"),
             ("Quit", app.action_quit, "Quit SusOps"),
         ]
         q = query.lower()
@@ -63,12 +61,10 @@ class SusOpsTuiApp(App):
 
     BINDINGS = [
         Binding("c", "push_screen('connections')", "Connections", show=False),
-        Binding("e", "push_screen('config')", "Config", show=False),
         Binding("f", "push_screen('share')", "Share", show=False),
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
-        Binding("p", "push_screen('pac')", "PAC", show=False),
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("q", "quit", "Quit"),
     ]
@@ -77,8 +73,6 @@ class SusOpsTuiApp(App):
         "dashboard": DashboardScreen,
         "connections": ConnectionEditorScreen,
         "share": ShareScreen,
-        "config": ConfigEditorScreen,
-        "pac": PacViewerScreen,
     }
 
     COMMANDS = App.COMMANDS | {_SusOpsCommands}
@@ -115,6 +109,16 @@ class SusOpsTuiApp(App):
             self.query_one(".footer-logo").update(text)
         except Exception:
             pass
+
+    def action_show_config(self) -> None:
+        from susops.tui.screens.dashboard import DashboardScreen
+        screen = self.query_one(DashboardScreen)
+        screen.action_show_tab("tab-config")
+
+    def action_show_pac(self) -> None:
+        from susops.tui.screens.dashboard import DashboardScreen
+        screen = self.query_one(DashboardScreen)
+        screen.action_show_tab("tab-pac")
 
     def _bg_start(self) -> None:
         self.run_worker(self._do_start, thread=True)

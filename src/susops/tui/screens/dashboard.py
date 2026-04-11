@@ -18,6 +18,7 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 from textual_plotext import PlotextPlot
 
@@ -128,9 +129,9 @@ class DashboardScreen(Screen):
         Binding("X", "stop_all", "Stop all"),
         Binding("R", "restart_all", "Restart all"),
         Binding("c", "push_screen('connections')", "Connections"),
-        Binding("e", "push_screen('config')", "Config"),
+        Binding("e", "show_tab('tab-config')", "Config"),
         Binding("f", "push_screen('share')", "Share"),
-        Binding("p", "push_screen('pac')", "PAC"),
+        Binding("p", "show_tab('tab-pac')", "PAC"),
     ]
 
     DEFAULT_CSS = """
@@ -146,6 +147,8 @@ class DashboardScreen(Screen):
     #rx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 1; }
     #tx-chart { height: 1fr; width: 1fr; border: round $primary-darken-1; margin: 0 1 1 0; }
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
+    #config-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
+    #pac-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
     #context-panel { width: 50; background: $surface-darken-1; border-left: solid $primary-darken-2; }
     #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #domain-content { padding: 0 1; }
@@ -181,6 +184,14 @@ class DashboardScreen(Screen):
                             yield PlotextPlot(id="tx-chart")
                     with TabPane("Logs", id="tab-logs"):
                         yield RichLog(id="detail-logs", highlight=True, markup=True)
+                    with TabPane("Config", id="tab-config"):
+                        area = TextArea(language="yaml", id="config-tab-area", read_only=True)
+                        area.border_title = "config.yaml"
+                        yield area
+                    with TabPane("PAC", id="tab-pac"):
+                        area = TextArea(language="javascript", id="pac-tab-area", read_only=True)
+                        area.border_title = "susops.pac"
+                        yield area
             # Right: context panel (domains / forwards / shares)
             with Vertical(id="context-panel"):
                 with VerticalScroll(id="domain-section"):
@@ -508,6 +519,28 @@ class DashboardScreen(Screen):
             self._selected_tag = None  # Stale index — fall back to All
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        pane_id = event.pane.id if event.pane else None
+        if pane_id == "tab-config":
+            self._load_config_tab()
+        elif pane_id == "tab-pac":
+            self._load_pac_tab()
+
+    def action_show_tab(self, tab_id: str) -> None:
+        self.query_one("#detail-tabs", TabbedContent).active = tab_id
+
+    def _load_config_tab(self) -> None:
+        workspace = self.app.manager.workspace  # type: ignore[attr-defined]
+        path = workspace / "config.yaml"
+        content = path.read_text() if path.exists() else "# No config file found"
+        self.query_one("#config-tab-area", TextArea).load_text(content)
+
+    def _load_pac_tab(self) -> None:
+        workspace = self.app.manager.workspace  # type: ignore[attr-defined]
+        path = workspace / "susops.pac"
+        content = path.read_text() if path.exists() else "// PAC file not found"
+        self.query_one("#pac-tab-area", TextArea).load_text(content)
 
     def _update_context_panel(self, tag: str | None) -> None:
         """Populate domain/forward/share sections. tag=None shows all connections."""
