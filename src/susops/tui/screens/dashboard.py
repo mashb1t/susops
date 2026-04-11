@@ -214,6 +214,8 @@ class DashboardScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log
+        self._prev_on_error = mgr.on_error
+        mgr.on_error = self._on_new_error
         self.set_interval(2.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
@@ -231,6 +233,7 @@ class DashboardScreen(Screen):
         self._sse_active = False
         mgr = self.app.manager  # type: ignore[attr-defined]
         mgr.on_log = self._prev_on_log
+        mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
         """Adaptive refresh: every 2s when connections are active, every 10s when idle."""
@@ -247,6 +250,17 @@ class DashboardScreen(Screen):
     def _on_new_log(self, msg: str) -> None:
         try:
             self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
+        except Exception:
+            pass
+
+    def _on_new_error(self, msg: str) -> None:
+        try:
+            self.app.call_from_thread(
+                self.notify,
+                msg,
+                severity="error",
+                timeout=6,
+            )
         except Exception:
             pass
 

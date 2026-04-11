@@ -590,6 +590,32 @@ def test_reconnect_monitor_tracks_intended_tags(tmp_path):
     assert "home" in monitor._intended
 
 
+def test_error_calls_both_on_log_and_on_error(tmp_path):
+    """_error() must invoke both on_log and on_error callbacks."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    log_msgs = []
+    error_msgs = []
+    mgr.on_log = log_msgs.append
+    mgr.on_error = error_msgs.append
+
+    mgr._error("something went wrong")
+
+    assert any("something went wrong" in m for m in log_msgs), "on_log not called"
+    assert any("something went wrong" in m for m in error_msgs), "on_error not called"
+
+
+def test_error_tolerates_missing_on_error(tmp_path):
+    """_error() must not raise when on_error is None."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.on_error = None
+    mgr._error("oops")  # must not raise
+
+
 def test_add_local_forward_both_protocols_persisted(tmp_path):
     """Forward with tcp=True and udp=True is saved with both flags."""
     mgr = SusOpsManager(workspace=tmp_path)

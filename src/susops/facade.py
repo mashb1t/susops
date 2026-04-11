@@ -264,6 +264,7 @@ class SusOpsManager:
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
+        self.on_error: Callable[[str], None] | None = None
 
         # Auto-restart PAC server when tunnels are running but this is a
         # fresh process (e.g. TUI restarted without stop_on_quit).
@@ -282,6 +283,20 @@ class SusOpsManager:
         self._log_buffer.append(msg)
         if self.on_log:
             self.on_log(msg)
+
+    def _error(self, msg: str) -> None:
+        """Log an error to the log buffer and fire the on_error callback.
+
+        Use this instead of _log() for failures that the user must see
+        immediately (connection failures, forward failures, share errors).
+        on_error is wired to the TUI's notify() toast in dashboard.py.
+        """
+        self._log(msg)
+        if self.on_error:
+            try:
+                self.on_error(msg)
+            except Exception:
+                pass
 
     def _debug(self, msg: str) -> None:
         """Log a debug message. Only active when verbose=True.
@@ -630,7 +645,7 @@ class SusOpsManager:
                         if fw.udp:
                             start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 for fw in conn.forwards.remote:
                     try:
@@ -639,7 +654,7 @@ class SusOpsManager:
                         if fw.udp:
                             start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 # Start HTTP servers for config-only (stopped) shares, then forward slaves
                 # for all running share servers belonging to this connection.
@@ -671,7 +686,7 @@ class SusOpsManager:
                             "conn_tag": conn.tag,
                         })
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+                        self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
 
                 for share_port, (_server, share_info) in list(self._share_servers.items()):
                     if share_info.conn_tag == conn.tag:
@@ -702,7 +717,7 @@ class SusOpsManager:
                     if lines:
                         tail = "\n  " + "\n  ".join(lines[-5:])
                 msg = f"[{conn.tag}] Failed: {exc}{tail}"
-                self._log(msg)
+                self._error(msg)
                 errors.append(msg)
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
                 self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
@@ -722,6 +737,7 @@ class SusOpsManager:
                     self._write_pac_port_file(self._pac_server.get_port())
                     self._log(f"PAC server started on port {pac_port}")
                 except Exception as exc:
+                    self._error(f"PAC server failed: {exc}")
                     errors.append(f"PAC server failed: {exc}")
 
         # Start status server if not already running
