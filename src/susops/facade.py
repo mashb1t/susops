@@ -1103,8 +1103,9 @@ class SusOpsManager:
         if get_connection(self.config, conn_tag) is None:
             raise ValueError(f"Connection '{conn_tag}' not found")
 
+        local_port = get_random_free_port()
         fw = PortForward(
-            src_port=port,
+            src_port=local_port,
             dst_port=port,
             src_addr="localhost",
             dst_addr="localhost",
@@ -1129,7 +1130,7 @@ class SusOpsManager:
                 start_forward(conn, fw, "local", self._process_mgr, self.workspace)
                 # Poll until local port is accessible (up to 5 s)
                 for _ in range(50):
-                    if self._probe_port(port):
+                    if self._probe_port(local_port):
                         break
                     time.sleep(0.1)
                 forward_started = True
@@ -1137,7 +1138,10 @@ class SusOpsManager:
                 self._log(f"[{conn_tag}] Fetch forward {port} failed: {exc}")
 
         try:
-            result = fetch_file(host="localhost", port=port, password=password, outfile=outfile)
+            # If forward was started, fetch from local_port; otherwise fall back to original port
+            # (useful in test/dev scenarios where share server is running locally)
+            fetch_port = local_port if forward_started else port
+            result = fetch_file(host="localhost", port=fetch_port, password=password, outfile=outfile)
         finally:
             if forward_started:
                 stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
