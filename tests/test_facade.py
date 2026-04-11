@@ -540,6 +540,35 @@ def test_add_local_udp_forward_persisted(tmp_path):
     assert saved.dst_addr == "dns.internal"
 
 
+def test_start_logs_ssh_tail_on_failure(tmp_path, monkeypatch):
+    """When SSH fails to start, the facade logs the last lines of the SSH log."""
+    from susops.facade import SusOpsManager
+    import susops.facade as facade_mod
+
+    # Pre-write a fake SSH log that would normally be written by the SSH process
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "susops-ssh-demo.log").write_text(
+        "OpenSSH_9.0\nConnection refused (port 22)\n"
+    )
+
+    # Force start_master to raise so the exception handler is exercised
+    monkeypatch.setattr(facade_mod, "start_master", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("Connection refused (port 22)")))
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("demo", "user@nonexistent.invalid")
+
+    log_lines = []
+    mgr.on_log = log_lines.append
+
+    mgr.start(tag="demo")  # will fail — start_master raises
+
+    combined = "\n".join(log_lines)
+    assert "Connection refused" in combined, (
+        f"SSH log tail not surfaced in log output:\n{combined}"
+    )
+
+
 def test_add_local_forward_both_protocols_persisted(tmp_path):
     """Forward with tcp=True and udp=True is saved with both flags."""
     mgr = SusOpsManager(workspace=tmp_path)

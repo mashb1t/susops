@@ -620,7 +620,13 @@ class SusOpsManager:
                 self._start_times[conn.tag] = time.monotonic()
                 self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
             except Exception as exc:
-                msg = f"[{conn.tag}] Failed: {exc}"
+                log_path = self.workspace / "logs" / f"susops-ssh-{conn.tag}.log"
+                tail = ""
+                if log_path.exists():
+                    lines = [l for l in log_path.read_text().splitlines() if l.strip()]
+                    if lines:
+                        tail = "\n  " + "\n  ".join(lines[-5:])
+                msg = f"[{conn.tag}] Failed: {exc}{tail}"
                 self._log(msg)
                 errors.append(msg)
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
