@@ -10,6 +10,8 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
+from susops.core.config import PortForward as _PortForward
+
 
 def open_path(path: str) -> None:
     """Open a file or directory with the system default handler."""
@@ -39,9 +41,6 @@ def compose_footer() -> ComposeResult:
     with Horizontal(classes="footer-row"):
         yield Footer()
         yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
-
-
-from susops.core.config import PortForward as _PortForward
 
 
 def proto_label(fw: _PortForward) -> str:
