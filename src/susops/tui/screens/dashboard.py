@@ -83,7 +83,7 @@ def _fmt_bw_line(
     tx: float,
     rx_t: float,
     tx_t: float,
-    tag_width: int = 27,
+    tag_width: int = 25,
     show_dot: bool = True,
 ) -> str:
     dot = "[green]●[/green]" if running else "[red]○[/red]"
@@ -327,7 +327,7 @@ class DashboardScreen(Screen):
             dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
-            label_texts.append(f"{dot} {cs.tag:<27} {port_str:<5} {_fmt_bps(rx):>6}↓")
+            label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>6}↓")
 
         if new_tags == self._conn_tags:
             # Same connections — update connection rows in-place (index 0 is the All row, skip it)
@@ -388,7 +388,7 @@ class DashboardScreen(Screen):
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
             f"  [dim]{'─' * 71}[/dim]",
-            _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=27 + len("[bold][/bold]"), show_dot=False),
+            _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=25 + len("[bold][/bold]"), show_dot=False),
             f"  [dim]{'─' * 71}[/dim]",
         ]
         for tag, data in self._conn_data.items():

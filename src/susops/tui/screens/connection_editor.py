@@ -171,7 +171,6 @@ class ConnectionEditorScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
-        Binding("e", "push_screen('config')", "Config"),
     ]
 
     DEFAULT_CSS = """
