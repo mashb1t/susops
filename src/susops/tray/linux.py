@@ -775,6 +775,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         for addr in BIND_ADDRESSES:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
+        tcp_check = Gtk.CheckButton(label="TCP (SSH -L forward)")
+        tcp_check.set_active(True)
+        udp_check = Gtk.CheckButton(label="UDP (socat relay)")
+        udp_check.set_active(False)
 
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
@@ -783,6 +787,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             ("dst", "To Remote Port *:", dst_port_entry),
             ("src_addr", "Local Bind (optional):", src_addr_combo),
             ("dst_addr", "Remote Bind (optional):", dst_addr_combo),
+            ("tcp", "Protocol:", tcp_check),
+            ("udp", "", udp_check),
         ])
         dlg.get_content_area().add(grid)
         _polish_dialog(Gtk, dlg)
@@ -798,9 +804,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
             dst = dst_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
+            tcp = tcp_check.get_active()
+            udp = udp_check.get_active()
 
             if not conn_tag:
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
+                continue
+            if not tcp and not udp:
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(src):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Local Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -812,7 +823,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Invalid Port", "To Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst), tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_local_forward(conn_tag, fw)
             return False
@@ -848,6 +859,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         for addr in BIND_ADDRESSES:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
+        tcp_check = Gtk.CheckButton(label="TCP (SSH -R forward)")
+        tcp_check.set_active(True)
+        udp_check = Gtk.CheckButton(label="UDP (socat relay)")
+        udp_check.set_active(False)
 
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
@@ -856,6 +871,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             ("lport", "To Local Port *:", local_port_entry),
             ("src_addr", "Remote Bind (optional):", src_addr_combo),
             ("dst_addr", "Local Bind (optional):", dst_addr_combo),
+            ("tcp", "Protocol:", tcp_check),
+            ("udp", "", udp_check),
         ])
         dlg.get_content_area().add(grid)
         _polish_dialog(Gtk, dlg)
@@ -871,9 +888,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
             lport = local_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
+            tcp = tcp_check.get_active()
+            udp = udp_check.get_active()
 
             if not conn_tag:
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
+                continue
+            if not tcp and not udp:
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(rport):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -885,7 +907,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Port In Use", f"Local port {lport} is already in use.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
             return False
