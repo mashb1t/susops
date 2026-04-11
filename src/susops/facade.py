@@ -731,8 +731,8 @@ class SusOpsManager:
         for conn in connections:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
-                    stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                     self._log(f"[{conn.tag}] Stopped")
+                stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                     self._bw_sampler.reset_totals(conn.tag)
                     self._start_times.pop(conn.tag, None)
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
