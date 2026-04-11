@@ -776,9 +776,36 @@ class SusOpsManager:
                     self._remove_pac_port_file()
                     self._log("PAC server stopped (remote)")
 
-        # Regenerate PAC when stopping a single connection to remove its entries
-        if tag is not None and self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        # Regenerate PAC (or stop it) when stopping a single connection
+        if tag is not None:
+            remaining = self._active_tags()
+            if not remaining:
+                # Last connection stopped — shut down PAC server entirely
+                if self._pac_server.is_running():
+                    try:
+                        self._pac_server.stop()
+                        self._remove_pac_port_file()
+                        self._log("PAC server stopped (no active connections)")
+                        if not keep_ports and ephemeral:
+                            self.config = self.config.model_copy(update={"pac_server_port": 0})
+                    except Exception as exc:
+                        errors.append(f"PAC: {exc}")
+                else:
+                    cross_port = self._read_pac_port_file()
+                    if cross_port:
+                        try:
+                            import urllib.request
+                            urllib.request.urlopen(
+                                f"http://127.0.0.1:{cross_port}/stop",
+                                data=b"",
+                                timeout=2,
+                            )
+                        except Exception:
+                            pass
+                        self._remove_pac_port_file()
+                        self._log("PAC server stopped (no active connections, remote)")
+            elif self._pac_server.is_running():
+                self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=remaining))
 
         self._save()
         self._emit_state(self._compute_state())
