@@ -468,3 +468,191 @@ cp ~/.susops/config.yaml.bak ~/.susops/config.yaml
 git add src/susops/tui/app.py
 git commit -m "feat: show error modal on config.yaml validation failure instead of crashing"
 ```
+
+---
+
+### Task 5: TUI error notifications via `on_error` callback
+
+Errors logged via `_log()` go to the Logs tab — invisible unless the user happens to be on that tab. Add an `on_error` callback to `SusOpsManager` that the TUI wires to `self.notify()` (Textual toast), so connection failures, forward failures, and share failures surface immediately regardless of which tab is active.
+
+**Files:**
+- Modify: `src/susops/facade.py` — add `on_error` public callback and `_error()` private method; replace critical `_log()` calls with `_error()`
+- Modify: `src/susops/tui/screens/dashboard.py` — wire `mgr.on_error` to `self.notify()` on mount/unmount
+
+- [ ] **Step 1: Write a test for `_error()`**
+
+In `tests/test_facade.py`, add:
+
+```python
+def test_error_calls_both_on_log_and_on_error(tmp_path):
+    """_error() must invoke both on_log and on_error callbacks."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    log_msgs = []
+    error_msgs = []
+    mgr.on_log = log_msgs.append
+    mgr.on_error = error_msgs.append
+
+    mgr._error("something went wrong")
+
+    assert any("something went wrong" in m for m in log_msgs), "on_log not called"
+    assert any("something went wrong" in m for m in error_msgs), "on_error not called"
+
+
+def test_error_tolerates_missing_on_error(tmp_path):
+    """_error() must not raise when on_error is None."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.on_error = None
+    mgr._error("oops")  # must not raise
+```
+
+- [ ] **Step 2: Run to confirm failure**
+
+```bash
+pytest tests/test_facade.py::test_error_calls_both_on_log_and_on_error \
+       tests/test_facade.py::test_error_tolerates_missing_on_error -v
+```
+
+Expected: both FAILED (`_error` not defined)
+
+- [ ] **Step 3: Add `on_error` and `_error()` to `SusOpsManager`**
+
+In `SusOpsManager.__init__`, after the `on_log` line:
+
+```python
+        self.on_error: Callable[[str], None] | None = None
+```
+
+Add the `_error()` method directly after `_log()`:
+
+```python
+    def _error(self, msg: str) -> None:
+        """Log an error to the log buffer and fire the on_error callback.
+
+        Use this instead of _log() for failures that the user must see
+        immediately (connection failures, forward failures, share errors).
+        on_error is wired to the TUI's notify() toast in dashboard.py.
+        """
+        self._log(msg)
+        if self.on_error:
+            try:
+                self.on_error(msg)
+            except Exception:
+                pass
+```
+
+- [ ] **Step 4: Run the two new tests**
+
+```bash
+pytest tests/test_facade.py::test_error_calls_both_on_log_and_on_error \
+       tests/test_facade.py::test_error_tolerates_missing_on_error -v
+```
+
+Expected: both PASSED
+
+- [ ] **Step 5: Replace `_log()` with `_error()` for critical failures in `facade.py`**
+
+Search for the following patterns and replace `self._log(` with `self._error(` for each:
+
+1. SSH master start failure (the `except Exception as exc:` block in `start()` that logs `f"[{conn.tag}] Failed: {exc}"`):
+
+```python
+                self._error(msg)   # was: self._log(msg)
+```
+
+2. Per-forward failure in `start()` — `f"[{conn.tag}] Forward {fw.src_port} failed: {exc}"`:
+
+```python
+                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+```
+
+3. Share start failure in `start()` — `f"[{conn.tag}] Failed to start share ...`:
+
+```python
+                        self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+```
+
+4. Share forward failure in `start()` — `f"[{conn.tag}] Share forward {share_port} failed: {exc}"`:
+
+```python
+                        self._error(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
+```
+
+5. PAC server failure in `start()` — `f"PAC server failed: {exc}"`:
+
+```python
+                    errors.append(f"PAC server failed: {exc}")
+                    self._error(f"PAC server failed: {exc}")  # add this line
+```
+
+Do **not** change informational `_log()` calls like "Master started (PID …)" or "Already running" — only failures.
+
+- [ ] **Step 6: Run full suite**
+
+```bash
+pytest -x
+```
+
+Expected: all pass.
+
+- [ ] **Step 7: Wire `on_error` in `dashboard.py`**
+
+In `DashboardScreen.on_mount`, after the `mgr.on_log = self._on_new_log` line, add:
+
+```python
+        self._prev_on_error = mgr.on_error
+        mgr.on_error = self._on_new_error
+```
+
+In `DashboardScreen.on_unmount`, after `mgr.on_log = self._prev_on_log`, add:
+
+```python
+        mgr.on_error = self._prev_on_error
+```
+
+Add the handler method alongside `_on_new_log`:
+
+```python
+    def _on_new_error(self, msg: str) -> None:
+        try:
+            self.app.call_from_thread(
+                self.notify,
+                msg,
+                severity="error",
+                timeout=6,
+            )
+        except Exception:
+            pass
+```
+
+- [ ] **Step 8: Manual smoke test**
+
+```bash
+susops  # launch TUI
+# Try to start a connection to a nonexistent host
+# Verify: error appears in Logs tab AND as a red toast notification at top of screen
+```
+
+- [ ] **Step 9: Run full suite**
+
+```bash
+pytest -x
+```
+
+Expected: all pass.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/susops/facade.py src/susops/tui/screens/dashboard.py tests/test_facade.py
+git commit -m "feat: surface critical errors as TUI notify toasts via on_error callback
+
+Adds on_error callback alongside on_log. _error() fires both.
+SSH failures, forward failures, share failures, and PAC server errors
+now show as red toast notifications in the dashboard regardless of
+which tab is active."
+```

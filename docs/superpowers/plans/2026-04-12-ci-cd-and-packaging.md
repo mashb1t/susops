@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +85,7 @@ Expected: `OK`
 
 ```bash
 git add .github/workflows/test.yml
-git commit -m "ci: add GitHub Actions test workflow (Python 3.11–3.13, uv)"
+git commit -m "ci: add GitHub Actions test workflow (Python 3.11–3.14, uv)"
 ```
 
 ---
@@ -270,4 +270,100 @@ Expected: `arg check OK`
 ```bash
 git add scripts/update_homebrew_sha.py
 git commit -m "chore: add Homebrew formula sha256 update script"
+```
+
+---
+
+### Task 4: AUR release script
+
+The AUR PKGBUILD at `packaging/aur/PKGBUILD` uses `sha256sums=('SKIP')` so no checksum computation is needed. The release script only needs to bump `pkgver` and reset `pkgrel` to 1.
+
+**Files:**
+- Create: `scripts/update_aur_pkgver.py`
+
+- [ ] **Step 1: Write `scripts/update_aur_pkgver.py`**
+
+```python
+#!/usr/bin/env python3
+"""Bump pkgver (and reset pkgrel to 1) in the AUR PKGBUILD for a new release.
+
+Usage:
+    python scripts/update_aur_pkgver.py 3.1.0
+
+After running:
+    1. Verify packaging/aur/PKGBUILD looks correct
+    2. cd packaging/aur && makepkg -si   # verify the package builds locally
+    3. git add packaging/aur/PKGBUILD && git commit -m "chore(aur): bump to v3.1.0"
+    4. Push to the AUR remote (separate git remote, not GitHub)
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+PKGBUILD = Path("packaging/aur/PKGBUILD")
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} VERSION", file=sys.stderr)
+        sys.exit(1)
+
+    version = sys.argv[1].lstrip("v")
+    if not re.match(r"^\d+\.\d+\.\d+", version):
+        print(f"Error: version must be in X.Y.Z format, got {version!r}", file=sys.stderr)
+        sys.exit(1)
+
+    content = PKGBUILD.read_text()
+    content = re.sub(r"^pkgver=.*", f"pkgver={version}", content, flags=re.MULTILINE)
+    content = re.sub(r"^pkgrel=.*", "pkgrel=1", content, flags=re.MULTILINE)
+    PKGBUILD.write_text(content)
+
+    print(f"Updated {PKGBUILD}")
+    print(f"  pkgver={version}")
+    print(f"  pkgrel=1")
+    print()
+    print("Next steps:")
+    print(f"  cd packaging/aur && makepkg -si")
+    print(f"  git add PKGBUILD .SRCINFO && git commit -m 'chore(aur): bump to v{version}'")
+    print(f"  git push aur main")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 2: Make executable**
+
+```bash
+chmod +x scripts/update_aur_pkgver.py
+```
+
+- [ ] **Step 3: Smoke-test arg validation**
+
+```bash
+python3 scripts/update_aur_pkgver.py 2>&1 | grep -q "Usage:" && echo "arg check OK"
+python3 scripts/update_aur_pkgver.py notaversion 2>&1 | grep -q "X.Y.Z" && echo "version check OK"
+```
+
+Expected: both `OK`
+
+- [ ] **Step 4: Test it updates the PKGBUILD correctly**
+
+```bash
+cp packaging/aur/PKGBUILD packaging/aur/PKGBUILD.bak
+python3 scripts/update_aur_pkgver.py 9.9.9
+grep "pkgver=9.9.9" packaging/aur/PKGBUILD && echo "pkgver OK"
+grep "pkgrel=1" packaging/aur/PKGBUILD && echo "pkgrel OK"
+cp packaging/aur/PKGBUILD.bak packaging/aur/PKGBUILD && rm packaging/aur/PKGBUILD.bak
+```
+
+Expected: both `OK`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/update_aur_pkgver.py
+git commit -m "chore: add AUR PKGBUILD version bump script"
 ```
