@@ -432,9 +432,10 @@ To restrict the SSH user on the server to only perform port forwarding (no shell
 **1. Create a dedicated system user:**
 
 ```bash
-sudo useradd -r -s /usr/sbin/nologin susops-tunnel
+sudo useradd -r -m -s /usr/sbin/nologin susops-tunnel
 sudo mkdir -p /home/susops-tunnel/.ssh
 sudo chmod 700 /home/susops-tunnel/.ssh
+sudo chown -R susops-tunnel:susops-tunnel /home/susops-tunnel/.ssh
 ```
 
 **2. Add your public key to `authorized_keys` with restrictions:**
