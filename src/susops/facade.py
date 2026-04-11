@@ -892,12 +892,12 @@ class SusOpsManager:
         self._log(f"[{tag}] Added PAC host '{host}'")
         self._emit_state(self._compute_state())
 
-    def remove_pac_host(self, host: str) -> None:
+    def remove_pac_host(self, host: str, conn_tag: str | None = None) -> None:
         self._reload_config()
         found = False
         new_conns = []
         for conn in self.config.connections:
-            if host in conn.pac_hosts:
+            if host in conn.pac_hosts and (conn_tag is None or conn.tag == conn_tag):
                 found = True
                 new_conns.append(
                     conn.model_copy(update={"pac_hosts": [h for h in conn.pac_hosts if h != host]})
@@ -905,7 +905,8 @@ class SusOpsManager:
             else:
                 new_conns.append(conn)
         if not found:
-            raise ValueError(f"Host '{host}' not found in any PAC list")
+            scope = f" in connection '{conn_tag}'" if conn_tag else " in any PAC list"
+            raise ValueError(f"Host '{host}' not found{scope}")
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
         if self._pac_server.is_running():

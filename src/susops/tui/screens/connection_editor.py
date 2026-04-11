@@ -422,8 +422,9 @@ class ConnectionEditorScreen(Screen):
             return
         row = tbl.get_row_at(tbl.cursor_row)
         host = str(row[0])
+        conn_tag = str(row[1])
         try:
-            self.app.manager.remove_pac_host(host)  # type: ignore[attr-defined]
+            self.app.manager.remove_pac_host(host, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), severity="error")

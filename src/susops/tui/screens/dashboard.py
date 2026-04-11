@@ -219,6 +219,11 @@ class DashboardScreen(Screen):
     def on_screen_resume(self) -> None:
         """Refresh immediately when returning to dashboard from another screen."""
         self.refresh_status()
+        tabs = self.query_one("#detail-tabs", TabbedContent)
+        if tabs.active == "tab-pac":
+            self._load_pac_tab()
+        elif tabs.active == "tab-config":
+            self._load_config_tab()
 
     def on_unmount(self) -> None:
         self._sse_active = False
