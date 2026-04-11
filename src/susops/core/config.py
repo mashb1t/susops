@@ -59,6 +59,8 @@ class PortForward(BaseModel):
     src_port: int
     dst_addr: str = "localhost"
     dst_port: int
+    tcp: bool = True
+    udp: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -69,6 +71,12 @@ class PortForward(BaseModel):
             data["src_port"] = int(data.pop("src"))
             data["dst_port"] = int(data.pop("dst", data["src_port"]))
         return data
+
+    @model_validator(mode="after")
+    def require_at_least_one_protocol(self) -> "PortForward":
+        if not self.tcp and not self.udp:
+            raise ValueError("At least one of tcp/udp must be True")
+        return self
 
 
 class Forwards(BaseModel):

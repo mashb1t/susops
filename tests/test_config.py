@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from susops.core.config import (
     AppConfig,
     Connection,
@@ -27,6 +29,36 @@ def test_port_forward_defaults():
     assert fw.src_addr == "localhost"
     assert fw.dst_addr == "localhost"
     assert fw.tag == ""
+
+
+def test_port_forward_defaults_include_tcp():
+    fw = PortForward(src_port=8080, dst_port=80)
+    assert fw.tcp is True
+    assert fw.udp is False
+
+
+def test_port_forward_tcp_false_udp_false_raises():
+    with pytest.raises(ValidationError, match="At least one of tcp/udp must be True"):
+        PortForward(src_port=8080, dst_port=80, tcp=False, udp=False)
+
+
+def test_port_forward_udp_only():
+    fw = PortForward(src_port=53, dst_port=53, tcp=False, udp=True)
+    assert fw.tcp is False
+    assert fw.udp is True
+
+
+def test_port_forward_both_protocols():
+    fw = PortForward(src_port=53, dst_port=53, tcp=True, udp=True)
+    assert fw.tcp is True
+    assert fw.udp is True
+
+
+def test_port_forward_backward_compat_no_protocol_fields():
+    """Old YAML entries with no tcp/udp keys still parse with correct defaults."""
+    fw = PortForward.model_validate({"src_port": 5432, "dst_port": 5432})
+    assert fw.tcp is True
+    assert fw.udp is False
 
 
 def test_connection_defaults():
