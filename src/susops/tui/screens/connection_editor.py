@@ -69,9 +69,10 @@ class _AddConnectionDialog(ModalScreen):
 class _AddPacHostDialog(ModalScreen):
     """Modal for adding a PAC host."""
 
-    def __init__(self, connections: list[str], **kwargs) -> None:
+    def __init__(self, connections: list[str], pac_hosts: dict[str, list[str]], **kwargs) -> None:
         super().__init__(**kwargs)
         self._connections = connections
+        self._pac_hosts = pac_hosts  # {conn_tag: [host, ...]}
 
     def compose(self) -> ComposeResult:
         options = [(tag, tag) for tag in self._connections]
@@ -81,10 +82,33 @@ class _AddPacHostDialog(ModalScreen):
             yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
             yield Label("Connection")
             yield Select(options, allow_blank=False, id="conn")
+            yield Label("", id="hint", classes="modal-hint")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
+
+    def _update_hint(self) -> None:
+        host = self.query_one("#host", Input).value.strip()
+        conn_val = self.query_one("#conn", Select).value
+        selected_conn = conn_val if isinstance(conn_val, str) else None
+        hint = self.query_one("#hint", Label)
+        if not host:
+            hint.update("")
+            return
+        others = [tag for tag, hosts in self._pac_hosts.items() if host in hosts and tag != selected_conn]
+        if others:
+            hint.update(f"[yellow]Already in: {', '.join(others)}[/yellow]")
+        else:
+            hint.update("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "host":
+            self._update_hint()
+
+    def on_select_changed(self, event) -> None:
+        if event.select.id == "conn":
+            self._update_hint()
 
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
@@ -414,7 +438,9 @@ class ConnectionEditorScreen(Screen):
             except ValueError as e:
                 self.app.notify(str(e), severity="error")
 
-        self.app.push_screen(_AddPacHostDialog(self._conn_tags()), _on_result)
+        config = self.app.manager.list_config()  # type: ignore[attr-defined]
+        pac_hosts = {c.tag: list(c.pac_hosts) for c in config.connections}
+        self.app.push_screen(_AddPacHostDialog(self._conn_tags(), pac_hosts), _on_result)
 
     def _do_rm_pac(self) -> None:
         tbl = self.query_one("#tbl-pac", DataTable)
