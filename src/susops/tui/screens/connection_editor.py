@@ -8,6 +8,7 @@ from textual.containers import Horizontal
 from textual.screen import Screen, ModalScreen
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Input,
     Label,
@@ -18,7 +19,7 @@ from textual.widgets import (
 )
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
-from susops.tui.screens import compose_footer
+from susops.tui.screens import compose_footer, proto_label
 
 
 class _AddConnectionDialog(ModalScreen):
@@ -149,6 +150,9 @@ class _AddForwardDialog(ModalScreen):
             yield Select(bind_options, allow_blank=False, id="src-addr")
             yield Label("Remote Bind:" if d == "local" else "Local Bind:")
             yield Select(bind_options, allow_blank=False, id="dst-addr")
+            yield Label("Protocol:")
+            yield Checkbox("TCP", value=True, id="proto-tcp")
+            yield Checkbox("UDP", value=False, id="proto-udp")
             yield Label("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
@@ -165,7 +169,12 @@ class _AddForwardDialog(ModalScreen):
         dst_addr_val = self.query_one("#dst-addr", Select).value
         dst_addr = dst_addr_val if isinstance(dst_addr_val, str) else "localhost"
         tag = self.query_one("#tag", Input).value.strip()
+        tcp = self.query_one("#proto-tcp", Checkbox).value
+        udp = self.query_one("#proto-udp", Checkbox).value
         error_label = self.query_one(".modal-error", Label)
+        if not tcp and not udp:
+            error_label.update("Select at least one protocol (TCP or UDP).")
+            return
         try:
             src = int(self.query_one("#src-port", Input).value.strip())
             dst = int(self.query_one("#dst-port", Input).value.strip())
@@ -185,6 +194,7 @@ class _AddForwardDialog(ModalScreen):
             "conn": conn, "src": src, "dst": dst,
             "src_addr": src_addr, "dst_addr": dst_addr,
             "tag": tag, "dir": self._direction,
+            "tcp": tcp, "udp": udp,
         })
 
 
@@ -239,10 +249,10 @@ class ConnectionEditorScreen(Screen):
         tbl.add_columns("Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
-        tbl.add_columns("Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Label")
+        tbl.add_columns("Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
 
         tbl = self.query_one("#tbl-remote", DataTable)
-        tbl.add_columns("Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Label")
+        tbl.add_columns("Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
 
     @work(thread=True)
     def _bg_reload(self) -> None:
@@ -300,7 +310,7 @@ class ConnectionEditorScreen(Screen):
             for fw in conn.forwards.local:
                 tbl.add_row(
                     conn.tag, str(fw.src_port), fw.src_addr,
-                    str(fw.dst_port), fw.dst_addr, fw.tag or "",
+                    str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
                     key=f"{conn.tag}:L:{fw.src_port}",
                 )
         if tbl.row_count:
@@ -313,7 +323,7 @@ class ConnectionEditorScreen(Screen):
             for fw in conn.forwards.remote:
                 tbl.add_row(
                     conn.tag, str(fw.src_port), fw.src_addr,
-                    str(fw.dst_port), fw.dst_addr, fw.tag or "",
+                    str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
                     key=f"{conn.tag}:R:{fw.src_port}",
                 )
         if tbl.row_count:
@@ -467,6 +477,8 @@ class ConnectionEditorScreen(Screen):
                 dst_addr=data["dst_addr"],
                 dst_port=data["dst"],
                 tag=data["tag"],
+                tcp=data["tcp"],
+                udp=data["udp"],
             )
             try:
                 if direction == "local":

@@ -39,3 +39,15 @@ def compose_footer() -> ComposeResult:
     with Horizontal(classes="footer-row"):
         yield Footer()
         yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
+
+
+from susops.core.config import PortForward as _PortForward
+
+
+def proto_label(fw: _PortForward) -> str:
+    """Return display string for a forward's protocol(s): TCP, UDP, or TCP+UDP."""
+    if fw.tcp and fw.udp:
+        return "TCP+UDP"
+    if fw.udp:
+        return "UDP"
+    return "TCP"
