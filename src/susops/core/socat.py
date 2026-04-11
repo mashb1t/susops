@@ -13,16 +13,16 @@ lacks socat — both surface through the process manager log file.
 """
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from susops.core.config import Connection, PortForward
 from susops.core.ports import get_random_free_port
 from susops.core.process import ProcessManager
+from susops.core.ssh import socket_path
 
 __all__ = [
     "UDP_PROCESS_PREFIX",
-    "_fw_tag",
-    "_udp_process_name",
     "start_udp_forward",
     "stop_udp_forward",
     "stop_all_udp_forwards_for_connection",
@@ -57,7 +57,6 @@ def start_udp_forward(
     Remote errors (socat missing, shell access blocked) surface as immediate
     process exit — check the log file at workspace/logs/<name>.log.
     """
-    from susops.core.ssh import socket_path
     sock = socket_path(conn.tag, workspace)
     tag = _fw_tag(fw, direction)
     log_dir = workspace / "logs"
@@ -84,7 +83,7 @@ def _start_local_udp(
     """
     name = _udp_process_name(conn.tag, tag, "lsocat")
     ssh_exec = (
-        f"ssh -S {sock} -T {conn.ssh_host} "
+        f"ssh -o ControlPath={shlex.quote(str(sock))} -T {conn.ssh_host} "
         f"socat - UDP4-SENDTO:{fw.dst_addr}:{fw.dst_port}"
     )
     cmd = [
@@ -109,6 +108,12 @@ def _start_remote_udp(
     """Remote UDP forward: SSH -R + remote socat (via SSH) + local socat.
 
     Allocates a random intermediate TCP port for bridging the two socat instances.
+
+    Note: the three processes are started sequentially without explicit synchronisation.
+    The remote socat (rsocat) may start before the SSH -R slave has finished binding
+    the intermediate port on the remote host. On high-latency connections this can
+    cause rsocat to fail immediately; the process manager will log the exit. The
+    facade's polling loop will surface the failure to the user.
     """
     intermediate = get_random_free_port()
 

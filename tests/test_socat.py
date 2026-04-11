@@ -1,4 +1,10 @@
-"""Tests for susops.core.socat — UDP socat command building and process management."""
+"""Tests for susops.core.socat — UDP socat command building and process management.
+
+start_udp_forward and its private helpers _start_local_udp / _start_remote_udp
+are not directly tested here because they call ProcessManager.start() which spawns
+real processes. The helper functions they use (_fw_tag, _udp_process_name,
+stop_udp_forward, stop_all_udp_forwards_for_connection) are tested via mocks.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,11 +25,6 @@ from susops.core.socat import (
 @pytest.fixture
 def conn():
     return Connection(tag="work", ssh_host="user@host.example.com", socks_proxy_port=1080)
-
-
-@pytest.fixture
-def sock(tmp_path):
-    return tmp_path / "sockets" / "work.sock"
 
 
 @pytest.fixture
