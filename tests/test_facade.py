@@ -527,6 +527,30 @@ def test_restore_shares_on_start(tmp_path):
     mgr.stop_share(running[0].port)
 
 
+def test_add_local_udp_forward_persisted(tmp_path):
+    """UDP forward is saved to config with correct flags."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host", 1080)
+    fw = PortForward(src_port=53, dst_port=53, dst_addr="dns.internal", tcp=False, udp=True)
+    mgr.add_local_forward("work", fw)
+    config = mgr.list_config()
+    saved = config.connections[0].forwards.local[0]
+    assert saved.tcp is False
+    assert saved.udp is True
+    assert saved.dst_addr == "dns.internal"
+
+
+def test_add_local_forward_both_protocols_persisted(tmp_path):
+    """Forward with tcp=True and udp=True is saved with both flags."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host", 1080)
+    fw = PortForward(src_port=53, dst_port=53, tcp=True, udp=True)
+    mgr.add_local_forward("work", fw)
+    saved = mgr.list_config().connections[0].forwards.local[0]
+    assert saved.tcp is True
+    assert saved.udp is True
+
+
 def test_restore_shares_missing_file_logs_warning(tmp_path):
     """A FileShare pointing to a nonexistent file must be skipped with a warning logged."""
     import os

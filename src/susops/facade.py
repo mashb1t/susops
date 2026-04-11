@@ -39,6 +39,13 @@ from susops.core.ssh import (
     stop_tunnel,
     test_ssh_connectivity,
 )
+from susops.core.socat import (
+    UDP_PROCESS_PREFIX,
+    _fw_tag,
+    start_udp_forward,
+    stop_udp_forward,
+    stop_all_udp_forwards_for_connection,
+)
 from susops.core.status import StatusServer
 from susops.core.types import (
     ConnectionStatus,
@@ -546,13 +553,19 @@ class SusOpsManager:
                 # Start configured local/remote forwards as slaves
                 for fw in conn.forwards.local:
                     try:
-                        start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                        if fw.tcp:
+                            start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                     except Exception as exc:
                         self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 for fw in conn.forwards.remote:
                     try:
-                        start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                        if fw.tcp:
+                            start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                     except Exception as exc:
                         self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
@@ -720,6 +733,7 @@ class SusOpsManager:
         for conn in connections:
             try:
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
+                    stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                     self._log(f"[{conn.tag}] Stopped")
                     self._bw_sampler.reset_totals(conn.tag)
                     self._start_times.pop(conn.tag, None)
@@ -949,26 +963,32 @@ class SusOpsManager:
         conn = get_connection(self.config, conn_tag)
         if conn and is_tunnel_running(conn_tag, self._process_mgr):
             try:
-                start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                if fw.tcp:
+                    start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                 self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"local-{fw.src_port}",
                     "direction": "local", "running": True,
                 })
             except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward slave: {exc}")
+                self._log(f"[{conn_tag}] Could not start forward: {exc}")
 
     def add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "remote")
         conn = get_connection(self.config, conn_tag)
         if conn and is_tunnel_running(conn_tag, self._process_mgr):
             try:
-                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                if fw.tcp:
+                    start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                 self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"remote-{fw.src_port}",
                     "direction": "remote", "running": True,
                 })
             except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward slave: {exc}")
+                self._log(f"[{conn_tag}] Could not start forward: {exc}")
 
     def _remove_forward(self, src_port: int, direction: str) -> None:
         self._reload_config()
@@ -986,6 +1006,7 @@ class SusOpsManager:
                 # Stop the slave process if it exists
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
                 stop_forward(conn.tag, fw_tag, self._process_mgr)
+                stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
                     "direction": direction, "running": False,
