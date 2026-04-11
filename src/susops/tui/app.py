@@ -83,6 +83,10 @@ class SusOpsTuiApp(App):
             # user presses ctrl+c before it finishes. SIGTERM is sent to all
             # processes immediately; the wait loops are best-effort.
             threading.Thread(target=self.manager.stop, daemon=True).start()
+        else:
+            # Hand the PAC server off to a background process so it keeps
+            # serving while the TUI is closed.
+            self.manager.detach_pac()
         self.exit()
 
     def action_start_all(self) -> None:

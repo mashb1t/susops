@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -655,6 +656,29 @@ class SusOpsManager:
             message="; ".join(errors) if errors else "Started",
             connection_statuses=tuple(statuses),
         )
+
+    def detach_pac(self) -> None:
+        """Hand the PAC server off to a background process so it survives TUI quit.
+
+        Stops the in-process daemon thread and spawns an identical standalone
+        process on the same port.  The port file is left intact so other processes
+        (tray, next TUI session) can find and stop the server via POST /stop.
+        """
+        if not self._pac_server.is_running():
+            return
+        port = self._pac_server.get_port()
+        pac_path = self._pac_server.get_pac_path()
+        if not pac_path:
+            return
+        self._pac_server.stop()
+        subprocess.Popen(
+            [sys.executable, "-m", "susops.core.pac", "--port", str(port), "--pac-file", str(pac_path)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._write_pac_port_file(port)
+        self._log(f"PAC server detached to background process on port {port}")
 
     def _active_tags(self) -> set[str]:
         """Return the set of connection tags that are currently running."""

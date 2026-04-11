@@ -160,8 +160,32 @@ class PacServer:
         """Return the port the server is listening on (0 if not running)."""
         return self._port
 
+    def get_pac_path(self) -> Path | None:
+        """Return the PAC file path currently being served."""
+        return self._pac_path
+
     def reload(self, pac_path: Path) -> None:
         """Update the PAC file path (takes effect on next request)."""
         if self._server is not None:
             self._server.pac_path = pac_path  # type: ignore[attr-defined]
         self._pac_path = pac_path
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="SusOps PAC server (background)")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--pac-file", type=Path, required=True)
+    args = parser.parse_args()
+
+    _server = HTTPServer(("127.0.0.1", args.port), _PacHandler)
+    _server.pac_path = args.pac_file  # type: ignore[attr-defined]
+    try:
+        _server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _server.server_close()
+    sys.exit(0)
