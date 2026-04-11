@@ -249,8 +249,12 @@ class ShareScreen(Screen):
         else:
             state_str = "[red]offline[/red]"
 
+        if "'" not in info.file_path:
+            file_display = f"[@click=screen.open_share('{info.file_path}')]{info.file_path}[/]"
+        else:
+            file_display = info.file_path
         text = (
-            f"[bold]File:[/bold]       [@click=screen.open_share('{info.file_path}')]{info.file_path}[/]\n"
+            f"[bold]File:[/bold]       {file_display}\n"
             f"[bold]Name:[/bold]       {name}\n"
             f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n"
             f"[bold]Port:[/bold]       {info.port}\n"

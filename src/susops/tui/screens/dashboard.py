@@ -75,6 +75,13 @@ def _fmt_uptime(seconds: float) -> str:
     return f"{int(seconds)}s"
 
 
+def _share_name_markup(file_path: str, name: str) -> str:
+    """Return Rich markup for a clickable share filename, or plain name if path is unsafe."""
+    if "'" not in file_path:
+        return f"[@click=screen.open_share('{file_path}')]{name}[/]"
+    return name
+
+
 def _open_in_explorer(file_path: str) -> None:
     """Open the parent directory of file_path in the system file manager."""
     parent = str(Path(file_path).parent)
@@ -515,10 +522,11 @@ class DashboardScreen(Screen):
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                 name = Path(info.file_path).name
+                link = _share_name_markup(info.file_path, name)
                 if info.running:
-                    share_lines.append(f"{dot} [@click=screen.open_share('{info.file_path}')]{name}[/]  {info.port}")
+                    share_lines.append(f"{dot} {link}  {info.port}")
                 else:
-                    share_lines.append(f"{dot} [dim][@click=screen.open_share('{info.file_path}')]{name}[/][/dim]")
+                    share_lines.append(f"{dot} [dim]{link}[/dim]")
         else:
             # Per-connection view — no prefix
             conn = conn_map.get(tag)
@@ -540,10 +548,11 @@ class DashboardScreen(Screen):
                 if info.conn_tag == tag:
                     dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                     name = Path(info.file_path).name
+                    link = _share_name_markup(info.file_path, name)
                     if info.running:
-                        share_lines.append(f"{dot} [@click=screen.open_share('{info.file_path}')]{name}[/]  {info.port}")
+                        share_lines.append(f"{dot} {link}  {info.port}")
                     else:
-                        share_lines.append(f"{dot} [dim][@click=screen.open_share('{info.file_path}')]{name}[/][/dim]")
+                        share_lines.append(f"{dot} [dim]{link}[/dim]")
 
         domain_text = "\n".join(domain_lines) if domain_lines else "[dim]—[/dim]"
         forward_text = "\n".join(forward_lines) if forward_lines else "[dim]—[/dim]"
