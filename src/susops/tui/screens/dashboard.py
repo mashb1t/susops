@@ -1,6 +1,8 @@
 """Dashboard screen — lazydocker+nvtop-inspired split-pane live overview."""
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections import deque
 from pathlib import Path
 
@@ -71,6 +73,15 @@ def _fmt_uptime(seconds: float) -> str:
     if seconds >= 60:
         return f"{int(seconds / 60)}m"
     return f"{int(seconds)}s"
+
+
+def _open_in_explorer(file_path: str) -> None:
+    """Open the parent directory of file_path in the system file manager."""
+    parent = str(Path(file_path).parent)
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", file_path])
+    else:
+        subprocess.Popen(["xdg-open", parent])
 
 
 class DashboardScreen(Screen):
@@ -504,9 +515,10 @@ class DashboardScreen(Screen):
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                 name = Path(info.file_path).name
-                # TODO output as clickable link to open file locally
-                #share_lines.append(f"{dot} [{info.file_path}]({name})  {info.port}")
-                share_lines.append(f"{dot} {name}  {info.port}")
+                if info.running:
+                    share_lines.append(f"{dot} [@click=screen.open_share('{info.file_path}')]{name}[/]  {info.port}")
+                else:
+                    share_lines.append(f"{dot} [dim][@click=screen.open_share('{info.file_path}')]{name}[/][/dim]")
         else:
             # Per-connection view — no prefix
             conn = conn_map.get(tag)
@@ -528,7 +540,10 @@ class DashboardScreen(Screen):
                 if info.conn_tag == tag:
                     dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                     name = Path(info.file_path).name
-                    share_lines.append(f"{dot} {name}  {info.port}")
+                    if info.running:
+                        share_lines.append(f"{dot} [@click=screen.open_share('{info.file_path}')]{name}[/]  {info.port}")
+                    else:
+                        share_lines.append(f"{dot} [dim][@click=screen.open_share('{info.file_path}')]{name}[/][/dim]")
 
         domain_text = "\n".join(domain_lines) if domain_lines else "[dim]—[/dim]"
         forward_text = "\n".join(forward_lines) if forward_lines else "[dim]—[/dim]"
@@ -608,6 +623,9 @@ class DashboardScreen(Screen):
     def action_restart_all(self) -> None:
         self.app.manager.restart()  # type: ignore[attr-defined]
         self.app.call_from_thread(self.refresh_status)
+
+    def action_open_share(self, file_path: str) -> None:
+        _open_in_explorer(file_path)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.

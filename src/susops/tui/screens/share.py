@@ -1,6 +1,8 @@
 """Share screen — split-pane share list with modal dialogs for add/fetch."""
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -246,19 +248,26 @@ class ShareScreen(Screen):
             state_str = "[dim]stopped[/dim]"
         else:
             state_str = "[red]offline[/red]"
-        access_str = f"[green]{info.access_count} ok[/green]"
-        if info.failed_count:
-            access_str += f"  [red]{info.failed_count} failed[/red]"
+
         text = (
-            f"[bold]File:[/bold]       {info.file_path}\n"
+            f"[bold]File:[/bold]       [@click=screen.open_share('{info.file_path}')]{info.file_path}[/]\n"
             f"[bold]Name:[/bold]       {name}\n"
             f"[bold]Connection:[/bold] {info.conn_tag or '—'}\n"
             f"[bold]Port:[/bold]       {info.port}\n"
             f"[bold]Password:[/bold]   {info.password}\n"
-            f"[bold]URL:[/bold]        {info.url}\n"
-            f"[bold]State:[/bold]      {state_str}\n"
-            f"[bold]Access:[/bold]     {access_str}\n"
         )
+        if info.running:
+            access_str = f"[green]{info.access_count} ok[/green]"
+            if info.failed_count:
+                access_str += f"  [red]{info.failed_count} failed[/red]"
+            text += (
+                f"[bold]URL:[/bold]        {info.url}\n"
+                f"[bold]State:[/bold]      {state_str}\n"
+                f"[bold]Access:[/bold]     {access_str}\n"
+            )
+        else:
+            text += f"[bold]State:[/bold]      {state_str}\n"
+
         if info.running:
             text += (
                 f"\n[bold]Fetch command:[/bold]\n"
@@ -270,6 +279,13 @@ class ShareScreen(Screen):
         else:
             text += "\n[dim]Will auto-resume when connection starts · Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
         self.query_one("#share-detail", Static).update(text)
+
+    def action_open_share(self, file_path: str) -> None:
+        parent = str(Path(file_path).parent)
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", file_path])
+        else:
+            subprocess.Popen(["xdg-open", parent])
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         idx = event.list_view.index
