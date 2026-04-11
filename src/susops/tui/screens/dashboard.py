@@ -201,7 +201,7 @@ class DashboardScreen(Screen):
         with Horizontal(classes="footer-row"):
             yield Footer()
             yield Static("[@click=screen.edit_config()]Edit config[/]", classes="footer-edit-config", markup=True)
-            yield Static(f"v{susops.__version__}", classes="footer-version")
+            yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"

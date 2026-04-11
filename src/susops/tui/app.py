@@ -94,6 +94,10 @@ class SusOpsTuiApp(App):
     def action_restart_all(self) -> None:
         self._bg_restart()
 
+    def action_open_github(self) -> None:
+        import webbrowser
+        webbrowser.open("https://github.com/mashb1t/susops")
+
     def action_show_config(self) -> None:
         from susops.tui.screens.dashboard import DashboardScreen
         screen = self.query_one(DashboardScreen)

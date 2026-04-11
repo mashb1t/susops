@@ -38,4 +38,4 @@ def compose_footer() -> ComposeResult:
     """Yield a footer row with key bindings and the app version on the right."""
     with Horizontal(classes="footer-row"):
         yield Footer()
-        yield Static(f"v{susops.__version__}", classes="footer-version")
+        yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
