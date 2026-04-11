@@ -582,16 +582,30 @@ forwards:
 
 A single `socat` process listens locally on the UDP port. For each incoming datagram it forks a child that opens an SSH channel through the existing ControlMaster socket and runs `socat` on the remote host to relay the packet to the destination service. Responses travel back through the same channel.
 
-```
-Local machine                                Remote SSH host
-──────────────────────────────────────────────────────────────────────
-UDP client (e.g. dig, game, VoIP)
-  │ UDP datagram
-  ▼
-socat UDP4-RECVFROM:src_port,fork            (one SSH channel per datagram, via ControlMaster)
-  └─ EXEC:'ssh -o ControlPath=<sock> -T <host>
-           socat - UDP4-SENDTO:dst_addr:dst_port'  ──► destination UDP service
-                                                   ◄── response (same channel)
+```mermaid
+flowchart LR
+    subgraph local["Local machine"]
+        Client["UDP client\ne.g. dig, game, VoIP"]
+        LSOcat["lsocat\nUDP4-RECVFROM:src_port,fork\nEXEC:'ssh -o ControlPath=sock...'"]
+    end
+
+    subgraph tunnel["SSH ControlMaster (one channel per datagram)"]
+        Channel["SSH channel"]
+    end
+
+    subgraph remote["Remote SSH host"]
+        RSOcat["remote socat\nsocat - UDP4-SENDTO:\ndst_addr:dst_port"]
+        Service["UDP service"]
+    end
+
+    Client -->|"UDP datagram"| LSOcat
+    LSOcat -->|"fork child"| Channel
+    Channel -->|"stdin/stdout"| RSOcat
+    RSOcat -->|"UDP"| Service
+    Service -. "response" .-> RSOcat
+    RSOcat -. "stdout" .-> Channel
+    Channel -. "response" .-> LSOcat
+    LSOcat -. "UDP response" .-> Client
 ```
 
 Process name: `susops-udp-<conn>-<fw>-lsocat`
@@ -602,17 +616,30 @@ Process name: `susops-udp-<conn>-<fw>-lsocat`
 
 Three processes bridge the remote UDP listener to a local UDP service via an intermediate TCP port:
 
-```
-Remote SSH host                              Local machine
-──────────────────────────────────────────────────────────────────────
-UDP client on remote
-  │ UDP datagram to remote:src_port
-  ▼
-socat UDP4-RECVFROM:src_port,fork            socat TCP4-LISTEN:intermediate,fork
-  └─ TCP4:localhost:intermediate ──────────►   └─ UDP4-SENDTO:dst_addr:dst_port
-                                                        │
-           [SSH -R slave tunnels TCP                     ▼
-            remote:intermediate ◄──► local:intermediate] local UDP service
+```mermaid
+flowchart LR
+    subgraph remote["Remote SSH host"]
+        RClient["UDP client\non remote"]
+        RSOcat["rsocat\nUDP4-RECVFROM:src_port,fork\nTCP4:localhost:intermediate"]
+    end
+
+    subgraph slave["SSH -R slave"]
+        Tunnel["TCP tunnel\nremote:intermediate\n↕\nlocal:intermediate"]
+    end
+
+    subgraph local["Local machine"]
+        LSOcat["lsocat\nTCP4-LISTEN:intermediate,fork\nUDP4-SENDTO:dst_addr:dst_port"]
+        Service["UDP service\ndst_addr:dst_port"]
+    end
+
+    RClient -->|"UDP datagram"| RSOcat
+    RSOcat -->|"TCP"| Tunnel
+    Tunnel -->|"TCP"| LSOcat
+    LSOcat -->|"UDP"| Service
+    Service -. "response" .-> LSOcat
+    LSOcat -. "TCP" .-> Tunnel
+    Tunnel -. "TCP" .-> RSOcat
+    RSOcat -. "UDP response" .-> RClient
 ```
 
 Three managed processes per remote UDP forward:

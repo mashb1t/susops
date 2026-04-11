@@ -147,8 +147,11 @@ flowchart TD
 
 - **Local UDP** (`direction="local"`): one `socat` process with `UDP4-RECVFROM:port,reuseaddr,fork EXEC:'ssh -o ControlPath=<sock> -T <host> socat - UDP4-SENDTO:dst:port'`. Each datagram forks a child that opens one SSH channel through the ControlMaster and runs a remote `socat` instance. No TCP intermediate port needed. `-T15` closes idle fork children after 15 s.
 
-  ```
-  UDP client → lsocat (EXEC fork) → SSH channel → remote socat → UDP service
+  ```mermaid
+  flowchart LR
+      Client["UDP client"] -->|UDP| LSOcat["lsocat\nUDP4-RECVFROM,fork\nEXEC:'ssh...'"]
+      LSOcat -->|"fork → SSH channel"| RSOcat["remote socat\nsocat - UDP4-SENDTO"]
+      RSOcat -->|UDP| Service["UDP service"]
   ```
 
   Process name: `susops-udp-<conn>-<fw>-lsocat`
@@ -158,8 +161,12 @@ flowchart TD
   2. Remote socat via SSH exec — `UDP4-RECVFROM:src_port,fork TCP4:localhost:intermediate` (process: `…-rsocat`)
   3. Local socat — `TCP4-LISTEN:intermediate,fork UDP4-SENDTO:dst_addr:dst_port` (process: `…-lsocat`)
 
-  ```
-  UDP client (remote) → rsocat → TCP intermediate → SSH -R slave → lsocat → UDP service (local)
+  ```mermaid
+  flowchart LR
+      RClient["UDP client\n(remote)"] -->|UDP| RSOcat["rsocat\nUDP4-RECVFROM,fork\nTCP4:intermediate"]
+      RSOcat -->|TCP| Slave["SSH -R slave\nremote:intermediate\n↕ local:intermediate"]
+      Slave -->|TCP| LSOcat["lsocat\nTCP4-LISTEN\nUDP4-SENDTO"]
+      LSOcat -->|UDP| Service["UDP service\n(local)"]
   ```
 
 Key implementation notes:
