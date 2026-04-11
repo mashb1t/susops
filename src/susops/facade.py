@@ -890,6 +890,7 @@ class SusOpsManager:
         if self._pac_server.is_running():
             self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
         self._log(f"[{tag}] Added PAC host '{host}'")
+        self._emit_state(self._compute_state())
 
     def remove_pac_host(self, host: str) -> None:
         self._reload_config()
@@ -910,6 +911,7 @@ class SusOpsManager:
         if self._pac_server.is_running():
             self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
         self._log(f"Removed PAC host '{host}'")
+        self._emit_state(self._compute_state())
 
     # ------------------------------------------------------------------ #
     # Port forwards

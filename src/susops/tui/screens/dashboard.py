@@ -363,6 +363,11 @@ class DashboardScreen(Screen):
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
 
+        # Keep PAC tab content in sync whenever it's visible
+        tabs = self.query_one("#detail-tabs", TabbedContent)
+        if tabs.active == "tab-pac":
+            self._load_pac_tab()
+
     def _render_all_stats(self) -> str:
         """Render aggregate stats for the 'All' view."""
         running = sum(1 for d in self._conn_data.values() if d["cs"].running)
