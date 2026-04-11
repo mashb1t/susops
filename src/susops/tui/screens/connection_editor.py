@@ -19,6 +19,7 @@ from textual.widgets import (
 )
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
+from susops.core.ssh_config import get_ssh_hosts
 from susops.tui.screens import compose_footer, proto_label
 
 
@@ -26,11 +27,17 @@ class _AddConnectionDialog(ModalScreen):
     """Modal for adding a new SSH connection."""
 
     def compose(self) -> ComposeResult:
+        ssh_hosts = get_ssh_hosts()
         with Static(classes="modal-dialog"):
             yield Label("[bold]Add Connection[/bold]")
             yield Label("Tag:")
             yield Input(placeholder="e.g. work", id="tag")
-            yield Label("SSH host (user@host):")
+            if ssh_hosts:
+                yield Label("SSH host (pick from ~/.ssh/config or type below):")
+                options = [(h, h) for h in ssh_hosts]
+                yield Select(options, prompt="— pick from SSH config —", id="ssh-host-select", allow_blank=True)
+            else:
+                yield Label("SSH host (user@host):")
             yield Input(placeholder="user@hostname", id="ssh-host")
             yield Label("SOCKS port (0 = auto):")
             yield Input(placeholder="0", id="socks-port", value="0")
@@ -38,6 +45,10 @@ class _AddConnectionDialog(ModalScreen):
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "ssh-host-select" and isinstance(event.value, str):
+            self.query_one("#ssh-host", Input).value = event.value
 
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
