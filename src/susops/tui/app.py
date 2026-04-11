@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import threading
 
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
+from textual.containers import Horizontal
+from textual.screen import ModalScreen
+from textual.widgets import Button, Label, Static
 
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
 from susops.tui.screens.dashboard import DashboardScreen
@@ -37,6 +40,35 @@ class _SusOpsCommands(Provider):
                     command=action,
                     help=description,
                 )
+
+
+class _ConfigErrorScreen(ModalScreen):
+    """Shown when config.yaml fails to load. Allows the user to open $EDITOR to fix it."""
+
+    def __init__(self, error: str, config_path: str) -> None:
+        super().__init__()
+        self._error = error
+        self._config_path = config_path
+
+    def compose(self) -> ComposeResult:
+        with Static(classes="modal-dialog"):
+            yield Label("[bold red]Config file error[/bold red]")
+            yield Label(f"[dim]{self._config_path}[/dim]")
+            yield Label(self._error)
+            yield Label("\nFix the file and restart susops, or press [bold]e[/bold] to open in $EDITOR.")
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Open in $EDITOR", id="btn-edit", variant="warning")
+                yield Button("Quit", id="btn-quit", variant="error")
+
+    def on_button_pressed(self, event) -> None:
+        import os
+        import subprocess
+        if event.button.id == "btn-edit":
+            editor = os.environ.get("EDITOR", "nano")
+            subprocess.run([editor, self._config_path])
+            self.dismiss(None)
+        else:
+            self.app.exit(1)
 
 
 class SusOpsTuiApp(App):
@@ -71,10 +103,19 @@ class SusOpsTuiApp(App):
 
     def __init__(self, verbose: bool = False) -> None:
         super().__init__()
-        from susops.facade import SusOpsManager
-        self.manager = SusOpsManager(verbose=verbose)
+        self._verbose = verbose
+        self.manager = None  # type: ignore[assignment]
 
     def on_mount(self) -> None:
+        from pathlib import Path
+        from susops.facade import SusOpsManager
+        workspace = Path.home() / ".susops"
+        try:
+            self.manager = SusOpsManager(verbose=self._verbose)
+        except Exception as exc:
+            config_path = str(workspace / "config.yaml")
+            self.push_screen(_ConfigErrorScreen(str(exc), config_path))
+            return
         self.push_screen("dashboard")
 
     def action_quit(self) -> None:
