@@ -425,6 +425,48 @@ All runtime data lives in `~/.susops/`:
   firefox_profile/        # temporary Firefox profile for PAC launch
 ```
 
+### SSH Server: Forward-Only Access
+
+To restrict the SSH user on the server to only perform port forwarding (no shell, no file transfer):
+
+**1. Create a dedicated system user:**
+
+```bash
+sudo useradd -r -s /usr/sbin/nologin susops-tunnel
+sudo mkdir -p /home/susops-tunnel/.ssh
+sudo chmod 700 /home/susops-tunnel/.ssh
+```
+
+**2. Add your public key to `authorized_keys` with restrictions:**
+
+```
+# /home/susops-tunnel/.ssh/authorized_keys
+restrict,port-forwarding,permitopen="any" ssh-ed25519 AAAA... your-key
+```
+
+The `restrict` keyword disables shell, PTY, agent forwarding, and X11 forwarding. `port-forwarding` re-enables only TCP forwarding. `permitopen="any"` allows forwarding to any destination — restrict with `permitopen="host:port"` for tighter control.
+
+**3. Configure `sshd_config`:**
+
+```
+# /etc/ssh/sshd_config.d/susops.conf
+Match User susops-tunnel
+    AllowTcpForwarding yes
+    AllowStreamLocalForwarding no
+    GatewayPorts no
+    X11Forwarding no
+    PermitTTY no
+    ForceCommand /bin/false
+```
+
+**4. Reload sshd:**
+
+```bash
+sudo systemctl reload sshd
+```
+
+The connection stays alive for SOCKS proxying and port forwards but cannot execute commands or transfer files.
+
 ---
 
 ## File Sharing
