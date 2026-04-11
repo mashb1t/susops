@@ -163,9 +163,8 @@ flowchart TD
 
   ```mermaid
   flowchart LR
-      RClient["UDP client\n(remote)"] -->|UDP| RSOcat["rsocat\nUDP4-RECVFROM,fork\nTCP4:intermediate"]
-      RSOcat -->|TCP| Slave["SSH -R slave\nremote:intermediate\n↕ local:intermediate"]
-      Slave -->|TCP| LSOcat["lsocat\nTCP4-LISTEN\nUDP4-SENDTO"]
+      RClient["UDP client\n(remote)"] -->|UDP| RSOcat["rsocat on remote\nUDP4-RECVFROM,fork\nTCP4:intermediate"]
+      RSOcat -->|"TCP (via SSH -R tunnel)"| LSOcat["lsocat on local\nTCP4-LISTEN\nUDP4-SENDTO"]
       LSOcat -->|UDP| Service["UDP service\n(local)"]
   ```
 

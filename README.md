@@ -626,32 +626,29 @@ flowchart LR
         RSOcat["rsocat\nUDP4-RECVFROM:src_port,fork\nTCP4:localhost:intermediate"]
     end
 
-    subgraph slave["SSH -R slave"]
-        Tunnel["TCP tunnel\nremote:intermediate\n↕\nlocal:intermediate"]
-    end
-
     subgraph local["Local machine"]
+        SSHSlave["SSH -R slave\n-R intermediate:localhost:intermediate"]
         LSOcat["lsocat\nTCP4-LISTEN:intermediate,fork\nUDP4-SENDTO:dst_addr:dst_port"]
         Service["UDP service\ndst_addr:dst_port"]
     end
 
     RClient -->|"UDP datagram"| RSOcat
-    RSOcat -->|"TCP"| Tunnel
-    Tunnel -->|"TCP"| LSOcat
+    RSOcat -->|"TCP to remote:intermediate\n(bound by SSH -R)"| SSHSlave
+    SSHSlave -->|"TCP to localhost:intermediate"| LSOcat
     LSOcat -->|"UDP"| Service
     Service -. "response" .-> LSOcat
-    LSOcat -. "TCP" .-> Tunnel
-    Tunnel -. "TCP" .-> RSOcat
+    LSOcat -. "TCP" .-> SSHSlave
+    SSHSlave -. "TCP" .-> RSOcat
     RSOcat -. "UDP response" .-> RClient
 ```
 
 Three managed processes per remote UDP forward:
 
-| Name | Role |
-|------|------|
-| `susops-udp-<conn>-<fw>-ssh`    | SSH `-R` slave binding the intermediate TCP port on the remote host |
-| `susops-udp-<conn>-<fw>-rsocat` | Remote socat: UDP → TCP (runs on remote via SSH exec)              |
-| `susops-udp-<conn>-<fw>-lsocat` | Local socat: TCP → UDP (forwards to local destination service)     |
+| Name | Runs on | Role |
+|------|---------|------|
+| `susops-udp-<conn>-<fw>-ssh`    | local  | SSH `-R` slave — requests remote SSH server to bind `intermediate` port and tunnel it back locally |
+| `susops-udp-<conn>-<fw>-rsocat` | remote | socat UDP → TCP (via SSH exec); connects to the `intermediate` port bound by the SSH -R slave      |
+| `susops-udp-<conn>-<fw>-lsocat` | local  | socat TCP → UDP; listens on `intermediate`, forwards UDP to the destination service                |
 
 ### Use cases
 
