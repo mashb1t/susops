@@ -780,7 +780,8 @@ class SusOpsManager:
         if tag is not None:
             remaining = self._active_tags()
             if not remaining:
-                # Last connection stopped — shut down PAC server entirely
+                # Last connection stopped — write empty PAC first for consistency, then shut down
+                write_pac_file(self.config, self.workspace, active_tags=set())
                 if self._pac_server.is_running():
                     try:
                         self._pac_server.stop()
