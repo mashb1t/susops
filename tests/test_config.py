@@ -154,6 +154,26 @@ def test_save_and_load_roundtrip(tmp_path):
     assert conn.ssh_host == "user@work.example.com"
     assert conn.pac_hosts == ["*.internal.example.com"]
     assert conn.forwards.local[0].src_port == 3306
+    assert conn.forwards.local[0].tcp is True
+    assert conn.forwards.local[0].udp is False
+
+
+def test_port_forward_protocol_flags_survive_roundtrip(tmp_path):
+    """tcp/udp fields must survive save_config → load_config cycle."""
+    fw_tcp_only = PortForward(src_port=8080, dst_port=80, tcp=True, udp=False)
+    fw_udp_only = PortForward(src_port=53, dst_port=53, tcp=False, udp=True)
+    fw_both = PortForward(src_port=443, dst_port=443, tcp=True, udp=True)
+    conn = Connection(
+        tag="work", ssh_host="user@host",
+        forwards=Forwards(local=[fw_tcp_only, fw_udp_only, fw_both])
+    )
+    config = SusOpsConfig(connections=[conn])
+    save_config(config, tmp_path)
+    loaded = load_config(tmp_path)
+    local = loaded.connections[0].forwards.local
+    assert local[0].tcp is True and local[0].udp is False
+    assert local[1].tcp is False and local[1].udp is True
+    assert local[2].tcp is True and local[2].udp is True
 
 
 def test_load_missing_config_returns_defaults(tmp_path):

@@ -74,6 +74,8 @@ class PortForward(BaseModel):
 
     @model_validator(mode="after")
     def require_at_least_one_protocol(self) -> "PortForward":
+        # Runs after handle_legacy_schema has already normalised the dict,
+        # so self.tcp and self.udp are already coerced to bool.
         if not self.tcp and not self.udp:
             raise ValueError("At least one of tcp/udp must be True")
         return self
