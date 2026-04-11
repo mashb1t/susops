@@ -40,8 +40,6 @@ from susops.core.ssh import (
     test_ssh_connectivity,
 )
 from susops.core.socat import (
-    UDP_PROCESS_PREFIX,
-    _fw_tag,
     start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
@@ -873,6 +871,7 @@ class SusOpsManager:
         if conn is None:
             raise ValueError(f"Connection '{tag}' not found")
         stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+        stop_all_udp_forwards_for_connection(tag, self._process_mgr)
         self.config = self.config.model_copy(
             update={"connections": [c for c in self.config.connections if c.tag != tag]}
         )
