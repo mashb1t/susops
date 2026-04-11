@@ -133,3 +133,51 @@ def test_start_local_udp_listens_on_src_port(conn, fw_local, tmp_path):
     recvfrom_arg = next(a for a in cmd if "UDP4-RECVFROM" in a)
     assert f"UDP4-RECVFROM:{fw_local.src_port}" in recvfrom_arg
     assert "fork" in recvfrom_arg
+
+
+# ------------------------------------------------------------------ #
+# start_udp_forward — remote direction command construction
+# ------------------------------------------------------------------ #
+
+def test_start_remote_udp_spawns_three_processes(conn, fw_remote, tmp_path):
+    pm = MagicMock()
+    start_udp_forward(conn, fw_remote, "remote", pm, tmp_path)
+    assert pm.start.call_count == 3
+
+
+def test_start_remote_udp_process_names(conn, fw_remote, tmp_path):
+    pm = MagicMock()
+    start_udp_forward(conn, fw_remote, "remote", pm, tmp_path)
+    names = [c[0][0] for c in pm.start.call_args_list]
+    assert "susops-udp-work-remote-51820-ssh" in names
+    assert "susops-udp-work-remote-51820-rsocat" in names
+    assert "susops-udp-work-remote-51820-lsocat" in names
+
+
+def test_start_remote_udp_lsocat_before_rsocat(conn, fw_remote, tmp_path):
+    """lsocat (local TCP listener) must start before rsocat (remote socat).
+
+    rsocat connects to the intermediate TCP port via the SSH -R tunnel.
+    Starting lsocat first ensures the local end is ready before the remote
+    end tries to connect.
+    """
+    pm = MagicMock()
+    start_udp_forward(conn, fw_remote, "remote", pm, tmp_path)
+    names = [c[0][0] for c in pm.start.call_args_list]
+    lsocat_idx = names.index("susops-udp-work-remote-51820-lsocat")
+    rsocat_idx = names.index("susops-udp-work-remote-51820-rsocat")
+    assert lsocat_idx < rsocat_idx, f"lsocat must start before rsocat, got order: {names}"
+
+
+def test_start_remote_udp_rsocat_has_retry(conn, fw_remote, tmp_path):
+    """rsocat command must include a shell retry loop.
+
+    The SSH -R slave may not finish binding the remote intermediate port
+    before rsocat executes. A retry loop with sleep handles this gracefully.
+    """
+    pm = MagicMock()
+    start_udp_forward(conn, fw_remote, "remote", pm, tmp_path)
+    rsocat_call = next(c for c in pm.start.call_args_list if c[0][0].endswith("-rsocat"))
+    remote_cmd = rsocat_call[0][1][-1]
+    assert "sleep" in remote_cmd, f"rsocat must retry with sleep, got: {remote_cmd!r}"
+    assert f"UDP4-RECVFROM:{fw_remote.src_port},reuseaddr,fork" in remote_cmd
