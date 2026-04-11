@@ -25,7 +25,7 @@ from textual_plotext import PlotextPlot
 
 import susops
 from susops.core.types import StatusResult
-from susops.tui.screens import open_in_explorer, open_path, share_name_markup
+from susops.tui.screens import open_in_explorer, open_path, proto_label, share_name_markup
 
 
 def _fmt_bps(bps: float) -> str:
@@ -103,13 +103,15 @@ def _fmt_domain_line(host: str, prefix: str = "") -> str:
 def _fmt_forward_local(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
     label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
-    return f"{pre}[green]L[/green] {fw.src_addr}:{fw.src_port} [green]→[/green] {fw.dst_addr}:{fw.dst_port}{label}"
+    proto = f" [dim]{proto_label(fw)}[/dim]"
+    return f"{pre}[green]L[/green] {fw.src_addr}:{fw.src_port} [green]→[/green] {fw.dst_addr}:{fw.dst_port}{proto}{label}"
 
 
 def _fmt_forward_remote(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
     label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
-    return f"{pre}[yellow]R[/yellow] {fw.src_addr}:{fw.src_port} [yellow]←[/yellow] {fw.dst_addr}:{fw.dst_port}{label}"
+    proto = f" [dim]{proto_label(fw)}[/dim]"
+    return f"{pre}[yellow]R[/yellow] {fw.src_addr}:{fw.src_port} [yellow]←[/yellow] {fw.dst_addr}:{fw.dst_port}{proto}{label}"
 
 
 def _fmt_share_line(info, prefix: str = "") -> str:
