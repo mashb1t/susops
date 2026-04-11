@@ -1,9 +1,9 @@
 """Tests for susops.core.socat — UDP socat command building and process management.
 
-start_udp_forward and its private helpers _start_local_udp / _start_remote_udp
-are not directly tested here because they call ProcessManager.start() which spawns
-real processes. The helper functions they use (_fw_tag, _udp_process_name,
-stop_udp_forward, stop_all_udp_forwards_for_connection) are tested via mocks.
+start_udp_forward (local direction) is tested via a mocked ProcessManager to verify
+command construction without spawning real processes. The private helpers _fw_tag,
+_udp_process_name, stop_udp_forward, and stop_all_udp_forwards_for_connection
+are also tested via mocks.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from susops.core.socat import (
     UDP_PROCESS_PREFIX,
     _fw_tag,
     _udp_process_name,
+    start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
 )
@@ -89,3 +90,46 @@ def test_stop_all_udp_forwards_for_connection():
     assert "susops-udp-work-remote-51820-rsocat" in stopped
     assert "susops-udp-work-remote-51820-lsocat" in stopped
     assert "susops-udp-other-local-53-lsocat" not in stopped
+
+
+# ------------------------------------------------------------------ #
+# start_udp_forward — local direction command construction
+# ------------------------------------------------------------------ #
+
+def test_start_local_udp_process_name(conn, fw_local, tmp_path):
+    pm = MagicMock()
+    start_udp_forward(conn, fw_local, "local", pm, tmp_path)
+    pm.start.assert_called_once()
+    name = pm.start.call_args[0][0]
+    assert name == "susops-udp-work-local-53-lsocat"
+
+
+def test_start_local_udp_exec_single_quoted(conn, fw_local, tmp_path):
+    """EXEC argument must single-quote the SSH sub-command.
+
+    socat splits EXEC on spaces; without single quotes it sees 'ssh', '-o',
+    '...' as separate arguments and errors 'wrong number of parameters (3 instead of 1)'.
+    """
+    pm = MagicMock()
+    start_udp_forward(conn, fw_local, "local", pm, tmp_path)
+    cmd = pm.start.call_args[0][1]
+    exec_arg = next(a for a in cmd if a.startswith("EXEC:"))
+    assert exec_arg.startswith("EXEC:'ssh "), f"EXEC not single-quoted: {exec_arg!r}"
+    assert exec_arg.endswith("'"), f"EXEC not closed with single quote: {exec_arg!r}"
+
+
+def test_start_local_udp_destination_in_exec(conn, fw_local, tmp_path):
+    pm = MagicMock()
+    start_udp_forward(conn, fw_local, "local", pm, tmp_path)
+    cmd = pm.start.call_args[0][1]
+    exec_arg = next(a for a in cmd if a.startswith("EXEC:"))
+    assert f"UDP4-SENDTO:{fw_local.dst_addr}:{fw_local.dst_port}" in exec_arg
+
+
+def test_start_local_udp_listens_on_src_port(conn, fw_local, tmp_path):
+    pm = MagicMock()
+    start_udp_forward(conn, fw_local, "local", pm, tmp_path)
+    cmd = pm.start.call_args[0][1]
+    recvfrom_arg = next(a for a in cmd if "UDP4-RECVFROM" in a)
+    assert f"UDP4-RECVFROM:{fw_local.src_port}" in recvfrom_arg
+    assert "fork" in recvfrom_arg
