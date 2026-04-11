@@ -33,6 +33,11 @@ class Susops < Formula
     sha256 "PLACEHOLDER"
   end
 
+  resource "aiohttp" do
+    url "https://files.pythonhosted.org/packages/aiohttp-3.9.5.tar.gz"
+    sha256 "PLACEHOLDER"
+  end
+
   def install
     virtualenv_install_with_resources
     # Entry points are installed by virtualenv_install_with_resources

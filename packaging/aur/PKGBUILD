@@ -18,6 +18,7 @@ depends=(
 optdepends=(
     'python-textual: interactive TUI interface'
     'python-cryptography: encrypted file sharing'
+    'python-aiohttp: file sharing and SSE status server'
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
 # No go-yq dependency — replaced by pure Python

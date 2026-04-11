@@ -626,6 +626,49 @@ susops/
     homebrew/Casks/susops.rb
 ```
 
+### Building Packages
+
+#### PyPI / pip (all platforms)
+
+```bash
+pip install build
+python -m build
+# Produces dist/susops-<version>.tar.gz and dist/susops-<version>-py3-none-any.whl
+pip install dist/susops-*.whl
+```
+
+#### Arch Linux (AUR)
+
+The `packaging/aur/PKGBUILD` builds a wheel and installs it system-wide:
+
+```bash
+cd packaging/aur
+makepkg -si
+```
+
+**Prerequisites:** `python-build`, `python-installer`, `python-wheel`, `python-setuptools`. The `ruamel.yaml` dependency is not in the official Arch repos — install `python-ruamel-yaml` from the AUR or use pip.
+
+The PKGBUILD also installs `susops-tray.desktop` for the system tray launcher.
+
+#### macOS (Homebrew)
+
+```bash
+brew tap mashb1t/susops
+brew install susops
+```
+
+The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_with_resources` to create an isolated Python environment with all dependencies. The cask at `packaging/homebrew/Casks/susops.rb` is for a future `.dmg` distribution of `SusOps.app`.
+
+**Note:** Resource sha256 checksums in the formula must be updated for each release. Generate them with:
+
+```bash
+shasum -a 256 <downloaded-tarball>
+```
+
+#### Version bumping
+
+Update the version in `src/susops/version.py`, then update `pkgver` in `packaging/aur/PKGBUILD` and the `url` version in `packaging/homebrew/Formula/susops.rb` to match.
+
 ---
 
 ## Migration from susops.sh
