@@ -6,6 +6,7 @@ class Susops < Formula
   license "MIT"
 
   depends_on "autossh"
+  depends_on "socat"
   depends_on "python@3.12"
 
   resource "pydantic" do
