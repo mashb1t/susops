@@ -134,6 +134,7 @@ class DashboardScreen(Screen):
         Binding("R", "restart_all", "Restart all"),
         Binding("c", "push_screen('connections')", "Connections"),
         Binding("f", "push_screen('share')", "Share"),
+        Binding("p", "copy_pac_url", "Copy PAC URL"),
     ]
 
     DEFAULT_CSS = """
@@ -682,6 +683,16 @@ class DashboardScreen(Screen):
 
     def action_open_share(self, file_path: str) -> None:
         open_in_explorer(file_path)
+
+    def action_copy_pac_url(self) -> None:
+        """Copy the PAC server URL to the clipboard and notify the user."""
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        pac_url = mgr.get_pac_url()
+        if pac_url:
+            self.app.copy_to_clipboard(pac_url)
+            self.notify(f"PAC URL copied: {pac_url}", timeout=3)
+        else:
+            self.notify("PAC server not running", severity="warning", timeout=3)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.
