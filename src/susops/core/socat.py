@@ -90,7 +90,7 @@ def _start_local_udp(
         "socat",
         "-T15",
         f"UDP4-RECVFROM:{fw.src_port},reuseaddr,fork",
-        f"EXEC:{ssh_exec}",
+        f"EXEC:'{ssh_exec}'",
     ]
     log_file = log_dir / f"{name}.log"
     with open(log_file, "a") as log:
