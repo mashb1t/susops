@@ -105,19 +105,30 @@ def _start_remote_udp(
     process_mgr: ProcessManager,
     log_dir: Path,
 ) -> None:
-    """Remote UDP forward: SSH -R + remote socat (via SSH) + local socat.
+    """Remote UDP forward: local socat + SSH -R slave + remote socat (via SSH).
 
-    Allocates a random intermediate TCP port for bridging the two socat instances.
+    Startup order matters:
+      1. lsocat  — bind local:intermediate so it is ready when rsocat connects.
+      2. SSH -R  — request remote SSH server to bind remote:intermediate.
+      3. rsocat  — connect to remote:intermediate (with retry for binding lag).
 
-    Note: the three processes are started sequentially without explicit synchronisation.
-    The remote socat (rsocat) may start before the SSH -R slave has finished binding
-    the intermediate port on the remote host. On high-latency connections this can
-    cause rsocat to fail immediately; the process manager will log the exit. The
-    facade's polling loop will surface the failure to the user.
+    The rsocat shell command retries up to 5 times (1 s apart) because the
+    SSH server may not finish binding the remote port before rsocat executes.
     """
     intermediate = get_random_free_port()
 
-    # 1. SSH -R slave: binds intermediate port on remote, forwards to local
+    # 1. Local socat: TCP intermediate → UDP local service (start first)
+    lsocat_name = _udp_process_name(conn.tag, tag, "lsocat")
+    lsocat_cmd = [
+        "socat",
+        f"TCP4-LISTEN:{intermediate},reuseaddr,fork",
+        f"UDP4-SENDTO:{fw.dst_addr}:{fw.dst_port}",
+    ]
+    log_file = log_dir / f"{lsocat_name}.log"
+    with open(log_file, "a") as log:
+        process_mgr.start(lsocat_name, lsocat_cmd, stdout=log, stderr=log)
+
+    # 2. SSH -R slave: bind intermediate port on remote, forward to local
     ssh_name = _udp_process_name(conn.tag, tag, "ssh")
     ssh_cmd = [
         "ssh", "-N", "-T",
@@ -129,28 +140,22 @@ def _start_remote_udp(
     with open(log_file, "a") as log:
         process_mgr.start(ssh_name, ssh_cmd, stdout=log, stderr=log)
 
-    # 2. Remote socat (runs on remote host via SSH): UDP → TCP intermediate
+    # 3. Remote socat: UDP → TCP intermediate (retry loop for port binding lag)
     rsocat_name = _udp_process_name(conn.tag, tag, "rsocat")
+    rsocat_shell = (
+        f"for _i in 1 2 3 4 5; do "
+        f"socat -T15 UDP4-RECVFROM:{fw.src_port},reuseaddr,fork "
+        f"TCP4:localhost:{intermediate} && break; sleep 1; done"
+    )
     rsocat_cmd = [
         "ssh", "-T",
         "-o", f"ControlPath={sock}",
         conn.ssh_host,
-        f"socat -T15 UDP4-RECVFROM:{fw.src_port},reuseaddr,fork TCP4:localhost:{intermediate}",
+        rsocat_shell,
     ]
     log_file = log_dir / f"{rsocat_name}.log"
     with open(log_file, "a") as log:
         process_mgr.start(rsocat_name, rsocat_cmd, stdout=log, stderr=log)
-
-    # 3. Local socat: TCP intermediate → UDP local service
-    lsocat_name = _udp_process_name(conn.tag, tag, "lsocat")
-    lsocat_cmd = [
-        "socat",
-        f"TCP4-LISTEN:{intermediate},reuseaddr,fork",
-        f"UDP4-SENDTO:{fw.dst_addr}:{fw.dst_port}",
-    ]
-    log_file = log_dir / f"{lsocat_name}.log"
-    with open(log_file, "a") as log:
-        process_mgr.start(lsocat_name, lsocat_cmd, stdout=log, stderr=log)
 
 
 def stop_udp_forward(
