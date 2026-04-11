@@ -38,17 +38,19 @@ def _pac_rule(host: str, socks_port: int) -> str:
     return f"  if (host == '{host}' || dnsDomainIs(host, '.{host}')) return '{proxy}';"
 
 
-def generate_pac(config: "SusOpsConfig") -> str:
+def generate_pac(config: "SusOpsConfig", active_tags: set[str] | None = None) -> str:
     """Generate the FindProxyForURL JavaScript PAC function.
 
-    Includes rules for ALL connections (not just the active one),
-    matching the behavior of the original bash implementation.
+    When active_tags is provided, only connections in that set are included.
+    When None, includes all connections (legacy behavior).
     """
     lines = ["function FindProxyForURL(url, host) {"]
 
     for conn in config.connections:
         if conn.socks_proxy_port == 0:
-            continue  # skip connections without an assigned port
+            continue
+        if active_tags is not None and conn.tag not in active_tags:
+            continue
         for host in conn.pac_hosts:
             lines.append(_pac_rule(host, conn.socks_proxy_port))
 
@@ -57,10 +59,10 @@ def generate_pac(config: "SusOpsConfig") -> str:
     return "\n".join(lines)
 
 
-def write_pac_file(config: "SusOpsConfig", workspace: Path) -> Path:
+def write_pac_file(config: "SusOpsConfig", workspace: Path, active_tags: set[str] | None = None) -> Path:
     """Write the PAC file to <workspace>/susops.pac and return its path."""
     pac_path = workspace / "susops.pac"
-    pac_content = generate_pac(config)
+    pac_content = generate_pac(config, active_tags=active_tags)
     pac_path.write_text(pac_content)
     return pac_path
 

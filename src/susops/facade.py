@@ -384,7 +384,7 @@ class SusOpsManager:
             self._log(f"PAC server already running (cross-process) on port {port}")
             return
         try:
-            pac_path = write_pac_file(self.config, self.workspace)
+            pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
             self._pac_server.start(port, pac_path)
             self._write_pac_port_file(port)
             self._log(f"PAC server restored on port {port}")
@@ -624,7 +624,7 @@ class SusOpsManager:
                 try:
                     self._reload_config()
                     pac_port = self._ensure_pac_port()
-                    pac_path = write_pac_file(self.config, self.workspace)
+                    pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
                     self._pac_server.start(pac_port, pac_path)
                     self._write_pac_port_file(self._pac_server.get_port())
                     self._log(f"PAC server started on port {pac_port}")
@@ -655,6 +655,13 @@ class SusOpsManager:
             message="; ".join(errors) if errors else "Started",
             connection_statuses=tuple(statuses),
         )
+
+    def _active_tags(self) -> set[str]:
+        """Return the set of connection tags that are currently running."""
+        return {
+            conn.tag for conn in self.config.connections
+            if is_tunnel_running(conn.tag, self._process_mgr) or is_socket_alive(conn.tag, self.workspace)
+        }
 
     def _start_master_only(self, conn_tag: str) -> None:
         """Start only the SSH ControlMaster for conn_tag — no forwards, PAC, or shares.
@@ -745,6 +752,10 @@ class SusOpsManager:
                     self._remove_pac_port_file()
                     self._log("PAC server stopped (remote)")
 
+        # Regenerate PAC when stopping a single connection to remove its entries
+        if tag is not None and self._pac_server.is_running():
+            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+
         self._save()
         self._emit_state(self._compute_state())
         return StopResult(
@@ -826,7 +837,7 @@ class SusOpsManager:
         )
         self._save()
         if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace))
+            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
         self._log(f"[{tag}] Added PAC host '{host}'")
 
     def remove_pac_host(self, host: str) -> None:
@@ -846,7 +857,7 @@ class SusOpsManager:
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
         if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace))
+            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
         self._log(f"Removed PAC host '{host}'")
 
     # ------------------------------------------------------------------ #

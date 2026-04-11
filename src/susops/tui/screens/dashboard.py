@@ -84,6 +84,7 @@ class DashboardScreen(Screen):
         Binding("c", "push_screen('connections')", "Connections"),
         Binding("e", "push_screen('config')", "Config"),
         Binding("f", "push_screen('share')", "Share"),
+        Binding("p", "push_screen('pac')", "PAC"),
     ]
 
     DEFAULT_CSS = """

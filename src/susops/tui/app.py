@@ -18,6 +18,7 @@ _LOGO_MARKUP: dict[ProcessState, str] = {
 }
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
 from susops.tui.screens.dashboard import DashboardScreen
+from susops.tui.screens.pac_viewer import PacViewerScreen
 from susops.tui.screens.share import ShareScreen
 
 
@@ -34,6 +35,7 @@ class _SusOpsCommands(Provider):
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
             ("Share", lambda: app.push_screen("share"), "Share/fetch files"),
             ("Config", lambda: app.push_screen("config"), "Edit config"),
+            ("PAC file", lambda: app.push_screen("pac"), "View PAC proxy config"),
             ("Quit", app.action_quit, "Quit SusOps"),
         ]
         q = query.lower()
@@ -66,6 +68,7 @@ class SusOpsTuiApp(App):
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
+        Binding("p", "push_screen('pac')", "PAC", show=False),
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("q", "quit", "Quit"),
     ]
@@ -75,6 +78,7 @@ class SusOpsTuiApp(App):
         "connections": ConnectionEditorScreen,
         "share": ShareScreen,
         "config": ConfigEditorScreen,
+        "pac": PacViewerScreen,
     }
 
     COMMANDS = App.COMMANDS | {_SusOpsCommands}
