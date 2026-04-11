@@ -7,6 +7,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
 
+from susops.core.types import ProcessState
 from susops.tui.screens.config_editor import ConfigEditorScreen
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
 from susops.tui.screens.dashboard import DashboardScreen
@@ -95,6 +96,18 @@ class SusOpsTuiApp(App):
 
     def action_restart_all(self) -> None:
         self._bg_restart()
+
+    def set_logo_state(self, state: ProcessState) -> None:
+        """Update the footer logo color to reflect the current process state."""
+        _state_markup = {
+            ProcessState.RUNNING: "[green]S[/green]usOps",
+            ProcessState.STOPPED_PARTIALLY: "[dark_orange]S[/dark_orange]usOps",
+            ProcessState.STOPPED: "[red]S[/red]usOps",
+            ProcessState.ERROR: "[bold red]S[/bold red]usOps",
+        }
+        text = _state_markup.get(state, "[dim]S[/dim]usOps")
+        for widget in self.query(".footer-logo"):
+            widget.update(text)
 
     def _bg_start(self) -> None:
         self.run_worker(self._do_start, thread=True)

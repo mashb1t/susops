@@ -301,6 +301,7 @@ class DashboardScreen(Screen):
         # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
+        self.app.set_logo_state(result.state)  # type: ignore[attr-defined]
 
     def _render_all_stats(self) -> str:
         """Render aggregate stats for the 'All' view."""
