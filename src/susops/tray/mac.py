@@ -726,6 +726,36 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         dst_addr = r_dst_bind.text.strip() or "localhost"
 
+        win_tcp = rumps.Window(
+            message="Enable TCP forwarding? (yes/no)",
+            title=title,
+            default_text="yes",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_tcp = win_tcp.run()
+        if r_tcp.clicked == 0:
+            return
+        tcp = r_tcp.text.strip().lower() in ("yes", "y", "true", "1")
+
+        win_udp = rumps.Window(
+            message="Enable UDP forwarding? (yes/no)",
+            title=title,
+            default_text="no",
+            ok="Add",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_udp = win_udp.run()
+        if r_udp.clicked == 0:
+            return
+        udp = r_udp.text.strip().lower() in ("yes", "y", "true", "1")
+
+        if not tcp and not udp:
+            self.show_alert("Protocol Required", "At least one protocol (TCP or UDP) must be selected.")
+            return
+
         try:
             src_int = int(src)
             dst_int = int(dst)
@@ -740,7 +770,7 @@ class SusOpsMacTray(AbstractTrayApp):
             self.show_alert("Port In Use", f"Local port {local_port} is already in use.")
             return
 
-        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int)
+        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int, tcp=tcp, udp=udp)
         if remote:
             self.do_add_remote_forward(conn_tag, fw)
         else:
