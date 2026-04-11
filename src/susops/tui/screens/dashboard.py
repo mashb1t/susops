@@ -73,6 +73,51 @@ def _fmt_uptime(seconds: float) -> str:
     return f"{int(seconds)}s"
 
 
+def _fmt_bw_line(
+    tag: str,
+    running: bool,
+    rx: float,
+    tx: float,
+    rx_t: float,
+    tx_t: float,
+    tag_width: int = 27,
+    show_dot: bool = True,
+) -> str:
+    dot = "[green]●[/green]" if running else "[red]○[/red]"
+    prefix = f"  {dot} " if show_dot else "    "
+    return (
+        f"{prefix}{tag:<{tag_width}}  "
+        f"[green]↓ RX[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
+        f"[yellow]↑ TX[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
+    )
+
+
+def _fmt_domain_line(host: str, prefix: str = "") -> str:
+    pre = f"[dim]{prefix}[/dim] " if prefix else ""
+    return f"{pre}{host}"
+
+
+def _fmt_forward_local(fw, prefix: str = "") -> str:
+    pre = f"[dim]{prefix}[/dim] " if prefix else ""
+    label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
+    return f"{pre}[green]L[/green] {fw.src_addr}:{fw.src_port} [green]→[/green] {fw.dst_addr}:{fw.dst_port}{label}"
+
+
+def _fmt_forward_remote(fw, prefix: str = "") -> str:
+    pre = f"[dim]{prefix}[/dim] " if prefix else ""
+    label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
+    return f"{pre}[yellow]R[/yellow] {fw.src_addr}:{fw.src_port} [yellow]←[/yellow] {fw.dst_addr}:{fw.dst_port}{label}"
+
+
+def _fmt_share_line(info, prefix: str = "") -> str:
+    pre = f"[dim]{prefix}[/dim] " if prefix else ""
+    dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
+    name = Path(info.file_path).name
+    link = share_name_markup(info.file_path, name)
+    if info.running:
+        return f"{pre}{dot} {link}  {info.port}"
+    return f"{pre}{dot} [dim]{link}[/dim]"
+
 
 class DashboardScreen(Screen):
     BINDINGS = [
@@ -329,22 +374,12 @@ class DashboardScreen(Screen):
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<16} total   [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
-            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<16} total   [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
-            f"  [dim]resets on stop[/dim]",
-            "",
-            f"  [dim]{'─' * 36}[/dim]",
+            f"  [dim]{'─' * 71}[/dim]",
+            _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=27 + len("[bold][/bold]"), show_dot=False),
+            f"  [dim]{'─' * 71}[/dim]",
         ]
         for tag, data in self._conn_data.items():
-            cs = data["cs"]
-            dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
-            rx, tx = data["bw"]
-            rx_t, tx_t = data["bw_total"]
-            lines.append(
-                f"  {dot} {tag:<27}  "
-                f"[green]↓ RX[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
-                f"[yellow]↑ TX[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
-            )
+            lines.append(_fmt_bw_line(tag, data["cs"].running, *data["bw"], *data["bw_total"]))
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
@@ -484,58 +519,22 @@ class DashboardScreen(Screen):
         forward_lines: list[str] = []
         share_lines: list[str] = []
 
-        if tag is None:
-            # Global view — prefix each item with [conn] tag
-            for conn in (config.connections if config else []):
-                for host in conn.pac_hosts:
-                    tag_label = markup_escape(f"[{conn.tag}]")
-                    domain_lines.append(f"[dim]{tag_label}[/dim] {host}")
-            for t, data in self._conn_data.items():
-                conn_label = markup_escape(f"[{t}]")
-                for fw in data.get("forwards_local", []):
-                    label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
-                    forward_lines.append(
-                        f"[dim]{conn_label}[/dim] [green]→[/green] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}{label}"
-                    )
-                for fw in data.get("forwards_remote", []):
-                    label = f" [dim]{fw.tag}[/dim]" if fw.tag else ""
-                    forward_lines.append(
-                        f"[dim]{conn_label}[/dim] [yellow]←[/yellow] {fw.src_port}←{fw.dst_port}{label}"
-                    )
-            for info in shares:
-                dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
-                name = Path(info.file_path).name
-                link = share_name_markup(info.file_path, name)
-                if info.running:
-                    share_lines.append(f"{dot} {link}  {info.port}")
-                else:
-                    share_lines.append(f"{dot} [dim]{link}[/dim]")
-        else:
-            # Per-connection view — no prefix
-            conn = conn_map.get(tag)
-            if conn:
-                for host in conn.pac_hosts:
-                    domain_lines.append(host)
-            data = self._conn_data.get(tag, {})
+        conns = list(conn_map.values()) if tag is None else ([conn_map[tag]] if tag in conn_map else [])
+        for conn in conns:
+            prefix = markup_escape(f"[{conn.tag}]") if tag is None else ""
+            for host in conn.pac_hosts:
+                domain_lines.append(_fmt_domain_line(host, prefix))
+            data = self._conn_data.get(conn.tag, {})
             for fw in data.get("forwards_local", []):
-                label = f"  [dim]{fw.tag}[/dim]" if fw.tag else ""
-                forward_lines.append(
-                    f"[green]→[/green] {fw.src_port} → {fw.dst_addr}:{fw.dst_port}{label}"
-                )
+                forward_lines.append(_fmt_forward_local(fw, prefix))
             for fw in data.get("forwards_remote", []):
-                label = f"  [dim]{fw.tag}[/dim]" if fw.tag else ""
-                forward_lines.append(
-                    f"[yellow]←[/yellow] {fw.src_port} ← {fw.dst_port}{label}"
-                )
-            for info in shares:
-                if info.conn_tag == tag:
-                    dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
-                    name = Path(info.file_path).name
-                    link = share_name_markup(info.file_path, name)
-                    if info.running:
-                        share_lines.append(f"{dot} {link}  {info.port}")
-                    else:
-                        share_lines.append(f"{dot} [dim]{link}[/dim]")
+                forward_lines.append(_fmt_forward_remote(fw, prefix))
+
+        for info in shares:
+            if tag is not None and info.conn_tag != tag:
+                continue
+            prefix = markup_escape(f"[{info.conn_tag}]") if tag is None else ""
+            share_lines.append(_fmt_share_line(info, prefix))
 
         domain_text = "\n".join(domain_lines) if domain_lines else "[dim]—[/dim]"
         forward_text = "\n".join(forward_lines) if forward_lines else "[dim]—[/dim]"

@@ -82,18 +82,25 @@ def cmd_ls(args, m) -> int:
         print(f"  socks_port: {conn.socks_proxy_port}")
         if conn.pac_hosts:
             print(f"  pac_hosts:")
-            for h in conn.pac_hosts:
-                print(f"    - {h}")
+            for host in conn.pac_hosts:
+                print(f"    - {host}")
         if conn.forwards.local:
             print(f"  local_forwards:")
-            for f in conn.forwards.local:
-                print(f"    - {f.src_addr}:{f.src_port} → {f.dst_addr}:{f.dst_port}" +
-                      (f" [{f.tag}]" if f.tag else ""))
+            for forward in conn.forwards.local:
+                print(f"    - {forward.src_addr}:{forward.src_port} → {forward.dst_addr}:{forward.dst_port}" +
+                      (f" [{forward.tag}]" if forward.tag else ""))
         if conn.forwards.remote:
             print(f"  remote_forwards:")
-            for f in conn.forwards.remote:
-                print(f"    - {f.src_addr}:{f.src_port} → {f.dst_addr}:{f.dst_port}" +
-                      (f" [{f.tag}]" if f.tag else ""))
+            for forward in conn.forwards.remote:
+                print(f"    - {forward.src_addr}:{forward.src_port} → {forward.dst_addr}:{forward.dst_port}" +
+                      (f" [{forward.tag}]" if forward.tag else ""))
+        if conn.file_shares:
+            print("  file_shares:")
+            for share in conn.file_shares:
+                print(f"    - file_path: {share.file_path}")
+                print(f"      password: {share.password}")
+                print(f"      port: {share.port}")
+                print(f"      stopped: {share.stopped}")
     return 0
 
 

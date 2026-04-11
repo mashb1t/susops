@@ -1244,6 +1244,10 @@ dev = [
     { name = "pytest-cov" },
     { name = "textual-dev" },
 ]
+share = [
+    { name = "aiohttp" },
+    { name = "cryptography" },
+]
 tray-mac = [
     { name = "rumps" },
 ]
@@ -1254,7 +1258,9 @@ tui = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'share'", specifier = ">=3.9" },
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42" },
+    { name = "cryptography", marker = "extra == 'share'", specifier = ">=42" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1265,7 +1271,7 @@ requires-dist = [
     { name = "textual-dev", marker = "extra == 'dev'" },
     { name = "textual-plotext", marker = "extra == 'tui'", specifier = ">=0.2" },
 ]
-provides-extras = ["tui", "tray-linux", "tray-mac", "crypto", "dev"]
+provides-extras = ["tui", "tray-linux", "tray-mac", "share", "crypto", "dev"]
 
 [[package]]
 name = "textual"

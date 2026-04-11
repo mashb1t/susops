@@ -38,6 +38,9 @@ Footer { background: $surface-darken-2; }
 #config-toolbar Button { margin-right: 1; }
 #config-area { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
 
+/* ── PAC viewer ── */
+#pac-area { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
+
 /* ── Modals ── */
 .modal-dialog { width: 60; height: auto; border: round $primary; padding: 1 2; background: $surface; }
 .modal-dialog Label { margin-top: 1; }
