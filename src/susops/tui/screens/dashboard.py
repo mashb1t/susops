@@ -316,14 +316,19 @@ class DashboardScreen(Screen):
         total_tx = sum(d["bw"][1] for d in self._conn_data.values())
         total_rx_bytes = sum(d["bw_total"][0] for d in self._conn_data.values())
         total_tx_bytes = sum(d["bw_total"][1] for d in self._conn_data.values())
+        total_conns = sum(d["proc_info"].get("conns", 0) for d in self._conn_data.values())
+        total_fwds_l = sum(len(d.get("forwards_local", [])) for d in self._conn_data.values())
+        total_fwds_r = sum(len(d.get("forwards_remote", [])) for d in self._conn_data.values())
+        total_fwds = f"{total_fwds_l}L {total_fwds_r}R"
 
         lines = [
             f"[bold]All Connections[/bold]  {running} running / {total} total",
             "",
-            f"  CPU total    {total_cpu:.1f}%{'':6} Memory  {total_mem:.1f} MB",
+            f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
+            f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<10}  total  [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
-            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<10}  total  [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
+            f"  [green]↓ RX[/green]  rate  {_fmt_bps(total_rx):<16} total   [cyan]{_fmt_bytes(total_rx_bytes)}[/cyan]",
+            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(total_tx):<16} total   [cyan]{_fmt_bytes(total_tx_bytes)}[/cyan]",
             f"  [dim]resets on stop[/dim]",
             "",
             f"  [dim]{'─' * 36}[/dim]",
@@ -414,13 +419,13 @@ class DashboardScreen(Screen):
         stats_lines = [
             f"[bold]{tag}[/bold]  {status_str}",
             "",
-            f"  SSH host    {ssh_host:<16} SOCKS  {socks_port_str}",
-            f"  PID         {pid_str:<16} Uptime {uptime_str}",
-            f"  CPU         {cpu:.1f}%{'':12} Memory {mem_mb:.1f} MB",
-            f"  Connections {conns:<16} Fwds   {fwd_summary}",
+            f"  SSH host    {ssh_host:<16} SOCKS   {socks_port_str}",
+            f"  PID         {pid_str:<16} Uptime  {uptime_str}",
+            f"  CPU         {cpu:.1f}%{'':12} Memory  {mem_mb:.1f} MB",
+            f"  Connections {conns:<16} Fwds    {fwd_summary}",
             "",
-            f"  [green]↓ RX[/green]  rate  {_fmt_bps(rx):<10}  total  [cyan]{_fmt_bytes(rx_total)}[/cyan]",
-            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(tx):<10}  total  [cyan]{_fmt_bytes(tx_total)}[/cyan]",
+            f"  [green]↓ RX[/green]  rate  {_fmt_bps(rx):<16} total   [cyan]{_fmt_bytes(rx_total)}[/cyan]",
+            f"  [yellow]↑ TX[/yellow]  rate  {_fmt_bps(tx):<16} total   [cyan]{_fmt_bytes(tx_total)}[/cyan]",
             f"  [dim]resets on stop[/dim]",
         ]
         self.query_one("#stats-content", Static).update("\n".join(stats_lines))
