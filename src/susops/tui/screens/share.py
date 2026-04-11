@@ -1,8 +1,6 @@
 """Share screen — split-pane share list with modal dialogs for add/fetch."""
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -12,7 +10,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
 from textual import work
 from susops.core.ports import is_port_free, validate_port
-from susops.tui.screens import compose_footer
+from susops.tui.screens import compose_footer, open_in_explorer
 
 
 class _AddShareDialog(ModalScreen):
@@ -285,11 +283,7 @@ class ShareScreen(Screen):
         self.query_one("#share-detail", Static).update(text)
 
     def action_open_share(self, file_path: str) -> None:
-        parent = str(Path(file_path).parent)
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", file_path])
-        else:
-            subprocess.Popen(["xdg-open", parent])
+        open_in_explorer(file_path)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         idx = event.list_view.index

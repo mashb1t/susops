@@ -1,8 +1,6 @@
 """Dashboard screen — lazydocker+nvtop-inspired split-pane live overview."""
 from __future__ import annotations
 
-import subprocess
-import sys
 from collections import deque
 from pathlib import Path
 
@@ -24,7 +22,7 @@ from textual.widgets import (
 from textual_plotext import PlotextPlot
 
 from susops.core.types import StatusResult
-from susops.tui.screens import compose_footer
+from susops.tui.screens import compose_footer, open_in_explorer, share_name_markup
 
 
 def _fmt_bps(bps: float) -> str:
@@ -74,21 +72,6 @@ def _fmt_uptime(seconds: float) -> str:
         return f"{int(seconds / 60)}m"
     return f"{int(seconds)}s"
 
-
-def _share_name_markup(file_path: str, name: str) -> str:
-    """Return Rich markup for a clickable share filename, or plain name if path is unsafe."""
-    if "'" not in file_path:
-        return f"[@click=screen.open_share('{file_path}')]{name}[/]"
-    return name
-
-
-def _open_in_explorer(file_path: str) -> None:
-    """Open the parent directory of file_path in the system file manager."""
-    parent = str(Path(file_path).parent)
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", "-R", file_path])
-    else:
-        subprocess.Popen(["xdg-open", parent])
 
 
 class DashboardScreen(Screen):
@@ -522,7 +505,7 @@ class DashboardScreen(Screen):
             for info in shares:
                 dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                 name = Path(info.file_path).name
-                link = _share_name_markup(info.file_path, name)
+                link = share_name_markup(info.file_path, name)
                 if info.running:
                     share_lines.append(f"{dot} {link}  {info.port}")
                 else:
@@ -548,7 +531,7 @@ class DashboardScreen(Screen):
                 if info.conn_tag == tag:
                     dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
                     name = Path(info.file_path).name
-                    link = _share_name_markup(info.file_path, name)
+                    link = share_name_markup(info.file_path, name)
                     if info.running:
                         share_lines.append(f"{dot} {link}  {info.port}")
                     else:
@@ -634,7 +617,7 @@ class DashboardScreen(Screen):
         self.app.call_from_thread(self.refresh_status)
 
     def action_open_share(self, file_path: str) -> None:
-        _open_in_explorer(file_path)
+        open_in_explorer(file_path)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.
