@@ -7,17 +7,9 @@ from textual.app import App
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
 
-from susops.core.types import ProcessState
 from susops.tui.screens.connection_editor import ConnectionEditorScreen
 from susops.tui.screens.dashboard import DashboardScreen
 from susops.tui.screens.share import ShareScreen
-
-_LOGO_MARKUP: dict[ProcessState, str] = {
-    ProcessState.RUNNING: "[green]S[/green]usOps",
-    ProcessState.STOPPED_PARTIALLY: "[dark_orange]S[/dark_orange]usOps",
-    ProcessState.STOPPED: "[red]S[/red]usOps",
-    ProcessState.ERROR: "[bold red]S[/bold red]usOps",
-}
 
 
 class _SusOpsCommands(Provider):
@@ -101,14 +93,6 @@ class SusOpsTuiApp(App):
 
     def action_restart_all(self) -> None:
         self._bg_restart()
-
-    def set_logo_state(self, state: ProcessState) -> None:
-        """Update the footer logo color to reflect the current process state."""
-        text = _LOGO_MARKUP.get(state, "[dim]S[/dim]usOps")
-        try:
-            self.query_one(".footer-logo").update(text)
-        except Exception:
-            pass
 
     def action_show_config(self) -> None:
         from susops.tui.screens.dashboard import DashboardScreen

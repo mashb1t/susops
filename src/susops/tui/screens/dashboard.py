@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
+    Footer,
     Label,
     ListItem,
     ListView,
@@ -22,8 +23,9 @@ from textual.widgets import (
 )
 from textual_plotext import PlotextPlot
 
+import susops
 from susops.core.types import StatusResult
-from susops.tui.screens import compose_footer, open_in_explorer, share_name_markup
+from susops.tui.screens import open_in_explorer, open_path, share_name_markup
 
 
 def _fmt_bps(bps: float) -> str:
@@ -129,9 +131,7 @@ class DashboardScreen(Screen):
         Binding("X", "stop_all", "Stop all"),
         Binding("R", "restart_all", "Restart all"),
         Binding("c", "push_screen('connections')", "Connections"),
-        Binding("e", "show_tab('tab-config')", "Config"),
         Binding("f", "push_screen('share')", "Share"),
-        Binding("p", "show_tab('tab-pac')", "PAC"),
     ]
 
     DEFAULT_CSS = """
@@ -198,7 +198,10 @@ class DashboardScreen(Screen):
                     yield Static("", id="domain-content", markup=True)
                 yield Static("", id="forward-content", markup=True)
                 yield Static("", id="share-content", markup=True)
-        yield from compose_footer()
+        with Horizontal(classes="footer-row"):
+            yield Footer()
+            yield Static("[@click=screen.edit_config()]Edit config[/]", classes="footer-edit-config", markup=True)
+            yield Static(f"v{susops.__version__}", classes="footer-version")
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
@@ -359,7 +362,6 @@ class DashboardScreen(Screen):
         # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)
         self._update_context_panel(self._selected_tag)
-        self.app.set_logo_state(result.state)  # type: ignore[attr-defined]
 
     def _render_all_stats(self) -> str:
         """Render aggregate stats for the 'All' view."""
@@ -529,6 +531,10 @@ class DashboardScreen(Screen):
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#detail-tabs", TabbedContent).active = tab_id
+
+    def action_edit_config(self) -> None:
+        workspace = self.app.manager.workspace  # type: ignore[attr-defined]
+        open_path(str(workspace / "config.yaml"))
 
     def _load_config_tab(self) -> None:
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
