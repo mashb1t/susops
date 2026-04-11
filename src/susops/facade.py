@@ -1036,6 +1036,9 @@ class SusOpsManager:
                     "running": False,
                     "conn_tag": info.conn_tag,
                 })
+            else:
+                # Offline share (not in _share_servers): mark as manually stopped in config
+                self._set_file_share_stopped(port, True)
         else:
             for p, (server, info) in list(self._share_servers.items()):
                 server.stop()

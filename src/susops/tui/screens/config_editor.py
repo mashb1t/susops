@@ -1,14 +1,11 @@
 """Config editor screen — YAML view with option to open in system editor."""
 from __future__ import annotations
 
-import shutil
-import subprocess
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import TextArea
-from susops.tui.screens import compose_footer
+from susops.tui.screens import compose_footer, open_path
 
 
 class ConfigEditorScreen(Screen):
@@ -25,7 +22,7 @@ class ConfigEditorScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        area = TextArea(language="yaml", id="config-area", read_only=True)
+        area = TextArea(language="javascript", id="config-area", read_only=True)
         area.border_title = "config.yaml"
         yield area
         yield from compose_footer()
@@ -46,9 +43,4 @@ class ConfigEditorScreen(Screen):
     def action_open_editor(self) -> None:
         """Open config.yaml with the system default file handler (non-blocking)."""
         workspace = self.app.manager.workspace  # type: ignore[attr-defined]
-        config_path = workspace / "config.yaml"
-        for opener in ("xdg-open", "open"):
-            if shutil.which(opener):
-                subprocess.Popen([opener, str(config_path)])
-                return
-        self.app.notify("No file opener found (xdg-open / open)", severity="error")
+        open_path(str(workspace / "config.yaml"))

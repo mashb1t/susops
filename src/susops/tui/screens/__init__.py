@@ -11,13 +11,20 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 
+def open_path(path: str) -> None:
+    """Open a file or directory with the system default handler."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
 def open_in_explorer(file_path: str) -> None:
     """Open the parent directory of file_path in the system file manager."""
-    parent = str(Path(file_path).parent)
     if sys.platform == "darwin":
         subprocess.Popen(["open", "-R", file_path])
     else:
-        subprocess.Popen(["xdg-open", parent])
+        subprocess.Popen(["xdg-open", str(Path(file_path).parent)])
 
 
 def share_name_markup(file_path: str, name: str) -> str:
@@ -31,5 +38,4 @@ def compose_footer() -> ComposeResult:
     """Yield a footer row with key bindings and the app version on the right."""
     with Horizontal(classes="footer-row"):
         yield Footer()
-        yield Static("[dim]S[/dim]usOps", classes="footer-logo", markup=True)
         yield Static(f"v{susops.__version__}", classes="footer-version")
