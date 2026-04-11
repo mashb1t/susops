@@ -555,7 +555,10 @@ SusOps can forward UDP traffic through an SSH tunnel using `socat`. This works w
 
 ### Requirements
 
-`socat` must be installed on the **local machine**. For local UDP forwards, it must also be installed on the **remote SSH host** (the EXEC approach runs a remote socat instance per datagram).
+`socat` must be installed on **both the local machine and the remote SSH host** for either direction:
+
+- **Local UDP**: local socat listens and forks; remote socat relays each datagram to the destination (via SSH EXEC).
+- **Remote UDP**: remote socat relays UDP → TCP (via SSH exec); local socat relays TCP → UDP.
 
 ```bash
 brew install socat          # macOS
