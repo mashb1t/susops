@@ -569,6 +569,27 @@ def test_start_logs_ssh_tail_on_failure(tmp_path, monkeypatch):
     )
 
 
+def test_reconnect_monitor_tracks_intended_tags(tmp_path):
+    """mark_running and mark_stopped maintain the intended set correctly."""
+    from susops.facade import _ReconnectMonitor
+
+    class _FakeMgr:
+        pass
+
+    monitor = _ReconnectMonitor(_FakeMgr())
+    assert "work" not in monitor._intended
+
+    monitor.mark_running("work")
+    assert "work" in monitor._intended
+
+    monitor.mark_running("home")
+    assert "home" in monitor._intended
+
+    monitor.mark_stopped("work")
+    assert "work" not in monitor._intended
+    assert "home" in monitor._intended
+
+
 def test_add_local_forward_both_protocols_persisted(tmp_path):
     """Forward with tcp=True and udp=True is saved with both flags."""
     mgr = SusOpsManager(workspace=tmp_path)

@@ -190,6 +190,57 @@ class _BandwidthSampler:
                 self._totals.pop(tag, None)
 
 
+class _ReconnectMonitor:
+    """Background thread that restarts dead SSH ControlMasters.
+
+    Tracks which connection tags were intentionally started. Every 15 seconds
+    it checks socket liveness for each tracked tag and calls SusOpsManager.start()
+    to reconnect any that have died.
+    """
+
+    INTERVAL = 15.0
+
+    def __init__(self, mgr: "SusOpsManager") -> None:
+        self._mgr = mgr
+        self._intended: set[str] = set()
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="susops-reconnect"
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def mark_running(self, tag: str) -> None:
+        with self._lock:
+            self._intended.add(tag)
+
+    def mark_stopped(self, tag: str) -> None:
+        with self._lock:
+            self._intended.discard(tag)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(timeout=self.INTERVAL):
+            with self._lock:
+                tags = list(self._intended)
+            for tag in tags:
+                try:
+                    self._check(tag)
+                except Exception:
+                    pass
+
+    def _check(self, tag: str) -> None:
+        if not is_socket_alive(tag, self._mgr.workspace):
+            self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
+            self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
+            self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
+            self._mgr.start(tag=tag)
+
+
 class SusOpsManager:
     """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
@@ -208,6 +259,8 @@ class SusOpsManager:
             self._process_mgr, on_sample=self._on_bandwidth
         )
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
+        self._reconnect_monitor = _ReconnectMonitor(self)
+        self._reconnect_monitor.start()
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
@@ -245,6 +298,27 @@ class SusOpsManager:
         else:
             import sys
             print(full, file=sys.stderr)
+
+    def _notify(self, title: str, body: str) -> None:
+        """Send a desktop notification. Best-effort — fails silently."""
+        import platform
+        import subprocess
+        try:
+            if platform.system() == "Darwin":
+                subprocess.Popen(
+                    ["osascript", "-e",
+                     f'display notification "{body}" with title "{title}"'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif platform.system() == "Linux":
+                subprocess.Popen(
+                    ["notify-send", title, body],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
 
     def _emit(self, event: str, data: dict) -> None:
         """Emit an SSE event and log it when verbose (bandwidth excluded — too noisy)."""
@@ -619,6 +693,7 @@ class SusOpsManager:
                 ))
                 self._start_times[conn.tag] = time.monotonic()
                 self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
+                self._reconnect_monitor.mark_running(conn.tag)
             except Exception as exc:
                 log_path = self.workspace / "logs" / f"susops-ssh-{conn.tag}.log"
                 tail = ""
@@ -741,6 +816,7 @@ class SusOpsManager:
                     self._bw_sampler.reset_totals(conn.tag)
                     self._start_times.pop(conn.tag, None)
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                    self._reconnect_monitor.mark_stopped(conn.tag)
                 stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     updated = conn.model_copy(update={"socks_proxy_port": 0})
