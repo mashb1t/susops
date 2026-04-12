@@ -668,7 +668,7 @@ def test_restore_shares_missing_file_logs_warning(tmp_path):
 
 
 def test_disabled_forward_not_started(tmp_path):
-    """Forwards with enabled=False are skipped during start()."""
+    """Forwards with enabled=False are not registered via ssh -O forward during start()."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
     from susops.core.config import PortForward
@@ -681,7 +681,7 @@ def test_disabled_forward_not_started(tmp_path):
 
     started_forwards = []
 
-    def fake_start_forward(conn, fw, direction, pm, ws):
+    def fake_start_forward(conn, fw, direction, ws):
         started_forwards.append(fw.tag or str(fw.src_port))
 
     with patch("susops.facade.start_forward", side_effect=fake_start_forward), \
@@ -689,4 +689,4 @@ def test_disabled_forward_not_started(tmp_path):
          patch("susops.core.ssh.is_socket_alive", return_value=True):
         mgr.start(tag="demo")
 
-    assert "pg" not in started_forwards, "Disabled forward must not be started"
+    assert "pg" not in started_forwards, "Disabled forward must not be registered"

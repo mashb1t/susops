@@ -36,7 +36,6 @@ from susops.core.ssh import (
     socket_path,
     start_forward,
     start_master,
-    stop_forward,
     stop_tunnel,
     test_ssh_connectivity,
 )
@@ -238,12 +237,12 @@ class _BandwidthSampler:
 
 
 class _ReconnectMonitor:
-    """Background thread that watches for autossh-driven reconnections.
+    """Background thread that monitors and restarts dropped SSH connections.
 
     Tracks which connection tags were intentionally started. Every 15 seconds
-    it checks socket liveness per tag. autossh handles the actual reconnect;
-    this monitor detects when the socket comes back alive after a dropout and
-    re-registers all configured forwards against the fresh ControlMaster.
+    it checks socket liveness per tag. When a socket goes down it attempts to
+    restart the ControlMaster immediately and on every subsequent poll until it
+    succeeds. Once the master is back, all enabled forwards are re-registered.
     """
 
     INTERVAL = 15.0
@@ -290,15 +289,21 @@ class _ReconnectMonitor:
             was_alive = self._socket_was_alive.get(tag, True)
             self._socket_was_alive[tag] = alive
 
-        if was_alive and not alive:
-            # Socket just went down — autossh will reconnect automatically.
-            self._mgr._log(f"[{tag}] Connection lost — autossh reconnecting...")
-            self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
-            self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
-        elif not was_alive and alive:
-            # Socket came back — re-register all forwards against the new master.
-            self._mgr._log(f"[{tag}] Connection restored — re-registering forwards...")
-            self._mgr._reregister_forwards(tag)
+        if alive:
+            if not was_alive:
+                # Socket came back (reconnect succeeded on a previous poll).
+                self._mgr._log(f"[{tag}] Connection restored — re-registering forwards...")
+                self._mgr._reregister_forwards(tag)
+        else:
+            if was_alive:
+                self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
+                self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
+                self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
+            # Attempt to restart the master on every poll while the socket is down.
+            if self._mgr._try_reconnect(tag):
+                with self._lock:
+                    self._socket_was_alive[tag] = True
+                self._mgr._reregister_forwards(tag)
 
 
 class SusOpsManager:
@@ -703,14 +708,13 @@ class SusOpsManager:
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
 
-                # Start configured local/remote forwards as slaves
                 for fw in conn.forwards.local:
                     if not fw.enabled:
                         self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
                         continue
                     try:
                         if fw.tcp:
-                            start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                            start_forward(conn, fw, "local", self.workspace)
                         if fw.udp:
                             start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                     except Exception as exc:
@@ -722,7 +726,7 @@ class SusOpsManager:
                         continue
                     try:
                         if fw.tcp:
-                            start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                            start_forward(conn, fw, "remote", self.workspace)
                         if fw.udp:
                             start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                     except Exception as exc:
@@ -770,7 +774,7 @@ class SusOpsManager:
                             tag=f"share-{share_port}",
                         )
                         try:
-                            start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                            start_forward(conn, fw, "remote", self.workspace)
                         except Exception as exc:
                             self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
 
@@ -887,13 +891,35 @@ class SusOpsManager:
                 break
             time.sleep(0.1)
 
+    def _try_reconnect(self, tag: str) -> bool:
+        """Attempt to restart the ControlMaster for a connection that went down.
+
+        Returns True if the master is now running, False if the attempt failed
+        (e.g. SSH server unreachable). Called by _ReconnectMonitor on every poll
+        while the socket is down.
+        """
+        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
+            return True
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None:
+            return False
+        try:
+            conn = self._ensure_socks_port(conn)
+            pid = start_master(conn, self._process_mgr, self.workspace)
+            self._log(f"[{tag}] Reconnected (PID {pid})")
+            return True
+        except Exception as exc:
+            self._log(f"[{tag}] Reconnect attempt failed: {exc}")
+            return False
+
     def _reregister_forwards(self, tag: str) -> None:
-        """Re-register all enabled forwards after autossh restores the master.
+        """Re-register all enabled forwards
 
         Called by _ReconnectMonitor when the ControlMaster socket comes back
-        alive. Re-spawns ControlSlave processes for every enabled TCP/UDP
-        forward and active share forward — the fresh master starts with no
-        forwards registered so they must all be re-established.
+        alive. The fresh master starts with no forwards registered — all enabled
+        TCP forwards are re-registered via ``ssh -O forward``, stale UDP
+        processes are restarted, and active share forwards are re-registered.
         """
         self._reload_config()
         conn = get_connection(self.config, tag)
@@ -908,7 +934,7 @@ class SusOpsManager:
                 continue
             try:
                 if fw.tcp:
-                    start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                    start_forward(conn, fw, "local", self.workspace)
                 if fw.udp:
                     start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
             except Exception as exc:
@@ -919,7 +945,7 @@ class SusOpsManager:
                 continue
             try:
                 if fw.tcp:
-                    start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                    start_forward(conn, fw, "remote", self.workspace)
                 if fw.udp:
                     start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
             except Exception as exc:
@@ -934,7 +960,7 @@ class SusOpsManager:
                 tag=f"share-{share_port}",
             )
             try:
-                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                start_forward(conn, fw, "remote", self.workspace)
             except Exception as exc:
                 self._log(f"[{tag}] Share forward {share_port} failed to re-register: {exc}")
 
@@ -1183,12 +1209,12 @@ class SusOpsManager:
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "local")
-        # If master is running, start the slave immediately (no restart needed)
+        # If master is running, register the forward live via ssh -O forward
         conn = get_connection(self.config, conn_tag)
         if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
                 if fw.tcp:
-                    start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                    start_forward(conn, fw, "local", self.workspace)
                 if fw.udp:
                     start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                 self._emit("forward", {
@@ -1204,7 +1230,7 @@ class SusOpsManager:
         if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
                 if fw.tcp:
-                    start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                    start_forward(conn, fw, "remote", self.workspace)
                 if fw.udp:
                     start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                 self._emit("forward", {
@@ -1230,7 +1256,6 @@ class SusOpsManager:
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
                 if removed_fw.tcp:
                     cancel_forward(conn, removed_fw, direction, self.workspace)
-                    stop_forward(conn.tag, fw_tag, self._process_mgr)
                 stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
@@ -1268,17 +1293,14 @@ class SusOpsManager:
                 if enabled and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
                     try:
                         if fw.tcp:
-                            start_forward(conn, fw, direction, self._process_mgr, self.workspace)
+                            start_forward(conn, fw, direction, self.workspace)
                         if fw.udp:
                             start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
                     except Exception as exc:
                         self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
                 elif not enabled:
                     if fw.tcp:
-                        # cancel_forward handles new-style ControlSlave forwards (master holds port).
-                        # stop_forward handles old-style direct-connection slaves (slave holds port).
                         cancel_forward(conn, fw, direction, self.workspace)
-                        stop_forward(conn_tag, fw_tag, self._process_mgr)
                     stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "conn_tag": conn_tag,
@@ -1357,7 +1379,7 @@ class SusOpsManager:
                 tag=f"share-{info.port}",
             )
             try:
-                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                start_forward(conn, fw, "remote", self.workspace)
             except Exception as exc:
                 self._log(f"[{conn_tag}] Share forward {info.port} failed: {exc}")
 
@@ -1501,7 +1523,7 @@ class SusOpsManager:
         sock = socket_path(conn_tag, self.workspace) if conn else None
         if conn and sock is not None and sock.exists():
             try:
-                start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                start_forward(conn, fw, "local", self.workspace)
                 # Poll until local port is accessible (up to 5 s)
                 for _ in range(50):
                     if self._probe_port(local_port):
@@ -1518,7 +1540,7 @@ class SusOpsManager:
             result = fetch_file(host="localhost", port=fetch_port, password=password, outfile=outfile)
         finally:
             if forward_started:
-                stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
+                cancel_forward(conn, fw, "local", self.workspace)
             if not tunnel_was_running:
                 stop_tunnel(conn_tag, self._process_mgr, self.workspace, conn.ssh_host if conn else None)
                 self._emit("state", {"tag": conn_tag, "running": False, "pid": None})
