@@ -1116,7 +1116,7 @@ class SusOpsManager:
         self._add_forward(conn_tag, fw, "local")
         # If master is running, start the slave immediately (no restart needed)
         conn = get_connection(self.config, conn_tag)
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
                 if fw.tcp:
                     start_forward(conn, fw, "local", self._process_mgr, self.workspace)
@@ -1132,7 +1132,7 @@ class SusOpsManager:
     def add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "remote")
         conn = get_connection(self.config, conn_tag)
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
                 if fw.tcp:
                     start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
@@ -1195,7 +1195,7 @@ class SusOpsManager:
                 fw.enabled = enabled
                 self._save()
                 fw_tag = fw.tag or f"{direction}-{src_port}"
-                if enabled and is_tunnel_running(conn_tag, self._process_mgr):
+                if enabled and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
                     try:
                         if fw.tcp:
                             start_forward(conn, fw, direction, self._process_mgr, self.workspace)
@@ -1269,10 +1269,11 @@ class SusOpsManager:
         self._add_file_share_to_config(conn_tag, str(file), pw, info.port)
 
         conn = get_connection(self.config, conn_tag)
-        if conn and not is_tunnel_running(conn_tag, self._process_mgr):
+        _tunnel_up = conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace))
+        if conn and not _tunnel_up:
             # Tunnel not running — start it; start() will also launch the remote forward slave.
             self.start(conn_tag)
-        elif conn and is_tunnel_running(conn_tag, self._process_mgr):
+        elif _tunnel_up:
             # Tunnel already running — start the slave directly.
             fw = PortForward(
                 src_port=info.port,
