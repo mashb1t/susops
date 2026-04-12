@@ -8,6 +8,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -53,18 +54,21 @@ def socket_path(tag: str, workspace: Path) -> Path:
 
 
 def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
-    """Build the ControlMaster command using autossh for automatic reconnection.
+    """Build the ControlMaster command.
 
-    autossh -M 0 disables the built-in port probe and relies on SSH's own
-    ServerAliveInterval/CountMax for dead-connection detection, then restarts
-    the ssh child automatically. The autossh process is what's tracked by PID
-    file; the ssh child is a subprocess of autossh.
+    Uses autossh -M 0 when available: autossh restarts the ssh child
+    automatically on disconnect so tunnels survive without a running Python
+    process. Falls back to plain ssh when autossh is not installed — reconnect
+    still works via _ReconnectMonitor polling but requires susops to be running.
 
     ControlPersist is intentionally omitted: with -N the process stays in the
     foreground with a stable, trackable PID.
     """
-    return [
-        "autossh", "-M", "0",
+    binary = "autossh" if shutil.which("autossh") else "ssh"
+    cmd: list[str] = [binary]
+    if binary == "autossh":
+        cmd += ["-M", "0"]
+    cmd += [
         "-N", "-T",
         "-D", str(conn.socks_proxy_port),
         "-o", "ControlMaster=yes",
@@ -73,6 +77,7 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-o", "ServerAliveCountMax=3",
         conn.ssh_host,
     ]
+    return cmd
 
 
 def build_forward_cmd(

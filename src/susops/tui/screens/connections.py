@@ -206,7 +206,7 @@ class _AddForwardDialog(ModalScreen):
         })
 
 
-class ConnectionEditorScreen(Screen):
+class ConnectionsScreen(Screen):
     """TabbedContent CRUD screen for connections, PAC hosts, and port forwards."""
 
     BINDINGS = [

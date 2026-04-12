@@ -144,7 +144,7 @@ class _FetchDialog(ModalScreen):
             self.app.call_from_thread(self.query_one("#error", Label).update, f"[red]{e}[/red]")
 
 
-class ShareScreen(Screen):
+class SharesScreen(Screen):
     """Split-pane share screen: active shares list + detail panel."""
 
     BINDINGS = [
