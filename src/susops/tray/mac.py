@@ -765,9 +765,8 @@ class SusOpsMacTray(AbstractTrayApp):
         if not validate_port(src_int) or not validate_port(dst_int):
             self.show_alert("Invalid Port", "Ports must be between 1 and 65535.")
             return
-        local_port = dst_int if remote else src_int
-        if not is_port_free(local_port):
-            self.show_alert("Port In Use", f"Local port {local_port} is already in use.")
+        if not remote and not is_port_free(src_int):
+            self.show_alert("Port In Use", f"Local port {src_int} is already in use.")
             return
 
         fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int, tcp=tcp, udp=udp)

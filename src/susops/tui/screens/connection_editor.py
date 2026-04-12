@@ -198,9 +198,6 @@ class _AddForwardDialog(ModalScreen):
         if self._direction == "local" and not is_port_free(src):
             error_label.update(f"Local port {src} is already in use.")
             return
-        if self._direction == "remote" and not is_port_free(dst):
-            error_label.update(f"Local port {dst} is already in use.")
-            return
         self.dismiss({
             "conn": conn, "src": src, "dst": dst,
             "src_addr": src_addr, "dst_addr": dst_addr,

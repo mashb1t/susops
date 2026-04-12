@@ -903,10 +903,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if not _is_valid_port(lport):
                 _alert(Gtk, dlg, "Invalid Port", "To Local Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
-            if not is_port_free(int(lport)):
-                _alert(Gtk, dlg, "Port In Use", f"Local port {lport} is already in use.", Gtk.MessageType.ERROR)
-                continue
-
             fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
