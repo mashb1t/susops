@@ -43,6 +43,7 @@ from susops.core.socat import (
     start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
+    is_udp_forward_running as _is_udp_forward_running,
 )
 from susops.core.status import StatusServer
 from susops.core.types import (
@@ -442,6 +443,7 @@ class SusOpsManager:
             running=running,
             pid=pid,
             socks_port=conn.socks_proxy_port,
+            enabled=conn.enabled,
         )
 
     def _ensure_socks_port(self, conn: Connection) -> Connection:
@@ -692,6 +694,10 @@ class SusOpsManager:
         errors = []
 
         for conn in connections:
+            if not conn.enabled:
+                self._log(f"[{conn.tag}] Disabled — skipping")
+                statuses.append(self._connection_status(conn))
+                continue
             if is_tunnel_running(conn.tag, self._process_mgr):
                 self._log(f"[{conn.tag}] Already running")
                 statuses.append(self._connection_status(conn))
@@ -902,7 +908,7 @@ class SusOpsManager:
             return True
         self._reload_config()
         conn = get_connection(self.config, tag)
-        if conn is None:
+        if conn is None or not conn.enabled:
             return False
         try:
             conn = self._ensure_socks_port(conn)
@@ -1129,6 +1135,25 @@ class SusOpsManager:
         self._save()
         self._log(f"Removed connection '{tag}'")
 
+    def set_connection_enabled(self, tag: str, enabled: bool) -> None:
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None:
+            raise ValueError(f"Connection '{tag}' not found")
+        updated = conn.model_copy(update={"enabled": enabled})
+        self.config = self.config.model_copy(
+            update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
+        )
+        self._save()
+        self._log(f"[{tag}] {'enabled' if enabled else 'disabled'}")
+        if not enabled and (is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace)):
+            stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+            stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+            self._bw_sampler.reset_totals(tag)
+            self._start_times.pop(tag, None)
+            self._reconnect_monitor.mark_stopped(tag)
+            self._emit("state", {"tag": tag, "running": False, "pid": None})
+
     def test_ssh(self, ssh_host: str) -> bool:
         return test_ssh_connectivity(ssh_host)
 
@@ -1177,6 +1202,37 @@ class SusOpsManager:
         if self._pac_server.is_running():
             self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
         self._log(f"Removed PAC host '{host}'")
+        self._emit_state(self._compute_state())
+
+    def set_pac_host_enabled(self, host: str, enabled: bool, conn_tag: str | None = None) -> None:
+        self._reload_config()
+        found = False
+        new_conns = []
+        for conn in self.config.connections:
+            if conn_tag and conn.tag != conn_tag:
+                new_conns.append(conn)
+                continue
+            if enabled and host in conn.pac_hosts_disabled:
+                found = True
+                new_conns.append(conn.model_copy(update={
+                    "pac_hosts": list(conn.pac_hosts) + [host],
+                    "pac_hosts_disabled": [h for h in conn.pac_hosts_disabled if h != host],
+                }))
+            elif not enabled and host in conn.pac_hosts:
+                found = True
+                new_conns.append(conn.model_copy(update={
+                    "pac_hosts": [h for h in conn.pac_hosts if h != host],
+                    "pac_hosts_disabled": list(conn.pac_hosts_disabled) + [host],
+                }))
+            else:
+                new_conns.append(conn)
+        if not found:
+            raise ValueError(f"PAC host '{host}' not found")
+        self.config = self.config.model_copy(update={"connections": new_conns})
+        self._save()
+        if self._pac_server.is_running():
+            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._log(f"PAC host '{host}' {'enabled' if enabled else 'disabled'}")
         self._emit_state(self._compute_state())
 
     # ------------------------------------------------------------------ #
@@ -1290,6 +1346,7 @@ class SusOpsManager:
                 fw.enabled = enabled
                 self._save()
                 fw_tag = fw.tag or f"{direction}-{src_port}"
+                self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
                 if enabled and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
                     try:
                         if fw.tcp:
@@ -1323,6 +1380,18 @@ class SusOpsManager:
                 self.set_forward_enabled(conn_tag, src_port, direction, new_enabled)
                 return new_enabled
         raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+
+    def is_udp_forward_running(self, conn_tag: str, src_port: int, direction: str) -> bool:
+        """Return True if the UDP socat process for this forward is alive."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            return False
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        fw = next((f for f in forwards if f.src_port == src_port), None)
+        if fw is None or not fw.udp:
+            return False
+        return _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
 
     # ------------------------------------------------------------------ #
     # File sharing

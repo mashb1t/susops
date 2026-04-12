@@ -26,6 +26,7 @@ __all__ = [
     "start_udp_forward",
     "stop_udp_forward",
     "stop_all_udp_forwards_for_connection",
+    "is_udp_forward_running",
 ]
 
 UDP_PROCESS_PREFIX = "susops-udp"
@@ -174,6 +175,18 @@ def stop_udp_forward(
             if process_mgr.stop(name):
                 stopped_any = True
     return stopped_any
+
+
+def is_udp_forward_running(
+    conn_tag: str,
+    fw: PortForward,
+    direction: str,
+    process_mgr: ProcessManager,
+) -> bool:
+    """Return True if the main socat process (lsocat) for this UDP forward is alive."""
+    tag = _fw_tag(fw, direction)
+    name = _udp_process_name(conn_tag, tag, "lsocat")
+    return process_mgr.is_running(name)
 
 
 def stop_all_udp_forwards_for_connection(
