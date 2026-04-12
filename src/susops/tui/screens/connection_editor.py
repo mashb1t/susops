@@ -422,6 +422,12 @@ class ConnectionEditorScreen(Screen):
         elif active == "tab-remote":
             self._do_rm_forward("remote")
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "toggle_forward":
+            active = self.query_one("#editor-tabs", TabbedContent).active
+            return active in ("tab-local", "tab-remote")
+        return True
+
     def action_toggle_forward(self) -> None:
         """Toggle enabled on the currently selected forward row."""
         active = self.query_one("#editor-tabs", TabbedContent).active
