@@ -90,8 +90,8 @@ def _fmt_bw_line(
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
-        f"[green]↓ RX[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
-        f"[yellow]↑ TX[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
+        f"{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
+        f"{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
     )
 
 
@@ -129,18 +129,16 @@ class DashboardScreen(Screen):
         Binding("s", "start", "Start"),
         Binding("x", "stop", "Stop"),
         Binding("r", "restart", "Restart"),
-        Binding("S", "start_all", "Start all"),
-        Binding("X", "stop_all", "Stop all"),
-        Binding("R", "restart_all", "Restart all"),
+
         Binding("c", "push_screen('connections')", "Connections"),
-        Binding("f", "push_screen('share')", "Share"),
+        Binding("f", "push_screen('share')", "Shares"),
         Binding("e", "edit_config", "Edit config"),
     ]
 
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
     #main-split { height: 1fr; }
-    #conn-panel { width: 50; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #conn-panel { width: 49; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #pac-info   { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
@@ -152,7 +150,7 @@ class DashboardScreen(Screen):
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
     #config-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
     #pac-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
-    #context-panel { width: 50; background: $surface-darken-1; border-left: solid $primary-darken-2; }
+    #context-panel { width: 49; background: $surface-darken-1; border-left: solid $primary-darken-2; }
     #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #domain-content { padding: 0 1; }
     #forward-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
@@ -348,7 +346,7 @@ class DashboardScreen(Screen):
             dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
-            label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>6}↓")
+            label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>7}↓")
 
         if new_tags == self._conn_tags:
             # Same connections — update connection rows in-place (index 0 is the All row, skip it)
@@ -413,9 +411,9 @@ class DashboardScreen(Screen):
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [dim]{'─' * 71}[/dim]",
+            f"  [dim]  {'Connection':<25}  [/dim]   [green]↓ RX[/green] [dim]{'Total':>7}[/dim]     [yellow]↑ TX[/yellow] [dim]{'Total':>7}[/dim]",            f"  [dim]{'─' * 61}[/dim]",
             _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=25 + len("[bold][/bold]"), show_dot=False),
-            f"  [dim]{'─' * 71}[/dim]",
+            f"  [dim]{'─' * 61}[/dim]",
         ]
         for tag, data in self._conn_data.items():
             lines.append(_fmt_bw_line(tag, data["cs"].running, *data["bw"], *data["bw_total"]))
@@ -670,27 +668,11 @@ class DashboardScreen(Screen):
         self.app.manager.restart(self._selected_tag)  # type: ignore[attr-defined]
         self.app.call_from_thread(self.refresh_status)
 
-    @work(thread=True)
-    def action_start_all(self) -> None:
-        self.app.manager.start()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
-
-    @work(thread=True)
-    def action_stop_all(self) -> None:
-        self.app.manager.stop()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
-
-    @work(thread=True)
-    def action_restart_all(self) -> None:
-        self.app.manager.restart()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
 
     def action_open_share(self, file_path: str) -> None:
         open_in_explorer(file_path)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in ("start_all", "stop_all", "restart_all") and self._selected_tag is None:
-            return False
         if action == "edit_config":
             active = self.query_one("#detail-tabs", TabbedContent).active
             return active == "tab-config"
