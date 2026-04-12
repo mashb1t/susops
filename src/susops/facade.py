@@ -1153,6 +1153,14 @@ class SusOpsManager:
             self._start_times.pop(tag, None)
             self._reconnect_monitor.mark_stopped(tag)
             self._emit("state", {"tag": tag, "running": False, "pid": None})
+            # Regenerate PAC after stopping so this connection's hosts are removed
+            self._update_pac()
+
+    def _update_pac(self) -> None:
+        """Write the PAC file and reload the in-process server if running."""
+        pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
+        if self._pac_server.is_running():
+            self._pac_server.reload(pac_path)
 
     def test_ssh(self, ssh_host: str) -> bool:
         return test_ssh_connectivity(ssh_host)
@@ -1177,8 +1185,7 @@ class SusOpsManager:
             update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
         )
         self._save()
-        if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._update_pac()
         self._log(f"[{tag}] Added PAC host '{host}'")
         self._emit_state(self._compute_state())
 
@@ -1199,8 +1206,7 @@ class SusOpsManager:
             raise ValueError(f"Host '{host}' not found{scope}")
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
-        if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._update_pac()
         self._log(f"Removed PAC host '{host}'")
         self._emit_state(self._compute_state())
 
@@ -1230,8 +1236,7 @@ class SusOpsManager:
             raise ValueError(f"PAC host '{host}' not found")
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
-        if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._update_pac()
         self._log(f"PAC host '{host}' {'enabled' if enabled else 'disabled'}")
         self._emit_state(self._compute_state())
 

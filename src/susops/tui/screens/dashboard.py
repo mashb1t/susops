@@ -473,7 +473,12 @@ class DashboardScreen(Screen):
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
-        status_str = "[green]● running[/green]" if cs.running else "[red]○ stopped[/red]"
+        if cs.running:
+            status_str = "[green]● running[/green]"
+        elif not cs.enabled:
+            status_str = "─ disabled"
+        else:
+            status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"
         fwd_summary = f"{len(forwards_local)}L {len(forwards_remote)}R"
 
