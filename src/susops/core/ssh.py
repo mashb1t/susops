@@ -176,13 +176,13 @@ def start_forward(
 ) -> None:
     """Spawn a ControlSlave to register a TCP port forward with the master.
 
-    The slave exits immediately once the master accepts the forward — the
-    MASTER process owns and holds the local TCP listener.  The slave PID is
-    not tracked because it is gone within milliseconds.
+    The slave stays alive for the lifetime of the forward — it binds the
+    local port and relays connections through the ControlMaster socket.
+    The slave PID is tracked via ProcessManager so stop_forward can kill it.
 
     Waits up to 10 s for the master socket to be ready before spawning so
     the slave always connects as a ControlSlave rather than opening a direct
-    SSH connection (which would bypass the master and hold the port itself).
+    SSH connection (which would bypass the master).
     """
     sock = socket_path(conn.tag, workspace)
 
@@ -199,14 +199,7 @@ def start_forward(
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(log_file, "a") as log:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    proc.wait(timeout=5)  # slave exits immediately in ControlSlave mode
+        process_mgr.start(name, cmd, stdout=log, stderr=log)
 
 
 def cancel_forward(
