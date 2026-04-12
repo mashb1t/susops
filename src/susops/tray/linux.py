@@ -165,8 +165,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self._item_stop.set_sensitive(not stopped)
             if hasattr(self, "_item_restart"):
                 self._item_restart.set_sensitive(not stopped)
-            if hasattr(self, "_item_test_any"):
-                self._item_test_any.set_sensitive(not stopped)
             if hasattr(self, "_item_test_all"):
                 self._item_test_all.set_sensitive(not stopped)
             self._rebuild_status_item(state)
@@ -269,6 +267,27 @@ class SusOpsLinuxTray(AbstractTrayApp):
         rm_item.set_submenu(rm_sub)
         self._menu.append(rm_item)
 
+        # ── Manage submenu ────────────────────────────────────────────────
+        manage_item = Gtk.MenuItem(label="Manage")
+        manage_sub = Gtk.Menu()
+        for label, cb in [
+            ("Toggle Connection Enabled…", self._on_toggle_connection),
+            ("Toggle Domain Enabled…", self._on_toggle_domain),
+            ("Toggle Forward Enabled…", self._on_toggle_forward),
+            None,  # separator
+            ("Start Connection…", self._on_start_connection),
+            ("Stop Connection…", self._on_stop_connection),
+            ("Restart Connection…", self._on_restart_connection),
+        ]:
+            if label is None:
+                manage_sub.append(Gtk.SeparatorMenuItem())
+            else:
+                si = Gtk.MenuItem(label=label)
+                si.connect("activate", cb)
+                manage_sub.append(si)
+        manage_item.set_submenu(manage_sub)
+        self._menu.append(manage_item)
+
         # ── Open Config ───────────────────────────────────────────────────
         i = Gtk.MenuItem(label="Open Config File")
         i.connect("activate", lambda _: self.do_open_config_file())
@@ -292,10 +311,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
         # ── Test submenu ──────────────────────────────────────────────────
         test_item = Gtk.MenuItem(label="Test")
         test_sub = Gtk.Menu()
-        self._item_test_any = Gtk.MenuItem(label="Test Any")
-        self._item_test_any.connect("activate", lambda _: self.do_test())
-        test_sub.append(self._item_test_any)
-        self._item_test_all = Gtk.MenuItem(label="Test All")
+        ti_conn = Gtk.MenuItem(label="Test Connection…")
+        ti_conn.connect("activate", self._on_test_connection)
+        test_sub.append(ti_conn)
+        ti_domain = Gtk.MenuItem(label="Test Domain…")
+        ti_domain.connect("activate", self._on_test_domain)
+        test_sub.append(ti_domain)
+        ti_fwd = Gtk.MenuItem(label="Test Forward…")
+        ti_fwd.connect("activate", self._on_test_forward)
+        test_sub.append(ti_fwd)
+        test_sub.append(Gtk.SeparatorMenuItem())
+        self._item_test_all = Gtk.MenuItem(label="Test All PAC Hosts")
         self._item_test_all.connect("activate", lambda _: self.do_test())
         test_sub.append(self._item_test_all)
         test_item.set_submenu(test_sub)
@@ -981,15 +1007,138 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self.do_remove_remote_forward(int(m.group(1)))
         return False
 
-    def _pick_from_list(self, title: str, label: str, items: list[str]) -> str | None:
+    def _on_toggle_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_connection_dialog)
+
+    def _show_toggle_connection_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = [f"[{'✓' if c.enabled else '✗'}] {c.tag}" for c in cfg.connections]
+        selected = self._pick_from_list("Toggle Connection Enabled", "Connection:", items, ok_label="Toggle")
+        if selected:
+            tag = selected.split("] ", 1)[-1]
+            self.do_toggle_connection_enabled(tag)
+        return False
+
+    def _on_toggle_domain(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_domain_dialog)
+
+    def _show_toggle_domain_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                enabled = h not in c.pac_hosts_disabled
+                items.append(f"[{'✓' if enabled else '✗'}] {h}")
+        selected = self._pick_from_list("Toggle Domain Enabled", "Domain:", items, ok_label="Toggle")
+        if selected:
+            host = selected.split("] ", 1)[-1]
+            self.do_toggle_pac_host_enabled(host)
+        return False
+
+    def _on_toggle_forward(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_forward_dialog)
+
+    def _show_toggle_forward_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Toggle Forward Enabled", "Forward:", items, ok_label="Toggle")
+        if selected:
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
+                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+        return False
+
+    def _on_start_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_start_connection_dialog)
+
+    def _show_start_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Start Connection", "Connection:", tags, ok_label="Start")
+        if selected:
+            self.do_start_connection(selected)
+        return False
+
+    def _on_stop_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_stop_connection_dialog)
+
+    def _show_stop_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Stop Connection", "Connection:", tags, ok_label="Stop")
+        if selected:
+            self.do_stop_connection(selected)
+        return False
+
+    def _on_restart_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_restart_connection_dialog)
+
+    def _show_restart_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Restart Connection", "Connection:", tags, ok_label="Restart")
+        if selected:
+            self.do_restart_connection(selected)
+        return False
+
+    def _on_test_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_test_connection_dialog)
+
+    def _show_test_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Test Connection", "Connection:", tags, ok_label="Test")
+        if selected:
+            self.do_test_connection(selected)
+        return False
+
+    def _on_test_domain(self, _) -> None:
+        self._GLib.idle_add(self._show_test_domain_dialog)
+
+    def _show_test_domain_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                items.append(f"[{c.tag}] {h}")
+        selected = self._pick_from_list("Test Domain", "Domain (via connection):", items, ok_label="Test")
+        if selected:
+            m = re.match(r"\[([^\]]+)\] (.+)", selected)
+            if m:
+                self.do_test_domain(m.group(2), m.group(1))
+        return False
+
+    def _on_test_forward(self, _) -> None:
+        self._GLib.idle_add(self._show_test_forward_dialog)
+
+    def _show_test_forward_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Test Forward", "Forward:", items, ok_label="Test")
+        if selected:
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
+        return False
+
+    def _pick_from_list(self, title: str, label: str, items: list[str], ok_label: str = "Remove") -> str | None:
         """Show a dialog with a dropdown list. Returns selected item or None."""
         Gtk = self._Gtk
         if not items:
-            _alert(Gtk, self._root, "Nothing to Remove", "The list is empty.")
+            _alert(Gtk, self._root, "Nothing to Select", "The list is empty.")
             return None
 
         dlg = Gtk.Dialog(title=title, transient_for=self._root, modal=True)
-        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Remove", Gtk.ResponseType.OK)
+        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, f"_{ok_label}", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
         dlg.set_default_size(340, -1)
 
