@@ -224,14 +224,33 @@ susops
 | `Ctrl+P` | Command palette      |
 | `q`      | Quit                 |
 
-#### Per screen
+#### Connection editor
 
-| Key      | Action                                          |
-|----------|-------------------------------------------------|
-| `Escape` | Back to dashboard                               |
-| `a`      | Add item (connection, PAC host, forward, share) |
-| `d`      | Delete / stop selected item                     |
-| `f`      | Fetch a remote shared file (share screen)       |
+| Key | Action                                                      |
+|-----|-------------------------------------------------------------|
+| `a` | Add item (connection, PAC host, forward)                    |
+| `d` | Delete selected item                                        |
+| `t` | Toggle enabled/disabled for selected connection, domain, or forward |
+| `e` | Test selected item (SSH ping, SOCKS curl, or port liveness) |
+| `s` | Start selected connection or forward                        |
+| `x` | Stop selected connection or forward                         |
+| `r` | Restart selected connection                                 |
+
+#### Share screen
+
+| Key | Action                           |
+|-----|----------------------------------|
+| `a` | Share a new file                 |
+| `f` | Fetch a remote shared file       |
+| `d` | Stop selected share              |
+| `s` | Restart a stopped share          |
+| `x` | Delete selected share            |
+
+#### Global per-screen
+
+| Key      | Action            |
+|----------|-------------------|
+| `Escape` | Back to dashboard |
 
 ### Screens
 
@@ -241,7 +260,7 @@ susops
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
 - **Logs** — RichLog of all tunnel output, auto-refreshed every 3 seconds
 
-**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
+**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete, `t` to toggle enabled/disabled, `e` to run a connectivity test for the selected item, `s`/`x`/`r` to start/stop/restart. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
 
 **Share screen** — split-pane: left list of shares with three-state indicators (green = running, dim = manually stopped, red = offline/connection down), right panel with file details, URL, password, access counts, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share, `s` to restart a stopped share, `x` to delete. Refreshes every 2 seconds via `set_interval` to reflect connection state changes.
 
@@ -373,9 +392,15 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running/partial/stopped). The menu provides Start, Stop, Restart, Test connections, Show status, browser launch, and Quit. State is polled every 5 seconds.
+The tray icon reflects the current state (running/partial/stopped). State is polled every 5 seconds. Both tray implementations support the same feature set via native dialogs:
 
-Both tray implementations support full CRUD for connections, PAC hosts, and port forwards (with bind address selection) via native dialogs.
+- **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
+- **Start / Stop / Restart All** — bulk lifecycle operations across all connections
+- **Test** — test SSH reachability for a specific connection, curl a domain through its SOCKS proxy, or check port liveness for a specific forward; "Test All PAC Hosts" bulk-tests every configured domain
+- **CRUD** — add/remove connections, PAC hosts, and port forwards (with bind address selection)
+- **Settings** — configure PAC port, stop-on-quit, and ephemeral ports
+- **Browser launch** — open Chrome or Firefox with the PAC URL pre-configured
+- **Quit**
 
 ---
 
@@ -389,9 +414,12 @@ connections:
   - tag: work
     ssh_host: user@bastion.example.com
     socks_proxy_port: 51235
+    enabled: true                       # false = skip this connection on start-all
     pac_hosts:
       - "*.internal.example.com"
       - "10.0.0.0/8"
+    pac_hosts_disabled:                 # hosts temporarily disabled without removal
+      - "*.staging.example.com"
     forwards:
       local:
         - src_port: 5432
@@ -401,6 +429,7 @@ connections:
           tag: postgres
           tcp: true
           udp: false
+          enabled: true                 # false = forward skipped on connection start
         - src_port: 5353
           src_addr: localhost
           dst_port: 53
@@ -408,6 +437,7 @@ connections:
           tag: dns
           tcp: false
           udp: true
+          enabled: true
         - src_port: 8080
           src_addr: localhost
           dst_port: 80
@@ -415,6 +445,7 @@ connections:
           tag: webui
           tcp: true
           udp: false
+          enabled: false
       remote: []
 susops_app:
   stop_on_quit: true
@@ -713,6 +744,18 @@ mgr.on_log = lambda msg: print(f"[LOG] {msg}")
 result = mgr.test("internal.example.com")
 print(result.success, result.latency_ms)
 
+# Test SSH reachability for a connection
+ok, msg = mgr.test_connection("work")
+print(ok, msg)   # True, "SSH OK (42 ms)"
+
+# Test a domain through a connection's SOCKS proxy
+ok, msg = mgr.test_domain("internal.example.com", conn_tag="work")
+print(ok, msg)   # True, "HTTP 200 (91 ms)"
+
+# Test liveness of a specific port forward
+results = mgr.test_forward("work", src_port=5432, direction="local")
+# {"tcp": (True, "port bound (PID 1234)"), "udp": (True, "socat running (PID 5678)")}
+
 # Share a file (multiple concurrent shares supported)
 from pathlib import Path
 info = mgr.share(Path("/tmp/file.txt"))
@@ -775,7 +818,7 @@ susops/
       app.tcss          # Global CSS theme
       screens/
         dashboard.py        # Split-pane dashboard (sidebar + tabbed detail)
-        connection_editor.py # CRUD editor with modal dialogs
+        connections.py      # CRUD editor with modal dialogs
         share.py            # File share + fetch screen
         config_editor.py    # Read-only YAML viewer
     tray/
