@@ -1,4 +1,4 @@
-"""SSH tunnel management using autossh (or ssh fallback) + ProcessManager.
+"""SSH tunnel management using ssh + ProcessManager.
 
 Architecture:
   - One ControlMaster process per connection (manages the multiplexed socket).
@@ -8,7 +8,6 @@ Architecture:
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -19,13 +18,11 @@ from susops.core.process import ProcessManager
 __all__ = [
     "build_ssh_cmd",          # legacy alias — kept for CLI compat
     "build_master_cmd",
-    "build_forward_cmd",
-    "start_tunnel",           # starts master + all configured forwards
+    "start_tunnel",           # starts master (forwards bundled in cmd)
     "start_master",
-    "start_forward",          # spawns ControlSlave; master holds port after slave exits
+    "start_forward",          # ssh -O forward — registers live forward via socket
     "cancel_forward",         # ssh -O cancel — releases master-held port
-    "stop_tunnel",            # stops all forward slaves + master
-    "stop_forward",           # legacy: kills slave PID (unused for TCP; kept for tests)
+    "stop_tunnel",            # stops master (and all its forwards)
     "is_tunnel_running",
     "is_socket_alive",
     "find_master_pid",
@@ -56,50 +53,23 @@ def socket_path(tag: str, workspace: Path) -> Path:
 def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
     """Build the ControlMaster command.
 
-    Uses autossh -M 0 when available: autossh restarts the ssh child
-    automatically on disconnect so tunnels survive without a running Python
-    process. Falls back to plain ssh when autossh is not installed — reconnect
-    still works via _ReconnectMonitor polling but requires susops to be running.
+    Intentionally contains no -L/-R forward flags — forwards are registered
+    live via ``start_forward`` (``ssh -O forward``) after the master socket is
+    ready. This keeps process arguments minimal and avoids exposing forward
+    destinations in ``ps aux``.
 
     ControlPersist is intentionally omitted: with -N the process stays in the
-    foreground with a stable, trackable PID.
+    foreground with a stable, trackable PID. Reconnection is handled by the
+    Python-side _ReconnectMonitor which restarts the master on dropout.
     """
-    binary = "autossh" if shutil.which("autossh") else "ssh"
-    cmd: list[str] = [binary]
-    if binary == "autossh":
-        cmd += ["-M", "0"]
-    cmd += [
+    return [
+        "ssh",
         "-N", "-T",
         "-D", str(conn.socks_proxy_port),
         "-o", "ControlMaster=yes",
         "-o", f"ControlPath={sock}",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
-        conn.ssh_host,
-    ]
-    return cmd
-
-
-def build_forward_cmd(
-    conn: Connection,
-    fw: PortForward,
-    direction: str,
-    sock: Path,
-) -> list[str]:
-    """Build a ControlSlave SSH command for a single port forward.
-
-    direction: "local" → -L, "remote" → -R
-    Attaches to the existing ControlMaster socket.
-    """
-    flag = "-L" if direction == "local" else "-R"
-    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
-
-    return [
-        "ssh",
-        "-N", "-T",
-        "-o", "ControlMaster=no",
-        "-o", f"ControlPath={sock}",
-        flag, fwd_spec,
         conn.ssh_host,
     ]
 
@@ -163,12 +133,8 @@ def start_master(
     log_file = workspace / "logs" / f"{name}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # AUTOSSH_GATETIME=0: don't penalise for failures during initial connection.
-    # AUTOSSH_POLL=30:    monitoring poll interval — matches ServerAliveInterval.
-    env = {"AUTOSSH_GATETIME": "0", "AUTOSSH_POLL": "30"}
-
     with open(log_file, "a") as log:
-        pid = process_mgr.start(name, cmd, env=env, stdout=log, stderr=log)
+        pid = process_mgr.start(name, cmd, stdout=log, stderr=log)
 
     return pid
 
@@ -177,18 +143,15 @@ def start_forward(
     conn: Connection,
     fw: PortForward,
     direction: str,
-    process_mgr: ProcessManager,
     workspace: Path,
 ) -> None:
-    """Spawn a ControlSlave to register a TCP port forward with the master.
+    """Register a TCP port forward with the running ControlMaster via ``ssh -O forward``.
 
-    The slave stays alive for the lifetime of the forward — it binds the
-    local port and relays connections through the ControlMaster socket.
-    The slave PID is tracked via ProcessManager so stop_forward can kill it.
+    Sends the forward request through the Unix socket — no SSH handshake,
+    no new TCP connection. The master holds the port until ``cancel_forward``
+    is called or the master exits.
 
-    Waits up to 10 s for the master socket to be ready before spawning so
-    the slave always connects as a ControlSlave rather than opening a direct
-    SSH connection (which would bypass the master).
+    Raises RuntimeError if the socket is not ready or the forward fails.
     """
     sock = socket_path(conn.tag, workspace)
 
@@ -199,13 +162,16 @@ def start_forward(
     else:
         raise RuntimeError(f"ControlMaster socket {sock} not ready after 10 s")
 
-    name = _forward_name(conn.tag, fw.tag or f"{direction}-{fw.src_port}")
-    cmd = build_forward_cmd(conn, fw, direction, sock)
-    log_file = workspace / "logs" / f"{name}.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(log_file, "a") as log:
-        process_mgr.start(name, cmd, stdout=log, stderr=log)
+    flag = "-L" if direction == "local" else "-R"
+    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
+    result = subprocess.run(
+        ["ssh", "-O", "forward", "-o", f"ControlPath={sock}", flag, fwd_spec, conn.ssh_host],
+        capture_output=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"ssh -O forward failed: {stderr}")
 
 
 def cancel_forward(
@@ -233,43 +199,17 @@ def cancel_forward(
         pass
 
 
-def stop_forward(
-    conn_tag: str,
-    fw_tag: str,
-    process_mgr: ProcessManager,
-) -> bool:
-    """Stop a single forward slave process.
-
-    Returns True if the process was stopped, False if it wasn't running.
-    """
-    name = _forward_name(conn_tag, fw_tag)
-    return process_mgr.stop(name)
-
-
 def start_tunnel(
     conn: Connection,
     process_mgr: ProcessManager,
     workspace: Path,
 ) -> int:
-    """Start the ControlMaster + all configured forward slaves.
+    """Start the ControlMaster for a connection.
 
-    Returns the PID of the master process.
+    All enabled TCP forwards are bundled in the master command and python
+    restarts them automatically on reconnect. Returns the PID of the master.
     """
-    master_pid = start_master(conn, process_mgr, workspace)
-
-    for fw in conn.forwards.local:
-        try:
-            start_forward(conn, fw, "local", process_mgr, workspace)
-        except Exception:
-            pass  # individual forward failures don't abort the tunnel
-
-    for fw in conn.forwards.remote:
-        try:
-            start_forward(conn, fw, "remote", process_mgr, workspace)
-        except Exception:
-            pass
-
-    return master_pid
+    return start_master(conn, process_mgr, workspace)
 
 
 def stop_tunnel(
@@ -278,28 +218,25 @@ def stop_tunnel(
     workspace: Path | None = None,
     ssh_host: str | None = None,
 ) -> bool:
-    """Stop all forward slaves for a connection, then stop the autossh master.
+    """Stop the ControlMaster for a connection.
 
-    Kills autossh first to halt the restart loop, then sends ``ssh -O exit``
-    through the socket to cleanly shut down any orphaned ssh child that autossh
-    did not yet signal. workspace and ssh_host are both required for the -O exit
-    step; if either is absent that step is skipped.
+    Sends SIGTERM to the ssh master process via ProcessManager, then sends
+    ``ssh -O exit`` through the socket for a clean shutdown. workspace and
+    ssh_host are both required for the -O exit step; if either is absent that
+    step is skipped.
 
     Returns True if the master was stopped, False if it wasn't running.
     """
-    # Stop all forward slaves (susops-fwd-{tag}-*)
+    # Clean up any lingering forward slave PIDs (no-op with Approach B but safe
+    # to keep for processes left over from older susops versions).
     prefix = f"{FWD_PROCESS_PREFIX}-{tag}-"
     for name in list(process_mgr.status_all().keys()):
         if name.startswith(prefix):
             process_mgr.stop(name)
 
-    # Kill autossh first — stops the restart loop so the ssh child is not
-    # immediately restarted after we issue -O exit below.
     stopped = process_mgr.stop(_master_name(tag))
 
-    # Best-effort: tell the ssh ControlMaster child to exit cleanly.
-    # autossh sends SIGHUP to the child on its own exit, but a brief race
-    # window means the child may still be alive for a moment.
+    # Best-effort clean shutdown via the ControlMaster socket.
     if workspace is not None and ssh_host is not None:
         sock = socket_path(tag, workspace)
         if sock.exists():
