@@ -10,9 +10,9 @@ from textual.containers import Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
-from susops.tui.screens.connection_editor import ConnectionEditorScreen
+from susops.tui.screens.connections import ConnectionsScreen
 from susops.tui.screens.dashboard import DashboardScreen
-from susops.tui.screens.share import ShareScreen
+from susops.tui.screens.shares import SharesScreen
 
 
 class _SusOpsCommands(Provider):
@@ -26,7 +26,7 @@ class _SusOpsCommands(Provider):
             ("Restart tunnels", app.action_restart_all, "Restart all SSH tunnels"),
             ("Dashboard", lambda: app.push_screen("dashboard"), "Go to dashboard"),
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
-            ("Share", lambda: app.push_screen("share"), "Share/fetch files"),
+            ("Shares", lambda: app.push_screen("shares"), "Share/fetch files"),
             ("Config", lambda: app.action_show_config(), "View config.yaml"),
             ("PAC file", lambda: app.action_show_pac(), "View PAC proxy config"),
             ("Quit", app.action_quit, "Quit SusOps"),
@@ -85,7 +85,7 @@ class SusOpsTuiApp(App):
 
     BINDINGS = [
         Binding("c", "push_screen('connections')", "Connections", show=False),
-        Binding("f", "push_screen('share')", "Share", show=False),
+        Binding("f", "push_screen('shares')", "Shares", show=False),
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
@@ -95,8 +95,8 @@ class SusOpsTuiApp(App):
 
     SCREENS = {
         "dashboard": DashboardScreen,
-        "connections": ConnectionEditorScreen,
-        "share": ShareScreen,
+        "connections": ConnectionsScreen,
+        "shares": SharesScreen,
     }
 
     COMMANDS = App.COMMANDS | {_SusOpsCommands}
