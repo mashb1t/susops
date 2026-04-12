@@ -1162,6 +1162,7 @@ class SusOpsManager:
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
                 if removed_fw.tcp:
                     cancel_forward(conn, removed_fw, direction, self.workspace)
+                    stop_forward(conn.tag, fw_tag, self._process_mgr)
                 stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
@@ -1206,7 +1207,10 @@ class SusOpsManager:
                         self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
                 elif not enabled:
                     if fw.tcp:
+                        # cancel_forward handles new-style ControlSlave forwards (master holds port).
+                        # stop_forward handles old-style direct-connection slaves (slave holds port).
                         cancel_forward(conn, fw, direction, self.workspace)
+                        stop_forward(conn_tag, fw_tag, self._process_mgr)
                     stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "conn_tag": conn_tag,
