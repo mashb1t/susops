@@ -290,7 +290,12 @@ class _ReconnectMonitor:
 class SusOpsManager:
     """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
-    def __init__(self, workspace: Path = _WORKSPACE_DEFAULT, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        workspace: Path = _WORKSPACE_DEFAULT,
+        verbose: bool = False,
+        _enable_background_threads: bool = True,
+    ) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
         self._verbose = verbose
@@ -306,7 +311,8 @@ class SusOpsManager:
         )
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
         self._reconnect_monitor = _ReconnectMonitor(self)
-        self._reconnect_monitor.start()
+        if _enable_background_threads:
+            self._reconnect_monitor.start()
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None

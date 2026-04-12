@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+from unittest.mock import patch
 
 
 def _kill_susops_ssh_processes() -> None:
@@ -38,6 +39,14 @@ def _kill_susops_ssh_processes() -> None:
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _suppress_background_threads():
+    """Disable reconnect monitor thread and desktop notifications for all tests."""
+    with patch("susops.facade._ReconnectMonitor.start"), \
+         patch("susops.facade.SusOpsManager._notify"):
+        yield
 
 
 @pytest.fixture(autouse=True, scope="session")
