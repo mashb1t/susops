@@ -216,6 +216,9 @@ class ConnectionEditorScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
+        Binding("s", "start_conn", "Start"),
+        Binding("x", "stop_conn", "Stop"),
+        Binding("r", "restart_conn", "Restart"),
         Binding("t", "toggle_forward", "Toggle enable"),
     ]
 
@@ -261,10 +264,10 @@ class ConnectionEditorScreen(Screen):
         tbl.add_columns("Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
-        tbl.add_columns("Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
+        tbl.add_columns("", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
 
         tbl = self.query_one("#tbl-remote", DataTable)
-        tbl.add_columns("Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
+        tbl.add_columns("", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
 
     @work(thread=True)
     def _bg_reload(self) -> None:
@@ -320,8 +323,9 @@ class ConnectionEditorScreen(Screen):
         tbl.clear()
         for conn in config.connections:
             for fw in conn.forwards.local:
+                dot = "[green]●[/green]" if fw.enabled else "[dim]○[/dim]"
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), fw.src_addr,
+                    dot, conn.tag, str(fw.src_port), fw.src_addr,
                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
                     key=f"{conn.tag}:L:{fw.src_port}",
                 )
@@ -333,8 +337,9 @@ class ConnectionEditorScreen(Screen):
         tbl.clear()
         for conn in config.connections:
             for fw in conn.forwards.remote:
+                dot = "[green]●[/green]" if fw.enabled else "[dim]○[/dim]"
                 tbl.add_row(
-                    conn.tag, str(fw.src_port), fw.src_addr,
+                    dot, conn.tag, str(fw.src_port), fw.src_addr,
                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
                     key=f"{conn.tag}:R:{fw.src_port}",
                 )
@@ -426,10 +431,44 @@ class ConnectionEditorScreen(Screen):
         self.refresh_bindings()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
         if action == "toggle_forward":
-            active = self.query_one("#editor-tabs", TabbedContent).active
             return active in ("tab-local", "tab-remote")
+        if action in ("start_conn", "stop_conn", "restart_conn"):
+            return active == "tab-connections"
         return True
+
+    def _selected_conn_tag(self) -> str | None:
+        tbl = self.query_one("#tbl-connections", DataTable)
+        if tbl.row_count == 0:
+            return None
+        try:
+            return str(tbl.get_row_at(tbl.cursor_row)[1])
+        except (IndexError, Exception):
+            return None
+
+    def action_start_conn(self) -> None:
+        if tag := self._selected_conn_tag():
+            self._run_conn_action("start", tag)
+
+    def action_stop_conn(self) -> None:
+        if tag := self._selected_conn_tag():
+            self._run_conn_action("stop", tag)
+
+    def action_restart_conn(self) -> None:
+        if tag := self._selected_conn_tag():
+            self._run_conn_action("restart", tag)
+
+    @work(thread=True)
+    def _run_conn_action(self, action: str, tag: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        if action == "start":
+            mgr.start(tag=tag)
+        elif action == "stop":
+            mgr.stop(tag=tag)
+        elif action == "restart":
+            mgr.restart(tag=tag)
+        self.app.call_from_thread(self._bg_reload)
 
     def action_toggle_forward(self) -> None:
         """Toggle enabled on the currently selected forward row."""
@@ -447,8 +486,8 @@ class ConnectionEditorScreen(Screen):
             return
         try:
             row = tbl.get_row_at(tbl.cursor_row)
-            conn_tag = str(row[0])
-            src_port = int(str(row[1]))
+            conn_tag = str(row[1])
+            src_port = int(str(row[2]))
         except (IndexError, ValueError):
             return
         try:
@@ -548,7 +587,7 @@ class ConnectionEditorScreen(Screen):
         if tbl.row_count == 0:
             return
         row = tbl.get_row_at(tbl.cursor_row)
-        port = int(str(row[1]))
+        port = int(str(row[2]))
         try:
             if direction == "local":
                 self.app.manager.remove_local_forward(port)  # type: ignore[attr-defined]
