@@ -11,7 +11,6 @@ depends=(
     'python-gobject'
     'gtk3'
     'libayatana-appindicator'
-    'autossh'
     'python-pydantic'
     'python-psutil'
 )
