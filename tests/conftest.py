@@ -8,34 +8,33 @@ from unittest.mock import patch
 
 
 def _kill_susops_ssh_processes() -> None:
-    """Kill ssh/autossh processes that were spawned by tests.
+    """Kill ssh processes that were spawned by tests.
 
     Test-spawned processes are identified by having a ControlPath socket
     inside a pytest temp directory (e.g. /tmp/pytest-of-<user>/...).
     This avoids touching the user's own SSH connections.
     """
-    for binary in ("ssh", "autossh"):
-        try:
-            out = subprocess.check_output(
-                ["pgrep", "-a", "-x", binary],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except subprocess.CalledProcessError:
-            continue  # no matching processes
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-a", "-x", "ssh"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return  # no matching processes
 
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if "/tmp/pytest" not in line and "/pytest-of-" not in line:
-                continue
-            pid_str = line.split()[0]
-            try:
-                pid = int(pid_str)
-                os.kill(pid, signal.SIGTERM)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "/tmp/pytest" not in line and "/pytest-of-" not in line:
+            continue
+        pid_str = line.split()[0]
+        try:
+            pid = int(pid_str)
+            os.kill(pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
 
 
 import pytest
