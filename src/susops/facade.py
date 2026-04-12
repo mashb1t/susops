@@ -1180,6 +1180,25 @@ class SusOpsManager:
     def remove_remote_forward(self, src_port: int) -> None:
         self._remove_forward(src_port, "remote")
 
+    def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
+        """Set the enabled flag on a forward."""
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection {conn_tag!r} not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        for fw in forwards:
+            if fw.src_port == src_port:
+                fw.enabled = enabled
+                self._save()
+                self._emit("forward", {
+                    "conn_tag": conn_tag,
+                    "src_port": src_port,
+                    "direction": direction,
+                    "enabled": enabled,
+                })
+                return
+        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+
     def toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> bool:
         """Toggle enabled on a forward. Returns the new enabled state."""
         conn = get_connection(self.config, conn_tag)
@@ -1189,14 +1208,7 @@ class SusOpsManager:
         for fw in forwards:
             if fw.src_port == src_port:
                 new_enabled = not fw.enabled
-                fw.enabled = new_enabled
-                self._save()
-                self._emit("forward", {
-                    "conn_tag": conn_tag,
-                    "src_port": src_port,
-                    "direction": direction,
-                    "enabled": new_enabled,
-                })
+                self.set_forward_enabled(conn_tag, src_port, direction, new_enabled)
                 return new_enabled
         raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
 

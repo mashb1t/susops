@@ -216,10 +216,9 @@ class ConnectionEditorScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
-        Binding("s", "start_conn", "Start"),
-        Binding("x", "stop_conn", "Stop"),
-        Binding("r", "restart_conn", "Restart"),
-        Binding("t", "toggle_forward", "Toggle enable"),
+        Binding("s", "start_item", "Start"),
+        Binding("x", "stop_item", "Stop"),
+        Binding("r", "restart_item", "Restart"),
     ]
 
     DEFAULT_CSS = """
@@ -264,10 +263,10 @@ class ConnectionEditorScreen(Screen):
         tbl.add_columns("Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
-        tbl.add_columns("", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
+        tbl.add_columns("Status", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
 
         tbl = self.query_one("#tbl-remote", DataTable)
-        tbl.add_columns("", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
+        tbl.add_columns("Status", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
 
     @work(thread=True)
     def _bg_reload(self) -> None:
@@ -432,11 +431,11 @@ class ConnectionEditorScreen(Screen):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         active = self.query_one("#editor-tabs", TabbedContent).active
-        if action == "toggle_forward":
-            return active in ("tab-local", "tab-remote")
-        if action in ("start_conn", "stop_conn", "restart_conn"):
-            return active == "tab-connections"
+        if action in ("start_item", "stop_item", "restart_item"):
+            return active in ("tab-connections", "tab-local", "tab-remote")
         return True
+
+    # --- Unified start / stop / restart (connections + forwards) ---
 
     def _selected_conn_tag(self) -> str | None:
         tbl = self.query_one("#tbl-connections", DataTable)
@@ -447,58 +446,72 @@ class ConnectionEditorScreen(Screen):
         except (IndexError, Exception):
             return None
 
-    def action_start_conn(self) -> None:
-        if tag := self._selected_conn_tag():
-            self._run_conn_action("start", tag)
+    def _selected_forward(self, direction: str) -> tuple[str, int] | None:
+        tbl_id = "#tbl-local" if direction == "local" else "#tbl-remote"
+        tbl = self.query_one(tbl_id, DataTable)
+        if tbl.row_count == 0:
+            return None
+        try:
+            row = tbl.get_row_at(tbl.cursor_row)
+            return str(row[1]), int(str(row[2]))
+        except (IndexError, ValueError):
+            return None
 
-    def action_stop_conn(self) -> None:
-        if tag := self._selected_conn_tag():
-            self._run_conn_action("stop", tag)
+    def action_start_item(self) -> None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-connections":
+            if tag := self._selected_conn_tag():
+                self._run_conn_op("start", tag)
+        elif active in ("tab-local", "tab-remote"):
+            direction = "local" if active == "tab-local" else "remote"
+            if sel := self._selected_forward(direction):
+                self._run_forward_op("start", sel[0], sel[1], direction)
 
-    def action_restart_conn(self) -> None:
-        if tag := self._selected_conn_tag():
-            self._run_conn_action("restart", tag)
+    def action_stop_item(self) -> None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-connections":
+            if tag := self._selected_conn_tag():
+                self._run_conn_op("stop", tag)
+        elif active in ("tab-local", "tab-remote"):
+            direction = "local" if active == "tab-local" else "remote"
+            if sel := self._selected_forward(direction):
+                self._run_forward_op("stop", sel[0], sel[1], direction)
+
+    def action_restart_item(self) -> None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-connections":
+            if tag := self._selected_conn_tag():
+                self._run_conn_op("restart", tag)
+        elif active in ("tab-local", "tab-remote"):
+            direction = "local" if active == "tab-local" else "remote"
+            if sel := self._selected_forward(direction):
+                self._run_forward_op("restart", sel[0], sel[1], direction)
 
     @work(thread=True)
-    def _run_conn_action(self, action: str, tag: str) -> None:
+    def _run_conn_op(self, op: str, tag: str) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
-        if action == "start":
+        if op == "start":
             mgr.start(tag=tag)
-        elif action == "stop":
+        elif op == "stop":
             mgr.stop(tag=tag)
-        elif action == "restart":
+        elif op == "restart":
             mgr.restart(tag=tag)
         self.app.call_from_thread(self._bg_reload)
 
-    def action_toggle_forward(self) -> None:
-        """Toggle enabled on the currently selected forward row."""
-        active = self.query_one("#editor-tabs", TabbedContent).active
-        if active == "tab-local":
-            direction = "local"
-            tbl_id = "#tbl-local"
-        elif active == "tab-remote":
-            direction = "remote"
-            tbl_id = "#tbl-remote"
-        else:
-            return
-        tbl = self.query_one(tbl_id, DataTable)
-        if tbl.row_count == 0:
-            return
+    @work(thread=True)
+    def _run_forward_op(self, op: str, conn_tag: str, src_port: int, direction: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
         try:
-            row = tbl.get_row_at(tbl.cursor_row)
-            conn_tag = str(row[1])
-            src_port = int(str(row[2]))
-        except (IndexError, ValueError):
-            return
-        try:
-            new_state = self.app.manager.toggle_forward_enabled(conn_tag, src_port, direction)  # type: ignore[attr-defined]
-            self.notify(
-                f"Forward {src_port} {'enabled' if new_state else 'disabled'}",
-                timeout=2,
-            )
-            self._bg_reload()
+            if op == "start":
+                mgr.set_forward_enabled(conn_tag, src_port, direction, True)
+            elif op == "stop":
+                mgr.set_forward_enabled(conn_tag, src_port, direction, False)
+            elif op == "restart":
+                mgr.set_forward_enabled(conn_tag, src_port, direction, False)
+                mgr.set_forward_enabled(conn_tag, src_port, direction, True)
         except Exception as exc:
-            self.notify(str(exc), severity="error", timeout=3)
+            self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+        self.app.call_from_thread(self._bg_reload)
 
     # --- Connection CRUD ---
 
