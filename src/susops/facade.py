@@ -23,7 +23,7 @@ from susops.core.config import (
     save_config,
 )
 from susops.core.pac import PacServer, write_pac_file
-from susops.core.ports import get_random_free_port
+from susops.core.ports import get_random_free_port, is_port_free
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
@@ -1656,6 +1656,73 @@ class SusOpsManager:
 
     def test_all(self) -> list[TestResult]:
         return [self.test(host) for conn in self.config.connections for host in conn.pac_hosts]
+
+    def test_connection(self, conn_tag: str) -> TestResult:
+        """Test SSH reachability for a specific connection."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            return TestResult(target=conn_tag, success=False, message="Connection not found")
+        start = time.monotonic()
+        ok = test_ssh_connectivity(conn.ssh_host)
+        latency = (time.monotonic() - start) * 1000
+        return TestResult(
+            target=conn.ssh_host,
+            success=ok,
+            message="SSH reachable" if ok else "SSH unreachable",
+            latency_ms=latency if ok else None,
+        )
+
+    def test_domain(self, host: str, conn_tag: str) -> TestResult:
+        """Test domain reachability via the specified connection's SOCKS proxy."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None or conn.socks_proxy_port == 0:
+            return TestResult(target=host, success=False, message="No active SOCKS proxy")
+        proxy = f"socks5h://127.0.0.1:{conn.socks_proxy_port}"
+        clean_host = host.lstrip("*.")
+        start = time.monotonic()
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                 "--proxy", proxy, "--max-time", "10", f"http://{clean_host}"],
+                capture_output=True, timeout=15, text=True,
+            )
+            latency = (time.monotonic() - start) * 1000
+            success = result.returncode == 0
+            return TestResult(
+                target=host, success=success,
+                message=f"HTTP {result.stdout.strip()}" if success else result.stderr.strip(),
+                latency_ms=latency if success else None,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            return TestResult(target=host, success=False, message=str(exc))
+
+    def test_forward(self, conn_tag: str, src_port: int, direction: str) -> dict[str, bool]:
+        """Check if a port forward is active.
+
+        Returns a dict with keys "tcp" and/or "udp" mapped to True/False.
+        For local TCP: checks whether src_port is bound (not free).
+        For remote TCP: checks whether the ControlMaster socket is alive.
+        For UDP (either direction): checks whether the socat lsocat process is alive.
+        """
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection '{conn_tag}' not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        fw = next((f for f in forwards if f.src_port == src_port), None)
+        if fw is None:
+            raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        results: dict[str, bool] = {}
+        if fw.tcp:
+            if direction == "local":
+                results["tcp"] = not is_port_free(src_port)
+            else:
+                results["tcp"] = is_socket_alive(conn_tag, self.workspace)
+        if fw.udp:
+            results["udp"] = _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
+        return results
 
     # ------------------------------------------------------------------ #
     # Utilities

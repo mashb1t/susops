@@ -223,6 +223,27 @@ class _AddForwardDialog(ModalScreen):
         })
 
 
+class _TestResultsDialog(ModalScreen):
+    """Modal: shows test results for a connection, domain, or forward."""
+
+    BINDINGS = [Binding("escape,q", "dismiss", "Close")]
+
+    def __init__(self, title: str, lines: list[str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._title = title
+        self._lines = lines
+
+    def compose(self) -> ComposeResult:
+        with Static(classes="modal-dialog"):
+            yield Label(f"[bold]{self._title}[/bold]")
+            yield Static("\n".join(self._lines), id="test-results", markup=True)
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Close", id="btn-close", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss()
+
+
 class ConnectionsScreen(Screen):
     """TabbedContent CRUD screen for connections, PAC hosts, and port forwards."""
 
@@ -231,6 +252,7 @@ class ConnectionsScreen(Screen):
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
         Binding("t", "toggle_enabled", "Toggle"),
+        Binding("e", "test_item", "Test"),
         Binding("s", "start_item", "Start"),
         Binding("x", "stop_item", "Stop"),
         Binding("r", "restart_item", "Restart"),  # connections only
@@ -563,6 +585,92 @@ class ConnectionsScreen(Screen):
             direction = "local" if active == "tab-local" else "remote"
             if sel := self._selected_forward(direction):
                 self._run_forward_op("restart", sel[0], sel[1], direction)
+
+    def action_test_item(self) -> None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-connections":
+            if tag := self._selected_conn_tag():
+                self._run_test_conn(tag)
+        elif active == "tab-pac":
+            tbl = self.query_one("#tbl-pac", DataTable)
+            if tbl.row_count == 0:
+                return
+            try:
+                row = tbl.get_row_at(tbl.cursor_row)
+                host, conn_tag = str(row[1]), str(row[2])
+                self._run_test_domain(host, conn_tag)
+            except (IndexError, ValueError):
+                pass
+        elif active in ("tab-local", "tab-remote"):
+            direction = "local" if active == "tab-local" else "remote"
+            if sel := self._selected_forward(direction):
+                self._run_test_forward(sel[0], sel[1], direction)
+
+    @work(thread=True)
+    def _run_test_conn(self, conn_tag: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        config = mgr.list_config()
+        conn = next((c for c in config.connections if c.tag == conn_tag), None)
+        ssh_host = conn.ssh_host if conn else conn_tag
+        result = mgr.test_connection(conn_tag)
+        if result.success:
+            dot = "[green]●[/green]"
+            msg = f"{result.message}  [dim]{result.latency_ms:.0f}ms[/dim]"
+        else:
+            dot = "[red]○[/red]"
+            msg = result.message
+        lines = [
+            f"[dim]SSH host:[/dim]  {ssh_host}",
+            f"{dot}  {msg}",
+        ]
+        self.app.call_from_thread(
+            self.app.push_screen, _TestResultsDialog(f"Test: {conn_tag}", lines)
+        )
+
+    @work(thread=True)
+    def _run_test_domain(self, host: str, conn_tag: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        result = mgr.test_domain(host, conn_tag)
+        if result.success:
+            dot = "[green]●[/green]"
+            msg = f"{result.message}  [dim]{result.latency_ms:.0f}ms[/dim]"
+        else:
+            dot = "[red]○[/red]"
+            msg = result.message
+        lines = [
+            f"[dim]Connection:[/dim] {conn_tag}",
+            f"[dim]Host:[/dim]       {host}",
+            f"{dot}  {msg}",
+        ]
+        self.app.call_from_thread(
+            self.app.push_screen, _TestResultsDialog(f"Test: {host}", lines)
+        )
+
+    @work(thread=True)
+    def _run_test_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        try:
+            results = mgr.test_forward(conn_tag, src_port, direction)
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.app.push_screen,
+                _TestResultsDialog(f"Test: {direction} {src_port}", [f"[red]{exc}[/red]"]),
+            )
+            return
+        lines: list[str] = [f"[dim]Connection:[/dim]  {conn_tag}",
+                             f"[dim]Direction:[/dim]   {direction}  port {src_port}"]
+        for proto, ok in results.items():
+            dot = "[green]●[/green]" if ok else "[red]○[/red]"
+            if proto == "tcp":
+                detail = "port bound" if ok else "port not bound"
+                if direction == "remote":
+                    detail = "master socket alive" if ok else "master socket dead"
+            else:
+                detail = "socat process running" if ok else "socat process not running"
+            lines.append(f"{dot}  {proto.upper()}  {detail}")
+        self.app.call_from_thread(
+            self.app.push_screen, _TestResultsDialog(f"Test: {direction} :{src_port}", lines)
+        )
 
     def action_toggle_enabled(self) -> None:
         active = self.query_one("#editor-tabs", TabbedContent).active
