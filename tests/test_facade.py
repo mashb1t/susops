@@ -665,3 +665,28 @@ def test_restore_shares_missing_file_logs_warning(tmp_path):
     )
     # No server should be running for this share
     assert mgr.list_shares() == [] or all(not s.running for s in mgr.list_shares())
+
+
+def test_disabled_forward_not_started(tmp_path):
+    """Forwards with enabled=False are skipped during start()."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("demo", "user@host")
+    mgr.add_local_forward("demo", PortForward(
+        src_port=5432, dst_port=5432, tag="pg", enabled=False
+    ))
+
+    started_forwards = []
+
+    def fake_start_forward(conn, fw, direction, pm, ws):
+        started_forwards.append(fw.tag or str(fw.src_port))
+
+    with patch("susops.facade.start_forward", side_effect=fake_start_forward), \
+         patch("susops.facade.start_master", return_value=1234), \
+         patch("susops.core.ssh.is_socket_alive", return_value=True):
+        mgr.start(tag="demo")
+
+    assert "pg" not in started_forwards, "Disabled forward must not be started"

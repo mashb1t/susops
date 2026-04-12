@@ -216,6 +216,7 @@ class ConnectionEditorScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
+        Binding("t", "toggle_forward", "Toggle enable"),
     ]
 
     DEFAULT_CSS = """
@@ -420,6 +421,36 @@ class ConnectionEditorScreen(Screen):
             self._do_rm_forward("local")
         elif active == "tab-remote":
             self._do_rm_forward("remote")
+
+    def action_toggle_forward(self) -> None:
+        """Toggle enabled on the currently selected forward row."""
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-local":
+            direction = "local"
+            tbl_id = "#tbl-local"
+        elif active == "tab-remote":
+            direction = "remote"
+            tbl_id = "#tbl-remote"
+        else:
+            return
+        tbl = self.query_one(tbl_id, DataTable)
+        if tbl.row_count == 0:
+            return
+        try:
+            row = tbl.get_row_at(tbl.cursor_row)
+            conn_tag = str(row[0])
+            src_port = int(str(row[1]))
+        except (IndexError, ValueError):
+            return
+        try:
+            new_state = self.app.manager.toggle_forward_enabled(conn_tag, src_port, direction)  # type: ignore[attr-defined]
+            self.notify(
+                f"Forward {src_port} {'enabled' if new_state else 'disabled'}",
+                timeout=2,
+            )
+            self._bg_reload()
+        except Exception as exc:
+            self.notify(str(exc), severity="error", timeout=3)
 
     # --- Connection CRUD ---
 

@@ -61,6 +61,7 @@ class PortForward(BaseModel):
     dst_port: int
     tcp: bool = True
     udp: bool = False
+    enabled: bool = True
 
     @model_validator(mode="before")
     @classmethod

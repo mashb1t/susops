@@ -180,3 +180,13 @@ def test_load_missing_config_returns_defaults(tmp_path):
     cfg = load_config(tmp_path)
     assert cfg.connections == []
     assert cfg.pac_server_port == 0
+
+
+def test_port_forward_enabled_defaults_true():
+    fw = PortForward(src_port=80, dst_port=80)
+    assert fw.enabled is True
+
+
+def test_port_forward_can_be_disabled():
+    fw = PortForward(src_port=80, dst_port=80, enabled=False)
+    assert fw.enabled is False

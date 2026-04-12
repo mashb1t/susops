@@ -64,23 +64,61 @@ class _BandwidthSampler:
     """Background thread that samples per-connection bandwidth every 2 seconds."""
 
     INTERVAL = 2.0
+    _HISTORY_MAX = 60
+    _HISTORY_FILE = "bandwidth_history.json"
 
     def __init__(
             self,
             process_mgr: ProcessManager,
+            workspace: "Path | None" = None,
             on_sample: Callable[[str, float, float], None] | None = None,
     ) -> None:
         self._mgr = process_mgr
+        self._workspace = workspace
         self._rates: dict[str, tuple[float, float]] = {}
         self._totals: dict[str, tuple[float, float]] = {}  # tag -> (rx_total_bytes, tx_total_bytes)
         self._prev_net: tuple[float, float, float] | None = None
         self._prev_chars: dict[str, float] = {}
         self._lock = threading.Lock()
         self._on_sample = on_sample
+        # Per-tag rolling history: tag -> list of [rx_bps, tx_bps] (up to _HISTORY_MAX samples)
+        self._history: dict[str, list[list[float]]] = {}
+        self._load_history()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="susops-bw-sampler"
         )
         self._thread.start()
+
+    def _history_path(self) -> "Path | None":
+        if self._workspace is None:
+            return None
+        return self._workspace / self._HISTORY_FILE
+
+    def _load_history(self) -> None:
+        """Load persisted bandwidth history from disk if available."""
+        path = self._history_path()
+        if path is None or not path.exists():
+            return
+        try:
+            import json
+            data = json.loads(path.read_text())
+            if isinstance(data, dict):
+                for tag, samples in data.items():
+                    if isinstance(samples, list):
+                        self._history[tag] = samples[-self._HISTORY_MAX:]
+        except Exception:
+            pass
+
+    def _save_history(self) -> None:
+        """Persist the current bandwidth history to disk (called under self._lock)."""
+        path = self._history_path()
+        if path is None:
+            return
+        try:
+            import json
+            path.write_text(json.dumps(self._history))
+        except Exception:
+            pass
 
     def _run(self) -> None:
         while True:
@@ -169,6 +207,14 @@ class _BandwidthSampler:
                         prev_rx, prev_tx = self._totals.get(tag, (0.0, 0.0))
                         self._totals[tag] = (prev_rx + rx * dt, prev_tx + tx * dt)
 
+                    # Append to rolling per-tag history and persist
+                    for tag, (rx, tx) in new_rates.items():
+                        tag_hist = self._history.setdefault(tag, [])
+                        tag_hist.append([rx, tx])
+                        if len(tag_hist) > self._HISTORY_MAX:
+                            del tag_hist[:-self._HISTORY_MAX]
+                    self._save_history()
+
             self._prev_net = (sys_rx, sys_tx, now)
             self._prev_chars = dict(proc_chars)
 
@@ -256,7 +302,7 @@ class SusOpsManager:
         self._share_servers: dict[int, tuple[ShareServer, ShareInfo]] = {}
         self._log_buffer: deque[str] = deque(maxlen=500)
         self._bw_sampler = _BandwidthSampler(
-            self._process_mgr, on_sample=self._on_bandwidth
+            self._process_mgr, workspace=workspace, on_sample=self._on_bandwidth
         )
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
         self._reconnect_monitor = _ReconnectMonitor(self)
@@ -639,6 +685,9 @@ class SusOpsManager:
 
                 # Start configured local/remote forwards as slaves
                 for fw in conn.forwards.local:
+                    if not fw.enabled:
+                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
+                        continue
                     try:
                         if fw.tcp:
                             start_forward(conn, fw, "local", self._process_mgr, self.workspace)
@@ -648,6 +697,9 @@ class SusOpsManager:
                         self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 for fw in conn.forwards.remote:
+                    if not fw.enabled:
+                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
+                        continue
                     try:
                         if fw.tcp:
                             start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
@@ -1121,6 +1173,26 @@ class SusOpsManager:
 
     def remove_remote_forward(self, src_port: int) -> None:
         self._remove_forward(src_port, "remote")
+
+    def toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> bool:
+        """Toggle enabled on a forward. Returns the new enabled state."""
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection {conn_tag!r} not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        for fw in forwards:
+            if fw.src_port == src_port:
+                new_enabled = not fw.enabled
+                fw.enabled = new_enabled
+                self._save()
+                self._emit("forward", {
+                    "conn_tag": conn_tag,
+                    "src_port": src_port,
+                    "direction": direction,
+                    "enabled": new_enabled,
+                })
+                return new_enabled
+        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
 
     # ------------------------------------------------------------------ #
     # File sharing
