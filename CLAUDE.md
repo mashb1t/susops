@@ -134,12 +134,12 @@ flowchart TD
 
 **Facade is the only entry point.** Never import from `susops.core.*` in a frontend — always go through `SusOpsManager`. The facade owns config I/O, PID file management, bandwidth sampling, and the PAC/share/status server lifecycle.
 
-**SSH ControlMaster + slaves.** Each connection runs one ControlMaster process (`ssh -M -N -D socks_port`) and zero or more slave forward processes (`ssh -O forward -L/-R`). Slaves attach to the master's Unix socket (`~/.susops/pids/susops-<tag>.sock`). This avoids re-authenticating per-forward and gives independent lifecycle control per forward.
+**SSH ControlMaster + `-O forward`/`-O cancel`.** Each connection runs one ControlMaster process. The master command contains only the SOCKS proxy (`-D socks_port`) — no `-L`/`-R` flags — so process arguments stay minimal and forward destinations are never visible in `ps aux`. Forwards are registered live via `ssh -O forward` through the Unix socket (`~/.susops/sockets/<tag>.sock`) and released via `ssh -O cancel`. On reconnect, `_ReconnectMonitor` detects the socket coming back and calls `_reregister_forwards` to re-register all enabled forwards. No separate slave processes are tracked — the master owns all port bindings.
 
-- `start_master(conn, ...)` — starts the ControlMaster, waits for socket
-- `start_forward(conn, fw, direction, ...)` — attaches a slave to the existing socket
-- `stop_forward(conn_tag, fw_tag, ...)` — kills only that slave
-- `stop_tunnel(conn_tag, ...)` — kills all slaves + the master
+- `start_master(conn, ...)` — starts the ControlMaster; enabled TCP forwards are bundled in the command and python restarts them atomically on reconnect
+- `start_forward(conn, fw, direction, workspace)` — registers a forward live via `ssh -O forward` (no process spawned; master holds the port)
+- `cancel_forward(conn, fw, direction, workspace)` — releases a master-held port via `ssh -O cancel`
+- `stop_tunnel(conn_tag, ...)` — stops the ssh master (and all its forwards)
 - `find_master_pid(tag, workspace)` — scans `/proc/*/cmdline` to recover PID when the PID file is stale
 - `is_socket_alive(tag, workspace)` — runs `ssh -O check` against the socket to verify liveness
 
