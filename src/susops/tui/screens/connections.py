@@ -20,7 +20,24 @@ from textual.widgets import (
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
 from susops.core.ssh_config import get_ssh_hosts
-from susops.tui.screens import compose_footer, proto_label
+from susops.tui.screens import compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
+
+
+def _fw_dot(mgr, fw: PortForward, conn_tag: str, direction: str, conn_running: bool) -> str:
+    """Return the status dot for a port forward, handling TCP+UDP partial state."""
+    if not fw.enabled:
+        return "─"
+    if not conn_running:
+        return "[red]○[/red]"
+    # Connection is running: TCP is up (via master). For TCP+UDP, also check UDP.
+    if fw.tcp and fw.udp:
+        try:
+            udp_up = mgr.is_udp_forward_running(conn_tag, fw.src_port, direction)
+        except Exception:
+            udp_up = False
+        partial = not udp_up  # TCP up, UDP down
+        return status_dot(running=True, partial=partial)
+    return "[green]●[/green]"
 
 
 class _AddConnectionDialog(ModalScreen):
@@ -213,6 +230,7 @@ class ConnectionsScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_item", "Add"),
         Binding("d", "delete_item", "Delete"),
+        Binding("t", "toggle_enabled", "Toggle"),
         Binding("s", "start_item", "Start"),
         Binding("x", "stop_item", "Stop"),
         Binding("r", "restart_item", "Restart"),  # connections only
@@ -223,7 +241,7 @@ class ConnectionsScreen(Screen):
     #editor-tabs { height: 1fr; }
     DataTable { height: 1fr; }
     #detail-preview {
-        height: 6;
+        height: 7;
         border: round $primary-darken-1;
         border-title-align: left;
         padding: 0 1;
@@ -257,7 +275,7 @@ class ConnectionsScreen(Screen):
         tbl.add_columns("Status", "Tag", "SSH Host", "SOCKS Port", "Domains", "Forwards")
 
         tbl = self.query_one("#tbl-pac", DataTable)
-        tbl.add_columns("Host", "Connection")
+        tbl.add_columns("Status", "Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
         tbl.add_columns("Status", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
@@ -285,14 +303,15 @@ class ConnectionsScreen(Screen):
             except Exception:
                 status_map = {}
 
-        config = self.app.manager.list_config()  # type: ignore[attr-defined]
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        config = mgr.list_config()
 
         tbl = self.query_one("#tbl-connections", DataTable)
         cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
             running = status_map.get(conn.tag, False)
-            dot = "[green]●[/green]" if running else "[red]○[/red]"
+            dot = status_dot(running, conn.enabled)
             tbl.add_row(
                 dot,
                 conn.tag,
@@ -309,8 +328,12 @@ class ConnectionsScreen(Screen):
         cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
+            conn_running = status_map.get(conn.tag, False)
             for host in conn.pac_hosts:
-                tbl.add_row(host, conn.tag, key=f"{conn.tag}:{host}")
+                dot = status_dot(conn_running)
+                tbl.add_row(dot, host, conn.tag, key=f"{conn.tag}:{host}:on")
+            for host in conn.pac_hosts_disabled:
+                tbl.add_row("─", host, conn.tag, key=f"{conn.tag}:{host}:off")
         if tbl.row_count:
             tbl.move_cursor(row=min(cur, tbl.row_count - 1))
 
@@ -318,8 +341,9 @@ class ConnectionsScreen(Screen):
         cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
+            conn_running = status_map.get(conn.tag, False)
             for fw in conn.forwards.local:
-                dot = "[green]●[/green]" if fw.enabled else "[dim]○[/dim]"
+                dot = _fw_dot(mgr, fw, conn.tag, "local", conn_running)
                 tbl.add_row(
                     dot, conn.tag, str(fw.src_port), fw.src_addr,
                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
@@ -332,8 +356,9 @@ class ConnectionsScreen(Screen):
         cur = tbl.cursor_row
         tbl.clear()
         for conn in config.connections:
+            conn_running = status_map.get(conn.tag, False)
             for fw in conn.forwards.remote:
-                dot = "[green]●[/green]" if fw.enabled else "[dim]○[/dim]"
+                dot = _fw_dot(mgr, fw, conn.tag, "remote", conn_running)
                 tbl.add_row(
                     dot, conn.tag, str(fw.src_port), fw.src_addr,
                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
@@ -350,7 +375,8 @@ class ConnectionsScreen(Screen):
         preview = self.query_one("#detail-preview", Static)
 
         try:
-            config = self.app.manager.list_config()  # type: ignore[attr-defined]
+            mgr = self.app.manager  # type: ignore[attr-defined]
+            config = mgr.list_config()
             conn_map = {c.tag: c for c in config.connections}
         except Exception:
             preview.update("")
@@ -365,14 +391,28 @@ class ConnectionsScreen(Screen):
                 row = tbl.get_row_at(tbl.cursor_row)
                 tag = str(row[1])
                 conn = conn_map.get(tag)
-                if conn:
-                    preview.update(
-                        f"SSH host: {conn.ssh_host}  |  Port: {conn.socks_proxy_port or 'auto'}"
-                        f"  |  Domains: {len(conn.pac_hosts)}"
-                        f"  |  Forwards: {len(conn.forwards.local) + len(conn.forwards.remote)}"
-                    )
-                else:
-                    preview.update(f"Tag: {tag}")
+                if not conn:
+                    preview.update("")
+                    return
+                rx, tx = mgr.get_bandwidth(tag)
+                rx_total, tx_total = mgr.get_bandwidth_totals(tag)
+                uptime = mgr.get_uptime(tag)
+                port = conn.socks_proxy_port or "auto"
+                enabled_local = sum(1 for f in conn.forwards.local if f.enabled)
+                enabled_remote = sum(1 for f in conn.forwards.remote if f.enabled)
+                total_fwd = len(conn.forwards.local) + len(conn.forwards.remote)
+                enabled_fwd = enabled_local + enabled_remote
+                uptime_str = f"{int(uptime)}s" if uptime and uptime < 60 else (f"{int(uptime // 60)}m{int(uptime % 60)}s" if uptime else "—")
+                lines = [
+                    f"[bold]{conn.ssh_host}[/bold]   SOCKS ::{port}   up {uptime_str}",
+                    f"[green]↓[/green] {fmt_bps(rx):>8}  total [cyan]{fmt_bytes(rx_total)}[/cyan]   "
+                    f"[yellow]↑[/yellow] {fmt_bps(tx):>8}  total [cyan]{fmt_bytes(tx_total)}[/cyan]",
+                    f"Forwards  {enabled_fwd}/{total_fwd} enabled  "
+                    f"({enabled_local} local · {enabled_remote} remote)   "
+                    f"PAC domains  {len(conn.pac_hosts)}",
+                    f"Proxy  curl --proxy socks5h://127.0.0.1:{port} http://example.com",
+                ]
+                preview.update("\n".join(lines))
             except Exception:
                 preview.update("")
 
@@ -383,19 +423,55 @@ class ConnectionsScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                preview.update(f"Pattern: {row[0]}  |  Connection: {row[1]}")
+                pattern, conn_tag = str(row[1]), str(row[2])
+                conn = conn_map.get(conn_tag)
+                port = conn.socks_proxy_port if conn else "?"
+                example = pattern.lstrip("*.")
+                lines = [
+                    f"Pattern     [bold]{pattern}[/bold]",
+                    f"Connection  {conn_tag}",
+                    f"Proxy       SOCKS5 127.0.0.1:{port}",
+                    f"Example     curl --proxy socks5h://127.0.0.1:{port} http://{example}",
+                ]
+                preview.update("\n".join(lines))
             except Exception:
                 preview.update("")
 
         elif active in ("tab-local", "tab-remote"):
-            tbl_id = "#tbl-local" if active == "tab-local" else "#tbl-remote"
+            direction = "local" if active == "tab-local" else "remote"
+            tbl_id = f"#tbl-{direction}"
             tbl = self.query_one(tbl_id, DataTable)
             if tbl.row_count == 0:
                 preview.update("")
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                preview.update(f"Connection: {row[0]}  |  Port: {row[1]}")
+                # row: Status, Connection, src_port, src_addr, dst_port, dst_addr, Protocol, Label
+                conn_tag = str(row[1])
+                src_port, src_addr = int(str(row[2])), str(row[3])
+                dst_port, dst_addr = int(str(row[4])), str(row[5])
+                proto = str(row[6])
+                label = str(row[7])
+                conn = conn_map.get(conn_tag)
+
+                enabled_fwds = (conn.forwards.local if direction == "local" else conn.forwards.remote) if conn else []
+                fw = next((f for f in enabled_fwds if f.src_port == src_port), None)
+                enabled = fw.enabled if fw else False
+                state = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
+
+                port_free = is_port_free(src_port)
+                port_status = "[green]✓ free[/green]" if port_free else "[red]✗ in use[/red]"
+
+                fwd_spec = f"{src_addr}:{src_port}:{dst_addr}:{dst_port}"
+                flag = "-L" if direction == "local" else "-R"
+
+                lines = [
+                    f"[bold]{label or conn_tag}[/bold]   {state}   {proto}   via {conn_tag}",
+                    f"Bind     {src_addr}:{src_port}  →  {dst_addr}:{dst_port}",
+                    f"Port {src_port}  {port_status}",
+                    f"Forward  ssh -O forward {flag} {fwd_spec}",
+                ]
+                preview.update("\n".join(lines))
             except Exception:
                 preview.update("")
         else:
@@ -434,6 +510,8 @@ class ConnectionsScreen(Screen):
             return on_conn or on_forward
         if action == "restart_item":
             return on_conn  # restart not applicable to forwards
+        if action == "toggle_enabled":
+            return active in ("tab-connections", "tab-pac", "tab-local", "tab-remote")
         return True
 
     def _selected_conn_tag(self) -> str | None:
@@ -485,6 +563,60 @@ class ConnectionsScreen(Screen):
             direction = "local" if active == "tab-local" else "remote"
             if sel := self._selected_forward(direction):
                 self._run_forward_op("restart", sel[0], sel[1], direction)
+
+    def action_toggle_enabled(self) -> None:
+        active = self.query_one("#editor-tabs", TabbedContent).active
+        if active == "tab-connections":
+            if tag := self._selected_conn_tag():
+                self._run_toggle_conn(tag)
+        elif active == "tab-pac":
+            tbl = self.query_one("#tbl-pac", DataTable)
+            if tbl.row_count == 0:
+                return
+            try:
+                row = tbl.get_row_at(tbl.cursor_row)
+                host, conn_tag = str(row[1]), str(row[2])
+                self._run_toggle_pac(host, conn_tag)
+            except (IndexError, ValueError):
+                pass
+        elif active in ("tab-local", "tab-remote"):
+            direction = "local" if active == "tab-local" else "remote"
+            if sel := self._selected_forward(direction):
+                self._run_toggle_forward(sel[0], sel[1], direction)
+
+    @work(thread=True)
+    def _run_toggle_conn(self, tag: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        config = mgr.list_config()
+        conn = next((c for c in config.connections if c.tag == tag), None)
+        if conn:
+            try:
+                mgr.set_connection_enabled(tag, not conn.enabled)
+            except Exception as exc:
+                self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+        self.app.call_from_thread(self._bg_reload)
+
+    @work(thread=True)
+    def _run_toggle_pac(self, host: str, conn_tag: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        config = mgr.list_config()
+        conn = next((c for c in config.connections if c.tag == conn_tag), None)
+        if conn:
+            currently_enabled = host in conn.pac_hosts
+            try:
+                mgr.set_pac_host_enabled(host, not currently_enabled, conn_tag=conn_tag)
+            except Exception as exc:
+                self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+        self.app.call_from_thread(self._bg_reload)
+
+    @work(thread=True)
+    def _run_toggle_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        try:
+            mgr.toggle_forward_enabled(conn_tag, src_port, direction)
+        except Exception as exc:
+            self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+        self.app.call_from_thread(self._bg_reload)
 
     @work(thread=True)
     def _run_conn_op(self, op: str, tag: str) -> None:
@@ -559,8 +691,8 @@ class ConnectionsScreen(Screen):
         if tbl.row_count == 0:
             return
         row = tbl.get_row_at(tbl.cursor_row)
-        host = str(row[0])
-        conn_tag = str(row[1])
+        host = str(row[1])
+        conn_tag = str(row[2])
         try:
             self.app.manager.remove_pac_host(host, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()

@@ -50,3 +50,52 @@ def proto_label(fw: _PortForward) -> str:
     if fw.udp:
         return "UDP"
     return "TCP"
+
+
+def status_dot(running: bool, enabled: bool = True, partial: bool = False) -> str:
+    """Return Rich markup for the status indicator dot.
+
+    partial=True (TCP+UDP where one protocol is down) → yellow ●
+    running=True → green ●
+    enabled=True, not running → red ○
+    enabled=False → ─ (disabled)
+    """
+    if not enabled:
+        return "─"
+    if partial:
+        return "[yellow]●[/yellow]"
+    if running:
+        return "[green]●[/green]"
+    return "[red]○[/red]"
+
+
+def share_status_dot(running: bool, stopped: bool) -> str:
+    """Return Rich markup for a share status dot.
+
+    running=True → green ●
+    stopped=True (manually stopped) → ─
+    otherwise (connection down) → red ○
+    """
+    if running:
+        return "[green]●[/green]"
+    if stopped:
+        return "─"
+    return "[red]○[/red]"
+
+
+def fmt_bps(bps: float) -> str:
+    if bps >= 1_048_576:
+        return f"{bps / 1_048_576:.1f}MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.0f}kB/s"
+    return f"{bps:.0f}B/s"
+
+
+def fmt_bytes(b: float) -> str:
+    if b >= 1_073_741_824:
+        return f"{b / 1_073_741_824:.1f}GB"
+    if b >= 1_048_576:
+        return f"{b / 1_048_576:.1f}MB"
+    if b >= 1024:
+        return f"{b / 1024:.0f}kB"
+    return f"{b:.0f}B"

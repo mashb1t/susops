@@ -10,7 +10,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
 from textual import work
 from susops.core.ports import is_port_free, validate_port
-from susops.tui.screens import compose_footer, open_in_explorer
+from susops.tui.screens import compose_footer, open_in_explorer, share_status_dot
 
 
 class _AddShareDialog(ModalScreen):
@@ -149,7 +149,7 @@ class SharesScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
-        Binding("a", "add_share", "Add share"),
+        Binding("a", "add_share", "Add"),
         Binding("f", "fetch_file", "Fetch"),
         Binding("d", "stop_share", "Stop"),
         Binding("s", "start_share", "Start"),
@@ -177,12 +177,7 @@ class SharesScreen(Screen):
 
         def _label(info) -> str:
             name = Path(info.file_path).name
-            if info.running:
-                dot = "[green]●[/green]"
-            elif info.stopped:
-                dot = "[dim]○[/dim]"
-            else:
-                dot = "[red]○[/red]"
+            dot = share_status_dot(info.running, info.stopped)
             return f"{dot} {name}  {info.port}"
 
         new_ports = [i.port for i in new_shares]

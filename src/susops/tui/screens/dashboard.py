@@ -25,15 +25,10 @@ from textual_plotext import PlotextPlot
 
 import susops
 from susops.core.types import StatusResult
-from susops.tui.screens import open_in_explorer, open_path, proto_label, share_name_markup
+from susops.tui.screens import fmt_bps, fmt_bytes, open_in_explorer, open_path, proto_label, share_name_markup, status_dot, share_status_dot
 
 
-def _fmt_bps(bps: float) -> str:
-    if bps >= 1_048_576:
-        return f"{bps / 1_048_576:.1f}MB/s"
-    if bps >= 1024:
-        return f"{bps / 1024:.0f}kB/s"
-    return f"{bps:.0f}B/s"
+_fmt_bps = fmt_bps
 
 
 def _scale_data(data: list[float]) -> tuple[list[float], str]:
@@ -54,15 +49,7 @@ def _yticks(max_val: float, unit: str, n: int = 6) -> tuple[list[float], list[st
     return ticks, labels
 
 
-def _fmt_bytes(b: float) -> str:
-    """Format raw bytes as a human-readable string (e.g. 1.2 GB, 450 MB, 12 kB)."""
-    if b >= 1_073_741_824:
-        return f"{b / 1_073_741_824:.1f}GB"
-    if b >= 1_048_576:
-        return f"{b / 1_048_576:.1f}MB"
-    if b >= 1024:
-        return f"{b / 1024:.0f}kB"
-    return f"{b:.0f}B"
+_fmt_bytes = fmt_bytes
 
 
 def _fmt_uptime(seconds: float) -> str:
@@ -86,7 +73,7 @@ def _fmt_bw_line(
     tag_width: int = 25,
     show_dot: bool = True,
 ) -> str:
-    dot = "[green]●[/green]" if running else "[red]○[/red]"
+    dot = status_dot(running)
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
@@ -116,7 +103,7 @@ def _fmt_forward_remote(fw, prefix: str = "") -> str:
 
 def _fmt_share_line(info, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
-    dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
+    dot = share_status_dot(info.running, info.stopped)
     name = Path(info.file_path).name
     link = share_name_markup(info.file_path, name)
     if info.running:
@@ -343,7 +330,7 @@ class DashboardScreen(Screen):
 
         label_texts: list[str] = []
         for cs in result.connection_statuses:
-            dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
+            dot = status_dot(cs.running, cs.enabled)
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
             label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>7}↓")
