@@ -476,7 +476,7 @@ class DashboardScreen(Screen):
         if cs.running:
             status_str = "[green]● running[/green]"
         elif not cs.enabled:
-            status_str = "─ disabled"
+            status_str = "[dim]─ disabled[/dim]"
         else:
             status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"

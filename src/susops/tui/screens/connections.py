@@ -223,26 +223,6 @@ class _AddForwardDialog(ModalScreen):
         })
 
 
-class _TestResultsDialog(ModalScreen):
-    """Modal: shows test results for a connection, domain, or forward."""
-
-    BINDINGS = [Binding("escape,q", "dismiss", "Close")]
-
-    def __init__(self, title: str, lines: list[str], **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._title = title
-        self._lines = lines
-
-    def compose(self) -> ComposeResult:
-        with Static(classes="modal-dialog"):
-            yield Label(f"[bold]{self._title}[/bold]")
-            yield Static("\n".join(self._lines), id="test-results", markup=True)
-            with Horizontal(classes="modal-btn-row"):
-                yield Button("Close", id="btn-close", variant="primary")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss()
-
 
 class ConnectionsScreen(Screen):
     """TabbedContent CRUD screen for connections, PAC hosts, and port forwards."""
@@ -619,12 +599,10 @@ class ConnectionsScreen(Screen):
         else:
             dot = "[red]○[/red]"
             msg = result.message
-        lines = [
-            f"[dim]SSH host:[/dim]  {ssh_host}",
-            f"{dot}  {msg}",
-        ]
+        body = f"[dim]SSH host:[/dim]  {ssh_host}\n{dot}  {msg}"
+        severity = "information" if result.success else "error"
         self.app.call_from_thread(
-            self.app.push_screen, _TestResultsDialog(f"Test: {conn_tag}", lines)
+            self.app.notify, body, title=f"Test: {conn_tag}", severity=severity, timeout=8.0
         )
 
     @work(thread=True)
@@ -637,13 +615,10 @@ class ConnectionsScreen(Screen):
         else:
             dot = "[red]○[/red]"
             msg = result.message
-        lines = [
-            f"[dim]Connection:[/dim] {conn_tag}",
-            f"[dim]Host:[/dim]       {host}",
-            f"{dot}  {msg}",
-        ]
+        body = f"[dim]Connection:[/dim] {conn_tag}\n[dim]Host:[/dim]       {host}\n{dot}  {msg}"
+        severity = "information" if result.success else "error"
         self.app.call_from_thread(
-            self.app.push_screen, _TestResultsDialog(f"Test: {host}", lines)
+            self.app.notify, body, title=f"Test: {host}", severity=severity, timeout=8.0
         )
 
     @work(thread=True)
@@ -653,23 +628,30 @@ class ConnectionsScreen(Screen):
             results = mgr.test_forward(conn_tag, src_port, direction)
         except Exception as exc:
             self.app.call_from_thread(
-                self.app.push_screen,
-                _TestResultsDialog(f"Test: {direction} {src_port}", [f"[red]{exc}[/red]"]),
+                self.app.notify, f"[red]{exc}[/red]",
+                title=f"Test: {direction} {src_port}", severity="error", timeout=8.0,
             )
             return
-        lines: list[str] = [f"[dim]Connection:[/dim]  {conn_tag}",
-                             f"[dim]Direction:[/dim]   {direction}  port {src_port}"]
+        parts: list[str] = [
+            f"[dim]Connection:[/dim]  {conn_tag}",
+            f"[dim]Direction:[/dim]   {direction}  port {src_port}",
+        ]
+        all_ok = True
         for proto, ok in results.items():
             dot = "[green]●[/green]" if ok else "[red]○[/red]"
+            if not ok:
+                all_ok = False
             if proto == "tcp":
                 detail = "port bound" if ok else "port not bound"
                 if direction == "remote":
                     detail = "master socket alive" if ok else "master socket dead"
             else:
                 detail = "socat process running" if ok else "socat process not running"
-            lines.append(f"{dot}  {proto.upper()}  {detail}")
+            parts.append(f"{dot}  {proto.upper()}  {detail}")
+        severity = "information" if all_ok else "error"
         self.app.call_from_thread(
-            self.app.push_screen, _TestResultsDialog(f"Test: {direction} :{src_port}", lines)
+            self.app.notify, "\n".join(parts),
+            title=f"Test: {direction} :{src_port}", severity=severity, timeout=8.0,
         )
 
     def action_toggle_enabled(self) -> None:
