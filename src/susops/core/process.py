@@ -44,7 +44,9 @@ class ProcessManager:
             start_new_session=True,  # detach from terminal
         )
         pid = proc.pid
-        self._pid_file(name).write_text(str(pid))
+        pid_file = self._pid_file(name)
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(pid))
         return pid
 
     def stop(self, name: str, force: bool = False) -> bool:

@@ -152,6 +152,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._GLib.idle_add(_update)
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
+        if state == getattr(self, "_last_menu_state", None):
+            return  # nothing changed — skip idle_add entirely
+        self._last_menu_state = state
         running = state == ProcessState.RUNNING
         stopped = state == ProcessState.STOPPED
 
@@ -462,8 +465,21 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._item_status.set_label(f"{dot} SusOps: {state.value}")
 
     def _refresh_share_submenu(self) -> bool:
-        """Rebuild the dynamic share items in the File Transfer submenu."""
+        """Rebuild the dynamic share items in the File Transfer submenu only when changed."""
+        from pathlib import Path as _Path
         Gtk = self._Gtk
+        new_shares = self.manager.list_shares()
+
+        def _share_key(info):
+            return (info.port, info.running, info.file_path)
+
+        old_keys = [_share_key(s) for s in self._active_shares]
+        new_keys = [_share_key(s) for s in new_shares]
+        if old_keys == new_keys:
+            return False  # nothing changed — don't touch the menu
+
+        self._active_shares = new_shares
+
         # Remove old dynamic items (everything after the separator)
         sep_reached = False
         for child in list(self._ft_sub.get_children()):
@@ -472,11 +488,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if child is self._ft_sep:
                 sep_reached = True
 
-        self._active_shares = self.manager.list_shares()
         self._ft_sep.set_visible(bool(self._active_shares))
 
         for info in self._active_shares:
-            name = __import__("pathlib").Path(info.file_path).name
+            name = _Path(info.file_path).name
             dot = "●" if info.running else "○"
             label = f"{dot} {name} ({info.port})"
             item = Gtk.MenuItem(label=label)
@@ -590,7 +605,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if pac_text != "0" and not _is_valid_port(pac_text):
                 _alert(Gtk, dlg, "Invalid Port", "PAC Server Port must be between 1 and 65535.")
                 continue
-            if pac_text != "0" and not is_port_free(int(pac_text)):
+            current_pac_port = self.manager.config.pac_server_port
+            pac_port_changed = int(pac_text) != current_pac_port
+            if pac_text != "0" and pac_port_changed and not is_port_free(int(pac_text)):
                 _alert(Gtk, dlg, "Port In Use", f"Port {pac_text} is already in use.")
                 continue
 
