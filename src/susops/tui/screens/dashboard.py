@@ -134,6 +134,7 @@ class DashboardScreen(Screen):
         Binding("R", "restart_all", "Restart all"),
         Binding("c", "push_screen('connections')", "Connections"),
         Binding("f", "push_screen('share')", "Share"),
+        Binding("e", "edit_config", "Edit config"),
     ]
 
     DEFAULT_CSS = """
@@ -202,7 +203,6 @@ class DashboardScreen(Screen):
                 yield Static("", id="share-content", markup=True)
         with Horizontal(classes="footer-row"):
             yield Footer()
-            yield Static("[@click=screen.edit_config()]Edit config[/]", classes="footer-edit-config", markup=True)
             yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
 
     def on_mount(self) -> None:
@@ -211,7 +211,6 @@ class DashboardScreen(Screen):
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
-        self.query_one(".footer-edit-config").display = False  # hidden until Config tab is active
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log
@@ -555,7 +554,7 @@ class DashboardScreen(Screen):
             self._load_config_tab()
         elif pane_id == "tab-pac":
             self._load_pac_tab()
-        self.query_one(".footer-edit-config").display = (pane_id == "tab-config")
+        self.refresh_bindings()
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#detail-tabs", TabbedContent).active = tab_id
@@ -686,12 +685,9 @@ class DashboardScreen(Screen):
         open_in_explorer(file_path)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.
-
-        When _selected_tag is None, the lowercase s/x/r actions already call
-        mgr.start/stop/restart(None) and operate on all connections. The uppercase
-        S/X/R variants are redundant in this state, so hide them from the footer.
-        """
         if action in ("start_all", "stop_all", "restart_all") and self._selected_tag is None:
             return False
+        if action == "edit_config":
+            active = self.query_one("#detail-tabs", TabbedContent).active
+            return active == "tab-config"
         return True
