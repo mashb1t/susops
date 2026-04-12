@@ -53,29 +53,26 @@ def socket_path(tag: str, workspace: Path) -> Path:
 
 
 def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
-    """Build the ControlMaster SSH command.
+    """Build the ControlMaster command using autossh for automatic reconnection.
 
-    Always uses plain ssh. ControlPersist is intentionally omitted: with
-    -N the SOCKS proxy holds the TCP connection alive so the master stays
-    in the foreground with a stable, trackable PID. ControlPersist=yes
-    causes the master to immediately fork into background (different PID),
-    making PID tracking unreliable. ServerAliveInterval handles dead
-    connections; reconnection on failure is handled by the facade's
-    polling loop.
+    autossh -M 0 disables the built-in port probe and relies on SSH's own
+    ServerAliveInterval/CountMax for dead-connection detection, then restarts
+    the ssh child automatically. The autossh process is what's tracked by PID
+    file; the ssh child is a subprocess of autossh.
+
+    ControlPersist is intentionally omitted: with -N the process stays in the
+    foreground with a stable, trackable PID.
     """
-    cmd: list[str] = ["ssh"]
-
-    cmd += [
+    return [
+        "autossh", "-M", "0",
         "-N", "-T",
         "-D", str(conn.socks_proxy_port),
         "-o", "ControlMaster=yes",
         "-o", f"ControlPath={sock}",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
+        conn.ssh_host,
     ]
-
-    cmd.append(conn.ssh_host)
-    return cmd
 
 
 def build_forward_cmd(
@@ -161,8 +158,12 @@ def start_master(
     log_file = workspace / "logs" / f"{name}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # AUTOSSH_GATETIME=0: don't penalise for failures during initial connection.
+    # AUTOSSH_POLL=30:    monitoring poll interval — matches ServerAliveInterval.
+    env = {"AUTOSSH_GATETIME": "0", "AUTOSSH_POLL": "30"}
+
     with open(log_file, "a") as log:
-        pid = process_mgr.start(name, cmd, stdout=log, stderr=log)
+        pid = process_mgr.start(name, cmd, env=env, stdout=log, stderr=log)
 
     return pid
 
@@ -272,11 +273,12 @@ def stop_tunnel(
     workspace: Path | None = None,
     ssh_host: str | None = None,
 ) -> bool:
-    """Stop all forward slaves for a connection, then stop the ControlMaster.
+    """Stop all forward slaves for a connection, then stop the autossh master.
 
-    If workspace and ssh_host are provided, sends ``ssh -O exit`` first so
-    that the ControlPersist background master exits cleanly instead of
-    remaining as a zombie.
+    Kills autossh first to halt the restart loop, then sends ``ssh -O exit``
+    through the socket to cleanly shut down any orphaned ssh child that autossh
+    did not yet signal. workspace and ssh_host are both required for the -O exit
+    step; if either is absent that step is skipped.
 
     Returns True if the master was stopped, False if it wasn't running.
     """
@@ -286,9 +288,13 @@ def stop_tunnel(
         if name.startswith(prefix):
             process_mgr.stop(name)
 
-    # Tell the ControlPersist background master to exit gracefully before
-    # we SIGTERM autossh; without this the backgrounded ssh master keeps
-    # running after autossh dies.
+    # Kill autossh first — stops the restart loop so the ssh child is not
+    # immediately restarted after we issue -O exit below.
+    stopped = process_mgr.stop(_master_name(tag))
+
+    # Best-effort: tell the ssh ControlMaster child to exit cleanly.
+    # autossh sends SIGHUP to the child on its own exit, but a brief race
+    # window means the child may still be alive for a moment.
     if workspace is not None and ssh_host is not None:
         sock = socket_path(tag, workspace)
         if sock.exists():
@@ -298,10 +304,10 @@ def stop_tunnel(
                     capture_output=True,
                     timeout=3,
                 )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
 
-    return process_mgr.stop(_master_name(tag))
+    return stopped
 
 
 def is_tunnel_running(tag: str, process_mgr: ProcessManager) -> bool:

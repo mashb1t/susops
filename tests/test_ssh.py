@@ -37,6 +37,8 @@ def test_socket_path(conn, workspace):
 def test_build_master_cmd_socks(conn, workspace):
     sock = socket_path(conn.tag, workspace)
     cmd = build_master_cmd(conn, sock)
+    assert cmd[0] == "autossh"
+    assert "-M" in cmd and "0" in cmd
     assert "-D" in cmd
     assert "1080" in cmd
     assert "-N" in cmd

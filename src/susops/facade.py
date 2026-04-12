@@ -238,11 +238,12 @@ class _BandwidthSampler:
 
 
 class _ReconnectMonitor:
-    """Background thread that restarts dead SSH ControlMasters.
+    """Background thread that watches for autossh-driven reconnections.
 
     Tracks which connection tags were intentionally started. Every 15 seconds
-    it checks socket liveness for each tracked tag and calls SusOpsManager.start()
-    to reconnect any that have died.
+    it checks socket liveness per tag. autossh handles the actual reconnect;
+    this monitor detects when the socket comes back alive after a dropout and
+    re-registers all configured forwards against the fresh ControlMaster.
     """
 
     INTERVAL = 15.0
@@ -250,6 +251,7 @@ class _ReconnectMonitor:
     def __init__(self, mgr: "SusOpsManager") -> None:
         self._mgr = mgr
         self._intended: set[str] = set()
+        self._socket_was_alive: dict[str, bool] = {}
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -265,10 +267,12 @@ class _ReconnectMonitor:
     def mark_running(self, tag: str) -> None:
         with self._lock:
             self._intended.add(tag)
+            self._socket_was_alive[tag] = True  # assume alive at start
 
     def mark_stopped(self, tag: str) -> None:
         with self._lock:
             self._intended.discard(tag)
+            self._socket_was_alive.pop(tag, None)
 
     def _run(self) -> None:
         while not self._stop_event.wait(timeout=self.INTERVAL):
@@ -281,11 +285,20 @@ class _ReconnectMonitor:
                     pass
 
     def _check(self, tag: str) -> None:
-        if not is_socket_alive(tag, self._mgr.workspace):
-            self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
+        alive = is_socket_alive(tag, self._mgr.workspace)
+        with self._lock:
+            was_alive = self._socket_was_alive.get(tag, True)
+            self._socket_was_alive[tag] = alive
+
+        if was_alive and not alive:
+            # Socket just went down — autossh will reconnect automatically.
+            self._mgr._log(f"[{tag}] Connection lost — autossh reconnecting...")
             self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
             self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
-            self._mgr.start(tag=tag)
+        elif not was_alive and alive:
+            # Socket came back — re-register all forwards against the new master.
+            self._mgr._log(f"[{tag}] Connection restored — re-registering forwards...")
+            self._mgr._reregister_forwards(tag)
 
 
 class SusOpsManager:
@@ -873,6 +886,61 @@ class SusOpsManager:
             if sock.exists():
                 break
             time.sleep(0.1)
+
+    def _reregister_forwards(self, tag: str) -> None:
+        """Re-register all enabled forwards after autossh restores the master.
+
+        Called by _ReconnectMonitor when the ControlMaster socket comes back
+        alive. Re-spawns ControlSlave processes for every enabled TCP/UDP
+        forward and active share forward — the fresh master starts with no
+        forwards registered so they must all be re-established.
+        """
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None:
+            return
+
+        # Clean up stale UDP processes — they died with the previous master.
+        stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+
+        for fw in conn.forwards.local:
+            if not fw.enabled:
+                continue
+            try:
+                if fw.tcp:
+                    start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
+
+        for fw in conn.forwards.remote:
+            if not fw.enabled:
+                continue
+            try:
+                if fw.tcp:
+                    start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
+
+        for share_port, (_server, share_info) in list(self._share_servers.items()):
+            if share_info.conn_tag != tag:
+                continue
+            fw = PortForward(
+                src_port=share_port, dst_port=share_port,
+                src_addr="localhost", dst_addr="localhost",
+                tag=f"share-{share_port}",
+            )
+            try:
+                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._log(f"[{tag}] Share forward {share_port} failed to re-register: {exc}")
+
+        pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}")
+        self._emit("state", {"tag": tag, "running": True, "pid": pid})
+        self._notify(f"SusOps [{tag}]", "Connection restored")
 
     def stop(self, keep_ports: bool = False, tag: str | None = None) -> StopResult:
         self._reload_config()
