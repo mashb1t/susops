@@ -218,7 +218,7 @@ class ConnectionEditorScreen(Screen):
         Binding("d", "delete_item", "Delete"),
         Binding("s", "start_item", "Start"),
         Binding("x", "stop_item", "Stop"),
-        Binding("r", "restart_item", "Restart"),
+        Binding("r", "restart_item", "Restart"),  # connections only
     ]
 
     DEFAULT_CSS = """
@@ -431,11 +431,13 @@ class ConnectionEditorScreen(Screen):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         active = self.query_one("#editor-tabs", TabbedContent).active
-        if action in ("start_item", "stop_item", "restart_item"):
-            return active in ("tab-connections", "tab-local", "tab-remote")
+        on_forward = active in ("tab-local", "tab-remote")
+        on_conn = active == "tab-connections"
+        if action in ("start_item", "stop_item"):
+            return on_conn or on_forward
+        if action == "restart_item":
+            return on_conn  # restart not applicable to forwards
         return True
-
-    # --- Unified start / stop / restart (connections + forwards) ---
 
     def _selected_conn_tag(self) -> str | None:
         tbl = self.query_one("#tbl-connections", DataTable)

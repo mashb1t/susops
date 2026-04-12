@@ -154,7 +154,6 @@ class ShareScreen(Screen):
         Binding("d", "stop_share", "Stop"),
         Binding("s", "start_share", "Start"),
         Binding("x", "delete_share", "Delete"),
-        Binding("r", "refresh", "Refresh"),
     ]
 
     def compose(self) -> ComposeResult:

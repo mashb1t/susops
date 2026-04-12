@@ -592,13 +592,17 @@ class DashboardScreen(Screen):
                 domain_lines.append(_fmt_domain_line(host, prefix))
             data = self._conn_data.get(conn.tag, {})
             for fw in data.get("forwards_local", []):
-                forward_lines.append(_fmt_forward_local(fw, prefix))
+                if fw.enabled:
+                    forward_lines.append(_fmt_forward_local(fw, prefix))
             for fw in data.get("forwards_remote", []):
-                forward_lines.append(_fmt_forward_remote(fw, prefix))
+                if fw.enabled:
+                    forward_lines.append(_fmt_forward_remote(fw, prefix))
 
         for info in shares:
             if tag is not None and info.conn_tag != tag:
                 continue
+            if not info.running and info.stopped:
+                continue  # manually stopped — hide from dashboard
             prefix = markup_escape(f"[{info.conn_tag}]") if tag is None else ""
             share_lines.append(_fmt_share_line(info, prefix))
 
