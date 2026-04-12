@@ -100,8 +100,10 @@ class Connection(BaseModel):
     tag: str
     ssh_host: str
     socks_proxy_port: int = 0
+    enabled: bool = True
     forwards: Forwards = Forwards()
     pac_hosts: list[str] = []
+    pac_hosts_disabled: list[str] = []
     file_shares: list[FileShare] = []
 
 

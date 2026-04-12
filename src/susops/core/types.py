@@ -73,7 +73,7 @@ class ConnectionStatus:
     Attributes:
         tag: Unique identifier for the connection (e.g., 'proxy1', 'vpn')
         running: Whether the connection is currently active
-        pid: Process ID of the autossh/ssh process, or None if not running
+        pid: Process ID of the ssh process, or None if not running
         socks_port: Port number on which the SOCKS proxy is listening (0 if not running)
     """
 
@@ -81,6 +81,7 @@ class ConnectionStatus:
     running: bool
     pid: Optional[int] = None
     socks_port: int = 0
+    enabled: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
