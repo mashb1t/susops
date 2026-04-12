@@ -9,6 +9,7 @@ Architecture:
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 from susops.core.config import Connection, PortForward
@@ -20,9 +21,10 @@ __all__ = [
     "build_forward_cmd",
     "start_tunnel",           # starts master + all configured forwards
     "start_master",
-    "start_forward",
+    "start_forward",          # spawns ControlSlave; master holds port after slave exits
+    "cancel_forward",         # ssh -O cancel — releases master-held port
     "stop_tunnel",            # stops all forward slaves + master
-    "stop_forward",
+    "stop_forward",           # legacy: kills slave PID (unused for TCP; kept for tests)
     "is_tunnel_running",
     "is_socket_alive",
     "find_master_pid",
@@ -93,6 +95,7 @@ def build_forward_cmd(
     return [
         "ssh",
         "-N", "-T",
+        "-o", "ControlMaster=no",
         "-o", f"ControlPath={sock}",
         flag, fwd_spec,
         conn.ssh_host,
@@ -170,23 +173,65 @@ def start_forward(
     direction: str,
     process_mgr: ProcessManager,
     workspace: Path,
-) -> int:
-    """Start a ControlSlave process for a single port forward.
+) -> None:
+    """Spawn a ControlSlave to register a TCP port forward with the master.
 
-    Attaches to the existing ControlMaster socket.
-    Returns the PID of the started process.
+    The slave exits immediately once the master accepts the forward — the
+    MASTER process owns and holds the local TCP listener.  The slave PID is
+    not tracked because it is gone within milliseconds.
+
+    Waits up to 10 s for the master socket to be ready before spawning so
+    the slave always connects as a ControlSlave rather than opening a direct
+    SSH connection (which would bypass the master and hold the port itself).
     """
     sock = socket_path(conn.tag, workspace)
+
+    for _ in range(100):
+        if sock.exists():
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError(f"ControlMaster socket {sock} not ready after 10 s")
+
     name = _forward_name(conn.tag, fw.tag or f"{direction}-{fw.src_port}")
     cmd = build_forward_cmd(conn, fw, direction, sock)
-
     log_file = workspace / "logs" / f"{name}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(log_file, "a") as log:
-        pid = process_mgr.start(name, cmd, stdout=log, stderr=log)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    proc.wait(timeout=5)  # slave exits immediately in ControlSlave mode
 
-    return pid
+
+def cancel_forward(
+    conn: Connection,
+    fw: PortForward,
+    direction: str,
+    workspace: Path,
+) -> None:
+    """Release a master-held TCP port forward via ``ssh -O cancel``.
+
+    Best-effort: silently ignores errors (master may already be gone).
+    """
+    sock = socket_path(conn.tag, workspace)
+    if not sock.exists():
+        return
+    flag = "-L" if direction == "local" else "-R"
+    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
+    try:
+        subprocess.run(
+            ["ssh", "-O", "cancel", "-o", f"ControlPath={sock}", flag, fwd_spec, conn.ssh_host],
+            capture_output=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
 
 
 def stop_forward(

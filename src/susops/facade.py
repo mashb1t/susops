@@ -29,6 +29,7 @@ from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
+    cancel_forward,
     find_master_pid,
     is_socket_alive,
     is_tunnel_running,
@@ -1158,9 +1159,9 @@ class SusOpsManager:
                 key = "local" if direction == "local" else "remote"
                 new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
                 new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
-                # Stop the slave process if it exists
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
-                stop_forward(conn.tag, fw_tag, self._process_mgr)
+                if removed_fw.tcp:
+                    cancel_forward(conn, removed_fw, direction, self.workspace)
                 stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
@@ -1204,7 +1205,8 @@ class SusOpsManager:
                     except Exception as exc:
                         self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
                 elif not enabled:
-                    stop_forward(conn_tag, fw_tag, self._process_mgr)
+                    if fw.tcp:
+                        cancel_forward(conn, fw, direction, self.workspace)
                     stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "conn_tag": conn_tag,
@@ -1308,7 +1310,10 @@ class SusOpsManager:
                 info = entry[1]
                 self._log(f"File share on port {port} stopped")
                 if info.conn_tag:
-                    stop_forward(info.conn_tag, f"share-{port}", self._process_mgr)
+                    conn = get_connection(self.config, info.conn_tag)
+                    if conn:
+                        fw = PortForward(src_port=port, dst_port=port, src_addr="localhost", dst_addr="localhost")
+                        cancel_forward(conn, fw, "remote", self.workspace)
                 self._set_file_share_stopped(port, True)
                 self._emit("share", {
                     "port": port,
@@ -1324,7 +1329,10 @@ class SusOpsManager:
                 server.stop()
                 self._log(f"File share on port {p} stopped")
                 if info.conn_tag:
-                    stop_forward(info.conn_tag, f"share-{p}", self._process_mgr)
+                    conn = get_connection(self.config, info.conn_tag)
+                    if conn:
+                        fw = PortForward(src_port=p, dst_port=p, src_addr="localhost", dst_addr="localhost")
+                        cancel_forward(conn, fw, "remote", self.workspace)
                 self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
