@@ -1181,7 +1181,11 @@ class SusOpsManager:
         self._remove_forward(src_port, "remote")
 
     def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
-        """Set the enabled flag on a forward."""
+        """Set the enabled flag on a forward and start/stop the live process accordingly.
+
+        If enabling and the connection is running, the forward slave is started immediately.
+        If disabling, the forward slave is stopped (if running).
+        """
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection {conn_tag!r} not found")
@@ -1190,6 +1194,18 @@ class SusOpsManager:
             if fw.src_port == src_port:
                 fw.enabled = enabled
                 self._save()
+                fw_tag = fw.tag or f"{direction}-{src_port}"
+                if enabled and is_tunnel_running(conn_tag, self._process_mgr):
+                    try:
+                        if fw.tcp:
+                            start_forward(conn, fw, direction, self._process_mgr, self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
+                    except Exception as exc:
+                        self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
+                elif not enabled:
+                    stop_forward(conn_tag, fw_tag, self._process_mgr)
+                    stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "conn_tag": conn_tag,
                     "src_port": src_port,
