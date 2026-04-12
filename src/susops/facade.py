@@ -808,6 +808,8 @@ class SusOpsManager:
             cross_port = self._read_pac_port_file()
             if cross_port and self._probe_port(cross_port):
                 self._log(f"PAC server already running (cross-process) on port {cross_port}")
+                # Regenerate PAC file so cross-process server picks up the new connection
+                self._update_pac()
             else:
                 if cross_port:
                     self._remove_pac_port_file()
@@ -821,6 +823,9 @@ class SusOpsManager:
                 except Exception as exc:
                     self._error(f"PAC server failed: {exc}")
                     errors.append(f"PAC server failed: {exc}")
+        else:
+            # PAC already running in-process — regenerate to include new connection's hosts
+            self._update_pac()
 
         # Start status server if not already running
         if not self._status_server.is_running():
@@ -1074,8 +1079,8 @@ class SusOpsManager:
                             pass
                         self._remove_pac_port_file()
                         self._log("PAC server stopped (no active connections, remote)")
-            elif self._pac_server.is_running():
-                self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=remaining))
+            else:
+                self._update_pac()
 
         self._save()
         self._emit_state(self._compute_state())
@@ -1214,6 +1219,7 @@ class SusOpsManager:
         self._reload_config()
         found = False
         new_conns = []
+        conn_tag_label = f"[{conn_tag}] " if conn_tag else ""
         for conn in self.config.connections:
             if conn_tag and conn.tag != conn_tag:
                 new_conns.append(conn)
@@ -1233,11 +1239,11 @@ class SusOpsManager:
             else:
                 new_conns.append(conn)
         if not found:
-            raise ValueError(f"PAC host '{host}' not found")
+            raise ValueError(f"{conn_tag_label}PAC host '{host}' not found")
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
         self._update_pac()
-        self._log(f"PAC host '{host}' {'enabled' if enabled else 'disabled'}")
+        self._log(f"{conn_tag_label}PAC host '{host}' {'enabled' if enabled else 'disabled'}")
         self._emit_state(self._compute_state())
 
     # ------------------------------------------------------------------ #
