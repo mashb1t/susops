@@ -211,6 +211,7 @@ class DashboardScreen(Screen):
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
+        self.query_one(".footer-edit-config").display = False  # hidden until Config tab is active
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log
@@ -554,6 +555,7 @@ class DashboardScreen(Screen):
             self._load_config_tab()
         elif pane_id == "tab-pac":
             self._load_pac_tab()
+        self.query_one(".footer-edit-config").display = (pane_id == "tab-config")
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#detail-tabs", TabbedContent).active = tab_id
