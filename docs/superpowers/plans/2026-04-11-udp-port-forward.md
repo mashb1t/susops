@@ -846,7 +846,7 @@ Expected: all tests PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/susops/tui/screens/__init__.py src/susops/tui/screens/connection_editor.py
+git add src/susops/tui/screens/__init__.py src/susops/tui/screens/connections.py
 git commit -m "feat: add Protocol checkboxes and column to connection editor TUI"
 ```
 

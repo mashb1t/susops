@@ -375,7 +375,7 @@ Expected: all pass (no tests touch _AddConnectionDialog internals directly).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/susops/tui/screens/connection_editor.py
+git add src/susops/tui/screens/connections.py
 git commit -m "feat: populate add-connection dialog with hosts from ~/.ssh/config"
 ```
 
