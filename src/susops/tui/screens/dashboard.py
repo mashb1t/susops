@@ -25,15 +25,10 @@ from textual_plotext import PlotextPlot
 
 import susops
 from susops.core.types import StatusResult
-from susops.tui.screens import open_in_explorer, open_path, share_name_markup
+from susops.tui.screens import fmt_bps, fmt_bytes, open_in_explorer, open_path, proto_label, share_name_markup, status_dot, share_status_dot
 
 
-def _fmt_bps(bps: float) -> str:
-    if bps >= 1_048_576:
-        return f"{bps / 1_048_576:.1f}MB/s"
-    if bps >= 1024:
-        return f"{bps / 1024:.0f}kB/s"
-    return f"{bps:.0f}B/s"
+_fmt_bps = fmt_bps
 
 
 def _scale_data(data: list[float]) -> tuple[list[float], str]:
@@ -54,15 +49,7 @@ def _yticks(max_val: float, unit: str, n: int = 6) -> tuple[list[float], list[st
     return ticks, labels
 
 
-def _fmt_bytes(b: float) -> str:
-    """Format raw bytes as a human-readable string (e.g. 1.2 GB, 450 MB, 12 kB)."""
-    if b >= 1_073_741_824:
-        return f"{b / 1_073_741_824:.1f}GB"
-    if b >= 1_048_576:
-        return f"{b / 1_048_576:.1f}MB"
-    if b >= 1024:
-        return f"{b / 1024:.0f}kB"
-    return f"{b:.0f}B"
+_fmt_bytes = fmt_bytes
 
 
 def _fmt_uptime(seconds: float) -> str:
@@ -86,12 +73,12 @@ def _fmt_bw_line(
     tag_width: int = 25,
     show_dot: bool = True,
 ) -> str:
-    dot = "[green]●[/green]" if running else "[red]○[/red]"
+    dot = status_dot(running)
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
-        f"[green]↓ RX[/green]{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
-        f"[yellow]↑ TX[/yellow]{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
+        f"{_fmt_bps(rx):>7} [cyan]{_fmt_bytes(rx_t):>7}[/cyan]  "
+        f"{_fmt_bps(tx):>7} [cyan]{_fmt_bytes(tx_t):>7}[/cyan]"
     )
 
 
@@ -103,18 +90,20 @@ def _fmt_domain_line(host: str, prefix: str = "") -> str:
 def _fmt_forward_local(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
     label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
-    return f"{pre}[green]L[/green] {fw.src_addr}:{fw.src_port} [green]→[/green] {fw.dst_addr}:{fw.dst_port}{label}"
+    proto = f" [dim]{proto_label(fw)}[/dim]"
+    return f"{pre}[green]L[/green] {fw.src_addr}:{fw.src_port} [green]→[/green] {fw.dst_addr}:{fw.dst_port}{proto}{label}"
 
 
 def _fmt_forward_remote(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
     label = f"\n  [dim]{fw.tag}[/dim]" if fw.tag else ""
-    return f"{pre}[yellow]R[/yellow] {fw.src_addr}:{fw.src_port} [yellow]←[/yellow] {fw.dst_addr}:{fw.dst_port}{label}"
+    proto = f" [dim]{proto_label(fw)}[/dim]"
+    return f"{pre}[yellow]R[/yellow] {fw.src_addr}:{fw.src_port} [yellow]←[/yellow] {fw.dst_addr}:{fw.dst_port}{proto}{label}"
 
 
 def _fmt_share_line(info, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
-    dot = "[green]●[/green]" if info.running else ("[dim]○[/dim]" if info.stopped else "[red]○[/red]")
+    dot = share_status_dot(info.running, info.stopped)
     name = Path(info.file_path).name
     link = share_name_markup(info.file_path, name)
     if info.running:
@@ -127,17 +116,16 @@ class DashboardScreen(Screen):
         Binding("s", "start", "Start"),
         Binding("x", "stop", "Stop"),
         Binding("r", "restart", "Restart"),
-        Binding("S", "start_all", "Start all"),
-        Binding("X", "stop_all", "Stop all"),
-        Binding("R", "restart_all", "Restart all"),
+
         Binding("c", "push_screen('connections')", "Connections"),
-        Binding("f", "push_screen('share')", "Share"),
+        Binding("f", "push_screen('share')", "Shares"),
+        Binding("e", "edit_config", "Edit config"),
     ]
 
     DEFAULT_CSS = """
     DashboardScreen { layout: vertical; }
     #main-split { height: 1fr; }
-    #conn-panel { width: 50; background: $surface-darken-1; border-right: solid $primary-darken-2; }
+    #conn-panel { width: 49; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #pac-info   { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
@@ -149,7 +137,7 @@ class DashboardScreen(Screen):
     #detail-logs { height: 1fr; margin: 1; border: round $primary-darken-1; }
     #config-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
     #pac-tab-area { height: 1fr; margin: 1; border: round $primary-darken-1; border-title-align: left; }
-    #context-panel { width: 50; background: $surface-darken-1; border-left: solid $primary-darken-2; }
+    #context-panel { width: 49; background: $surface-darken-1; border-left: solid $primary-darken-2; }
     #domain-section { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
     #domain-content { padding: 0 1; }
     #forward-content { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
@@ -200,7 +188,6 @@ class DashboardScreen(Screen):
                 yield Static("", id="share-content", markup=True)
         with Horizontal(classes="footer-row"):
             yield Footer()
-            yield Static("[@click=screen.edit_config()]Edit config[/]", classes="footer-edit-config", markup=True)
             yield Static(f"[@click=app.open_github()]v{susops.__version__}[/]", classes="footer-version", markup=True)
 
     def on_mount(self) -> None:
@@ -212,6 +199,8 @@ class DashboardScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         self._prev_on_log = mgr.on_log
         mgr.on_log = self._on_new_log
+        self._prev_on_error = mgr.on_error
+        mgr.on_error = self._on_new_error
         self.set_interval(2.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
@@ -229,6 +218,7 @@ class DashboardScreen(Screen):
         self._sse_active = False
         mgr = self.app.manager  # type: ignore[attr-defined]
         mgr.on_log = self._prev_on_log
+        mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
         """Adaptive refresh: every 2s when connections are active, every 10s when idle."""
@@ -245,6 +235,17 @@ class DashboardScreen(Screen):
     def _on_new_log(self, msg: str) -> None:
         try:
             self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
+        except Exception:
+            pass
+
+    def _on_new_error(self, msg: str) -> None:
+        try:
+            self.app.call_from_thread(
+                self.notify,
+                msg,
+                severity="error",
+                timeout=6,
+            )
         except Exception:
             pass
 
@@ -329,10 +330,10 @@ class DashboardScreen(Screen):
 
         label_texts: list[str] = []
         for cs in result.connection_statuses:
-            dot = "[green]●[/green]" if cs.running else "[red]○[/red]"
+            dot = status_dot(cs.running, cs.enabled)
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
-            label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>6}↓")
+            label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>7}↓")
 
         if new_tags == self._conn_tags:
             # Same connections — update connection rows in-place (index 0 is the All row, skip it)
@@ -397,9 +398,9 @@ class DashboardScreen(Screen):
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [dim]{'─' * 71}[/dim]",
+            f"  [dim]  {'Connection':<25}  [/dim]   [green]↓ RX[/green] [dim]{'Total':>7}[/dim]     [yellow]↑ TX[/yellow] [dim]{'Total':>7}[/dim]",            f"  [dim]{'─' * 61}[/dim]",
             _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=25 + len("[bold][/bold]"), show_dot=False),
-            f"  [dim]{'─' * 71}[/dim]",
+            f"  [dim]{'─' * 61}[/dim]",
         ]
         for tag, data in self._conn_data.items():
             lines.append(_fmt_bw_line(tag, data["cs"].running, *data["bw"], *data["bw_total"]))
@@ -472,7 +473,12 @@ class DashboardScreen(Screen):
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
-        status_str = "[green]● running[/green]" if cs.running else "[red]○ stopped[/red]"
+        if cs.running:
+            status_str = "[green]● running[/green]"
+        elif not cs.enabled:
+            status_str = "[dim]─ disabled[/dim]"
+        else:
+            status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"
         fwd_summary = f"{len(forwards_local)}L {len(forwards_remote)}R"
 
@@ -538,6 +544,7 @@ class DashboardScreen(Screen):
             self._load_config_tab()
         elif pane_id == "tab-pac":
             self._load_pac_tab()
+        self.refresh_bindings()
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#detail-tabs", TabbedContent).active = tab_id
@@ -575,13 +582,17 @@ class DashboardScreen(Screen):
                 domain_lines.append(_fmt_domain_line(host, prefix))
             data = self._conn_data.get(conn.tag, {})
             for fw in data.get("forwards_local", []):
-                forward_lines.append(_fmt_forward_local(fw, prefix))
+                if fw.enabled:
+                    forward_lines.append(_fmt_forward_local(fw, prefix))
             for fw in data.get("forwards_remote", []):
-                forward_lines.append(_fmt_forward_remote(fw, prefix))
+                if fw.enabled:
+                    forward_lines.append(_fmt_forward_remote(fw, prefix))
 
         for info in shares:
             if tag is not None and info.conn_tag != tag:
                 continue
+            if not info.running and info.stopped:
+                continue  # manually stopped — hide from dashboard
             prefix = markup_escape(f"[{info.conn_tag}]") if tag is None else ""
             share_lines.append(_fmt_share_line(info, prefix))
 
@@ -649,31 +660,12 @@ class DashboardScreen(Screen):
         self.app.manager.restart(self._selected_tag)  # type: ignore[attr-defined]
         self.app.call_from_thread(self.refresh_status)
 
-    @work(thread=True)
-    def action_start_all(self) -> None:
-        self.app.manager.start()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
-
-    @work(thread=True)
-    def action_stop_all(self) -> None:
-        self.app.manager.stop()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
-
-    @work(thread=True)
-    def action_restart_all(self) -> None:
-        self.app.manager.restart()  # type: ignore[attr-defined]
-        self.app.call_from_thread(self.refresh_status)
 
     def action_open_share(self, file_path: str) -> None:
         open_in_explorer(file_path)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Hide S/X/R (start_all / stop_all / restart_all) when All row is selected.
-
-        When _selected_tag is None, the lowercase s/x/r actions already call
-        mgr.start/stop/restart(None) and operate on all connections. The uppercase
-        S/X/R variants are redundant in this state, so hide them from the footer.
-        """
-        if action in ("start_all", "stop_all", "restart_all") and self._selected_tag is None:
-            return False
+        if action == "edit_config":
+            active = self.query_one("#detail-tabs", TabbedContent).active
+            return active == "tab-config"
         return True

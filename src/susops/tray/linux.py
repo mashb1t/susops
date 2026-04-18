@@ -152,6 +152,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._GLib.idle_add(_update)
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
+        if state == getattr(self, "_last_menu_state", None):
+            return  # nothing changed — skip idle_add entirely
+        self._last_menu_state = state
         running = state == ProcessState.RUNNING
         stopped = state == ProcessState.STOPPED
 
@@ -162,8 +165,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self._item_stop.set_sensitive(not stopped)
             if hasattr(self, "_item_restart"):
                 self._item_restart.set_sensitive(not stopped)
-            if hasattr(self, "_item_test_any"):
-                self._item_test_any.set_sensitive(not stopped)
             if hasattr(self, "_item_test_all"):
                 self._item_test_all.set_sensitive(not stopped)
             self._rebuild_status_item(state)
@@ -266,6 +267,27 @@ class SusOpsLinuxTray(AbstractTrayApp):
         rm_item.set_submenu(rm_sub)
         self._menu.append(rm_item)
 
+        # ── Manage submenu ────────────────────────────────────────────────
+        manage_item = Gtk.MenuItem(label="Manage")
+        manage_sub = Gtk.Menu()
+        for label, cb in [
+            ("Toggle Connection Enabled…", self._on_toggle_connection),
+            ("Toggle Domain Enabled…", self._on_toggle_domain),
+            ("Toggle Forward Enabled…", self._on_toggle_forward),
+            None,  # separator
+            ("Start Connection…", self._on_start_connection),
+            ("Stop Connection…", self._on_stop_connection),
+            ("Restart Connection…", self._on_restart_connection),
+        ]:
+            if label is None:
+                manage_sub.append(Gtk.SeparatorMenuItem())
+            else:
+                si = Gtk.MenuItem(label=label)
+                si.connect("activate", cb)
+                manage_sub.append(si)
+        manage_item.set_submenu(manage_sub)
+        self._menu.append(manage_item)
+
         # ── Open Config ───────────────────────────────────────────────────
         i = Gtk.MenuItem(label="Open Config File")
         i.connect("activate", lambda _: self.do_open_config_file())
@@ -289,10 +311,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
         # ── Test submenu ──────────────────────────────────────────────────
         test_item = Gtk.MenuItem(label="Test")
         test_sub = Gtk.Menu()
-        self._item_test_any = Gtk.MenuItem(label="Test Any")
-        self._item_test_any.connect("activate", lambda _: self.do_test())
-        test_sub.append(self._item_test_any)
-        self._item_test_all = Gtk.MenuItem(label="Test All")
+        ti_conn = Gtk.MenuItem(label="Test Connection…")
+        ti_conn.connect("activate", self._on_test_connection)
+        test_sub.append(ti_conn)
+        ti_domain = Gtk.MenuItem(label="Test Domain…")
+        ti_domain.connect("activate", self._on_test_domain)
+        test_sub.append(ti_domain)
+        ti_fwd = Gtk.MenuItem(label="Test Forward…")
+        ti_fwd.connect("activate", self._on_test_forward)
+        test_sub.append(ti_fwd)
+        test_sub.append(Gtk.SeparatorMenuItem())
+        self._item_test_all = Gtk.MenuItem(label="Test All PAC Hosts")
         self._item_test_all.connect("activate", lambda _: self.do_test())
         test_sub.append(self._item_test_all)
         test_item.set_submenu(test_sub)
@@ -462,8 +491,21 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._item_status.set_label(f"{dot} SusOps: {state.value}")
 
     def _refresh_share_submenu(self) -> bool:
-        """Rebuild the dynamic share items in the File Transfer submenu."""
+        """Rebuild the dynamic share items in the File Transfer submenu only when changed."""
+        from pathlib import Path as _Path
         Gtk = self._Gtk
+        new_shares = self.manager.list_shares()
+
+        def _share_key(info):
+            return (info.port, info.running, info.file_path)
+
+        old_keys = [_share_key(s) for s in self._active_shares]
+        new_keys = [_share_key(s) for s in new_shares]
+        if old_keys == new_keys:
+            return False  # nothing changed — don't touch the menu
+
+        self._active_shares = new_shares
+
         # Remove old dynamic items (everything after the separator)
         sep_reached = False
         for child in list(self._ft_sub.get_children()):
@@ -472,11 +514,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if child is self._ft_sep:
                 sep_reached = True
 
-        self._active_shares = self.manager.list_shares()
         self._ft_sep.set_visible(bool(self._active_shares))
 
         for info in self._active_shares:
-            name = __import__("pathlib").Path(info.file_path).name
+            name = _Path(info.file_path).name
             dot = "●" if info.running else "○"
             label = f"{dot} {name} ({info.port})"
             item = Gtk.MenuItem(label=label)
@@ -590,7 +631,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if pac_text != "0" and not _is_valid_port(pac_text):
                 _alert(Gtk, dlg, "Invalid Port", "PAC Server Port must be between 1 and 65535.")
                 continue
-            if pac_text != "0" and not is_port_free(int(pac_text)):
+            current_pac_port = self.manager.config.pac_server_port
+            pac_port_changed = int(pac_text) != current_pac_port
+            if pac_text != "0" and pac_port_changed and not is_port_free(int(pac_text)):
                 _alert(Gtk, dlg, "Port In Use", f"Port {pac_text} is already in use.")
                 continue
 
@@ -775,6 +818,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         for addr in BIND_ADDRESSES:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
+        tcp_check = Gtk.CheckButton(label="TCP (SSH -L forward)")
+        tcp_check.set_active(True)
+        udp_check = Gtk.CheckButton(label="UDP (socat relay)")
+        udp_check.set_active(False)
 
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
@@ -783,6 +830,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             ("dst", "To Remote Port *:", dst_port_entry),
             ("src_addr", "Local Bind (optional):", src_addr_combo),
             ("dst_addr", "Remote Bind (optional):", dst_addr_combo),
+            ("tcp", "Protocol:", tcp_check),
+            ("udp", "", udp_check),
         ])
         dlg.get_content_area().add(grid)
         _polish_dialog(Gtk, dlg)
@@ -798,9 +847,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
             dst = dst_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
+            tcp = tcp_check.get_active()
+            udp = udp_check.get_active()
 
             if not conn_tag:
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
+                continue
+            if not tcp and not udp:
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(src):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Local Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -812,7 +866,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Invalid Port", "To Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst), tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_local_forward(conn_tag, fw)
             return False
@@ -848,6 +902,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         for addr in BIND_ADDRESSES:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
+        tcp_check = Gtk.CheckButton(label="TCP (SSH -R forward)")
+        tcp_check.set_active(True)
+        udp_check = Gtk.CheckButton(label="UDP (socat relay)")
+        udp_check.set_active(False)
 
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
@@ -856,6 +914,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             ("lport", "To Local Port *:", local_port_entry),
             ("src_addr", "Remote Bind (optional):", src_addr_combo),
             ("dst_addr", "Local Bind (optional):", dst_addr_combo),
+            ("tcp", "Protocol:", tcp_check),
+            ("udp", "", udp_check),
         ])
         dlg.get_content_area().add(grid)
         _polish_dialog(Gtk, dlg)
@@ -871,9 +931,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
             lport = local_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
+            tcp = tcp_check.get_active()
+            udp = udp_check.get_active()
 
             if not conn_tag:
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
+                continue
+            if not tcp and not udp:
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(rport):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -881,11 +946,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if not _is_valid_port(lport):
                 _alert(Gtk, dlg, "Invalid Port", "To Local Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
-            if not is_port_free(int(lport)):
-                _alert(Gtk, dlg, "Port In Use", f"Local port {lport} is already in use.", Gtk.MessageType.ERROR)
-                continue
-
-            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None)
+            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
             return False
@@ -946,15 +1007,138 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self.do_remove_remote_forward(int(m.group(1)))
         return False
 
-    def _pick_from_list(self, title: str, label: str, items: list[str]) -> str | None:
+    def _on_toggle_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_connection_dialog)
+
+    def _show_toggle_connection_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = [f"[{'✓' if c.enabled else '✗'}] {c.tag}" for c in cfg.connections]
+        selected = self._pick_from_list("Toggle Connection Enabled", "Connection:", items, ok_label="Toggle")
+        if selected:
+            tag = selected.split("] ", 1)[-1]
+            self.do_toggle_connection_enabled(tag)
+        return False
+
+    def _on_toggle_domain(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_domain_dialog)
+
+    def _show_toggle_domain_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                enabled = h not in c.pac_hosts_disabled
+                items.append(f"[{'✓' if enabled else '✗'}] {h}")
+        selected = self._pick_from_list("Toggle Domain Enabled", "Domain:", items, ok_label="Toggle")
+        if selected:
+            host = selected.split("] ", 1)[-1]
+            self.do_toggle_pac_host_enabled(host)
+        return False
+
+    def _on_toggle_forward(self, _) -> None:
+        self._GLib.idle_add(self._show_toggle_forward_dialog)
+
+    def _show_toggle_forward_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Toggle Forward Enabled", "Forward:", items, ok_label="Toggle")
+        if selected:
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
+                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+        return False
+
+    def _on_start_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_start_connection_dialog)
+
+    def _show_start_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Start Connection", "Connection:", tags, ok_label="Start")
+        if selected:
+            self.do_start_connection(selected)
+        return False
+
+    def _on_stop_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_stop_connection_dialog)
+
+    def _show_stop_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Stop Connection", "Connection:", tags, ok_label="Stop")
+        if selected:
+            self.do_stop_connection(selected)
+        return False
+
+    def _on_restart_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_restart_connection_dialog)
+
+    def _show_restart_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Restart Connection", "Connection:", tags, ok_label="Restart")
+        if selected:
+            self.do_restart_connection(selected)
+        return False
+
+    def _on_test_connection(self, _) -> None:
+        self._GLib.idle_add(self._show_test_connection_dialog)
+
+    def _show_test_connection_dialog(self) -> bool:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Test Connection", "Connection:", tags, ok_label="Test")
+        if selected:
+            self.do_test_connection(selected)
+        return False
+
+    def _on_test_domain(self, _) -> None:
+        self._GLib.idle_add(self._show_test_domain_dialog)
+
+    def _show_test_domain_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                items.append(f"[{c.tag}] {h}")
+        selected = self._pick_from_list("Test Domain", "Domain (via connection):", items, ok_label="Test")
+        if selected:
+            m = re.match(r"\[([^\]]+)\] (.+)", selected)
+            if m:
+                self.do_test_domain(m.group(2), m.group(1))
+        return False
+
+    def _on_test_forward(self, _) -> None:
+        self._GLib.idle_add(self._show_test_forward_dialog)
+
+    def _show_test_forward_dialog(self) -> bool:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Test Forward", "Forward:", items, ok_label="Test")
+        if selected:
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
+        return False
+
+    def _pick_from_list(self, title: str, label: str, items: list[str], ok_label: str = "Remove") -> str | None:
         """Show a dialog with a dropdown list. Returns selected item or None."""
         Gtk = self._Gtk
         if not items:
-            _alert(Gtk, self._root, "Nothing to Remove", "The list is empty.")
+            _alert(Gtk, self._root, "Nothing to Select", "The list is empty.")
             return None
 
         dlg = Gtk.Dialog(title=title, transient_for=self._root, modal=True)
-        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Remove", Gtk.ResponseType.OK)
+        dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, f"_{ok_label}", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
         dlg.set_default_size(340, -1)
 

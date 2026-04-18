@@ -9,7 +9,6 @@ from susops.core.config import Connection, Forwards, PortForward
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
-    build_forward_cmd,
     build_master_cmd,
     socket_path,
 )
@@ -37,12 +36,13 @@ def test_socket_path(conn, workspace):
 def test_build_master_cmd_socks(conn, workspace):
     sock = socket_path(conn.tag, workspace)
     cmd = build_master_cmd(conn, sock)
+    assert cmd[0] == "ssh"
     assert "-D" in cmd
     assert "1080" in cmd
     assert "-N" in cmd
     assert str(sock) in " ".join(cmd)
     assert "ControlMaster=yes" in " ".join(cmd)
-    # Must NOT include -L or -R (those are handled by slave processes)
+    # Forwards are registered via ssh -O forward — never in master cmd args
     assert "-L" not in cmd
     assert "-R" not in cmd
 
@@ -53,24 +53,22 @@ def test_build_master_cmd_includes_ssh_host(conn, workspace):
     assert conn.ssh_host in cmd
 
 
-def test_build_forward_cmd_local(conn, workspace):
-    fw = PortForward(src_port=3306, dst_port=3306, dst_addr="db.internal")
+def test_build_master_cmd_no_forwards_regardless_of_config(workspace):
+    """Master cmd never contains -L/-R regardless of configured forwards."""
+    from susops.core.config import Forwards
+    conn = Connection(
+        tag="test",
+        ssh_host="user@host.example.com",
+        socks_proxy_port=1080,
+        forwards=Forwards(
+            local=[PortForward(src_port=3306, dst_port=3306, dst_addr="db.internal", enabled=True, tcp=True)],
+            remote=[PortForward(src_port=8080, dst_port=8080, enabled=True, tcp=True)],
+        ),
+    )
     sock = socket_path(conn.tag, workspace)
-    cmd = build_forward_cmd(conn, fw, "local", sock)
-    assert "-L" in cmd
-    assert "3306" in " ".join(cmd)
-    assert "db.internal" in " ".join(cmd)
-    assert "-R" not in cmd
-    assert str(sock) in " ".join(cmd)
-
-
-def test_build_forward_cmd_remote(conn, workspace):
-    fw = PortForward(src_port=8080, dst_port=8080)
-    sock = socket_path(conn.tag, workspace)
-    cmd = build_forward_cmd(conn, fw, "remote", sock)
-    assert "-R" in cmd
-    assert "8080" in " ".join(cmd)
+    cmd = build_master_cmd(conn, sock)
     assert "-L" not in cmd
+    assert "-R" not in cmd
 
 
 def test_ssh_process_prefix():

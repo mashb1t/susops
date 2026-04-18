@@ -4,7 +4,7 @@
 
 # SusOps - SSH Utilities & SOCKS5 Operations
 
-SSH SOCKS5 proxy manager with PAC server, Textual TUI, and system tray apps.
+SSH SOCKS5 proxy manager with PAC server, TCP/UDP port forwarding, Textual TUI, and system tray apps.
 
 ## Overview
 
@@ -15,6 +15,8 @@ SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC (Proxy Auto-Config) fil
 - **Linux tray app** — GTK3 + AyatanaAppIndicator3
 - **macOS tray app** — rumps + PyObjC
 - **Shared Python core** — all business logic in `susops.core`, used by every frontend
+- **TCP port forwarding** — SSH `-L`/`-R` slaves multiplexed over the existing ControlMaster
+- **UDP port forwarding** — socat over SSH ControlMaster; no extra SSH ports needed
 
 ### Architecture
 
@@ -24,6 +26,7 @@ susops/
     core/          # Business logic (no UI)
       config.py    # Pydantic v2 models + ruamel.yaml I/O
       ssh.py       # SSH ControlMaster/slave subprocess + PID tracking + socket helpers
+      socat.py     # UDP port forwarding via socat over SSH ControlMaster
       pac.py       # PAC generation + aiohttp HTTP server (shared async loop)
       share.py     # AES-256-CTR encrypted file sharing + client fetch (shared async loop)
       status.py    # SSE StatusServer — broadcasts state/share/forward events via aiohttp
@@ -46,6 +49,7 @@ flowchart TD
     Facade["SusOpsManager — facade.py\nconfig I/O · PID mgmt · bandwidth sampling\nserver lifecycle"]
 
     SSH["ssh.py\nControlMaster + forward slaves"]
+    Socat["socat.py\nUDP forwards via socat"]
     PAC["pac.py\nPAC server (aiohttp)"]
     Share["share.py\nShareServer(s) (aiohttp)"]
 
@@ -59,12 +63,15 @@ flowchart TD
     Master["susops-ssh-&lt;tag&gt;\nSSH ControlMaster\n(-M -N -D socks_port)"]
     Slave["susops-fwd-&lt;tag&gt;-&lt;fw&gt;\nSSH forward slave\n(-O forward -L/-R)"]
     PacProc["susops-pac\nPAC HTTP server"]
+    UDPLocal["susops-udp-&lt;tag&gt;-&lt;fw&gt;-lsocat\nLocal socat\n(EXEC → SSH → remote socat)"]
+    UDPRemote["susops-udp-&lt;tag&gt;-&lt;fw&gt;-ssh/rsocat/lsocat\nRemote UDP bridge\n(SSH -R + remote socat + local socat)"]
 
     TUI --> Facade
     CLI --> Facade
     Tray --> Facade
 
     Facade --> SSH
+    Facade --> Socat
     Facade --> PAC
     Facade --> Share
 
@@ -78,21 +85,26 @@ flowchart TD
     SSH -->|spawns| Master
     Master -->|multiplexes| Slave
     PAC -->|spawns| PacProc
+    Socat -->|local direction| UDPLocal
+    Socat -->|remote direction| UDPRemote
+    Master -.->|ControlMaster socket| UDPLocal
+    Master -.->|ControlMaster socket| UDPRemote
 ```
 
 ---
 
 ## Requirements
 
-| Component    | Requirement                                                           |
-|--------------|-----------------------------------------------------------------------|
-| Python       | ≥ 3.11                                                                |
-| SSH tunnels  | `ssh` (OpenSSH, for ControlMaster support)                            |
-| PAC server   | `aiohttp >= 3.9` (shared async loop)                                  |
-| TUI          | `textual >= 8.2`, `textual-plotext >= 1.0` (optional extra)           |
-| File sharing | `cryptography >= 42`, `aiohttp >= 3.9` (optional extra)               |
-| Linux tray   | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
-| macOS tray   | `rumps >= 0.4`                                                        |
+| Component         | Requirement                                                           |
+|-------------------|-----------------------------------------------------------------------|
+| Python            | ≥ 3.11                                                                |
+| SSH tunnels       | `ssh` (OpenSSH, for ControlMaster support)                            |
+| PAC server        | `aiohttp >= 3.9` (shared async loop)                                  |
+| TUI               | `textual >= 8.2`, `textual-plotext >= 1.0` (optional extra)           |
+| File sharing      | `cryptography >= 42`, `aiohttp >= 3.9` (optional extra)               |
+| UDP forwarding    | `socat` (system package — see [UDP Port Forwarding](#udp-port-forwarding)) |
+| Linux tray        | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
+| macOS tray        | `rumps >= 0.4`                                                        |
 
 ---
 
@@ -115,6 +127,19 @@ pip install "susops[tui,share,tray-linux]"
 
 # macOS tray
 pip install "susops[tui,share,tray-mac]"
+```
+
+UDP port forwarding has no Python dependencies — install `socat` via your system package manager:
+
+```bash
+# macOS
+brew install socat
+
+# Arch Linux
+sudo pacman -S socat
+
+# Ubuntu / Debian
+sudo apt install socat
 ```
 
 ### Arch Linux (AUR)
@@ -199,14 +224,33 @@ susops
 | `Ctrl+P` | Command palette      |
 | `q`      | Quit                 |
 
-#### Per screen
+#### Connection editor
 
-| Key      | Action                                          |
-|----------|-------------------------------------------------|
-| `Escape` | Back to dashboard                               |
-| `a`      | Add item (connection, PAC host, forward, share) |
-| `d`      | Delete / stop selected item                     |
-| `f`      | Fetch a remote shared file (share screen)       |
+| Key | Action                                                      |
+|-----|-------------------------------------------------------------|
+| `a` | Add item (connection, PAC host, forward)                    |
+| `d` | Delete selected item                                        |
+| `t` | Toggle enabled/disabled for selected connection, domain, or forward |
+| `e` | Test selected item (SSH ping, SOCKS curl, or port liveness) |
+| `s` | Start selected connection or forward                        |
+| `x` | Stop selected connection or forward                         |
+| `r` | Restart selected connection                                 |
+
+#### Share screen
+
+| Key | Action                           |
+|-----|----------------------------------|
+| `a` | Share a new file                 |
+| `f` | Fetch a remote shared file       |
+| `d` | Stop selected share              |
+| `s` | Restart a stopped share          |
+| `x` | Delete selected share            |
+
+#### Global per-screen
+
+| Key      | Action            |
+|----------|-------------------|
+| `Escape` | Back to dashboard |
 
 ### Screens
 
@@ -216,7 +260,7 @@ susops
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
 - **Logs** — RichLog of all tunnel output, auto-refreshed every 3 seconds
 
-**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
+**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete, `t` to toggle enabled/disabled, `e` to run a connectivity test for the selected item, `s`/`x`/`r` to start/stop/restart. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
 
 **Share screen** — split-pane: left list of shares with three-state indicators (green = running, dim = manually stopped, red = offline/connection down), right panel with file details, URL, password, access counts, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share, `s` to restart a stopped share, `x` to delete. Refreshes every 2 seconds via `set_interval` to reflect connection state changes.
 
@@ -348,9 +392,15 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running/partial/stopped). The menu provides Start, Stop, Restart, Test connections, Show status, browser launch, and Quit. State is polled every 5 seconds.
+The tray icon reflects the current state (running/partial/stopped). State is polled every 5 seconds. Both tray implementations support the same feature set via native dialogs:
 
-Both tray implementations support full CRUD for connections, PAC hosts, and port forwards (with bind address selection) via native dialogs.
+- **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
+- **Start / Stop / Restart All** — bulk lifecycle operations across all connections
+- **Test** — test SSH reachability for a specific connection, curl a domain through its SOCKS proxy, or check port liveness for a specific forward; "Test All PAC Hosts" bulk-tests every configured domain
+- **CRUD** — add/remove connections, PAC hosts, and port forwards (with bind address selection)
+- **Settings** — configure PAC port, stop-on-quit, and ephemeral ports
+- **Browser launch** — open Chrome or Firefox with the PAC URL pre-configured
+- **Quit**
 
 ---
 
@@ -364,9 +414,12 @@ connections:
   - tag: work
     ssh_host: user@bastion.example.com
     socks_proxy_port: 51235
+    enabled: true                       # false = skip this connection on start-all
     pac_hosts:
       - "*.internal.example.com"
       - "10.0.0.0/8"
+    pac_hosts_disabled:                 # hosts temporarily disabled without removal
+      - "*.staging.example.com"
     forwards:
       local:
         - src_port: 5432
@@ -374,11 +427,25 @@ connections:
           dst_port: 5432
           dst_addr: db.internal.example.com
           tag: postgres
+          tcp: true
+          udp: false
+          enabled: true                 # false = forward skipped on connection start
+        - src_port: 5353
+          src_addr: localhost
+          dst_port: 53
+          dst_addr: dns.internal.example.com
+          tag: dns
+          tcp: false
+          udp: true
+          enabled: true
         - src_port: 8080
           src_addr: localhost
           dst_port: 80
           dst_addr: web.internal.example.com
           tag: webui
+          tcp: true
+          udp: false
+          enabled: false
       remote: []
 susops_app:
   stop_on_quit: true
@@ -394,6 +461,17 @@ susops_app:
 | `dst_addr` | Remote destination host for local forwards; local bind for remote forwards |
 
 Common values: `localhost` (default, loopback only), `0.0.0.0` (all interfaces), `172.17.0.1` (Docker bridge).
+
+### Port forward protocol flags
+
+Each forward has two boolean flags that control which transport protocols are enabled:
+
+| Field | Default | Description                                         |
+|-------|---------|-----------------------------------------------------|
+| `tcp` | `true`  | Enable TCP forwarding via SSH `-L`/`-R` slave       |
+| `udp` | `false` | Enable UDP forwarding via socat (requires `socat`)  |
+
+Both can be `true` simultaneously — susops will start an SSH slave for TCP and socat process(es) for UDP independently. Requires at least one of `tcp` or `udp` to be `true`.
 
 ### PAC host syntax
 
@@ -502,6 +580,125 @@ Each share tracks successful and failed access counts in memory (shown in the de
 
 ---
 
+## UDP Port Forwarding
+
+SusOps can forward UDP traffic through an SSH tunnel using `socat`. This works without any additional ports on the SSH server beyond the existing ControlMaster connection.
+
+### Requirements
+
+`socat` must be installed on **both the local machine and the remote SSH host** for either direction:
+
+- **Local UDP**: local socat listens and forks; remote socat relays each datagram to the destination (via SSH EXEC).
+- **Remote UDP**: remote socat relays UDP → TCP (via SSH exec); local socat relays TCP → UDP.
+
+```bash
+brew install socat          # macOS
+sudo pacman -S socat        # Arch Linux
+sudo apt install socat      # Ubuntu / Debian
+```
+
+### Enabling UDP on a forward
+
+Set `udp: true` in the forward config, or check "UDP" in the TUI/tray add-forward dialog:
+
+```yaml
+forwards:
+  local:
+    - src_port: 5353
+      dst_port: 53
+      dst_addr: dns.internal.example.com
+      tag: dns
+      tcp: false
+      udp: true
+```
+
+### Architecture: local UDP forward
+
+A single `socat` process listens locally on the UDP port. For each incoming datagram it forks a child that opens an SSH channel through the existing ControlMaster socket and runs `socat` on the remote host to relay the packet to the destination service. Responses travel back through the same channel.
+
+```mermaid
+flowchart LR
+    subgraph local["Local machine"]
+        Client["UDP client\ne.g. dig, game, VoIP"]
+        LSOcat["lsocat\nUDP4-RECVFROM:src_port,fork\nEXEC:'ssh -o ControlPath=sock...'"]
+    end
+
+    subgraph tunnel["SSH ControlMaster (one channel per datagram)"]
+        Channel["SSH channel"]
+    end
+
+    subgraph remote["Remote SSH host"]
+        RSOcat["remote socat\nsocat - UDP4-SENDTO:\ndst_addr:dst_port"]
+        Service["UDP service"]
+    end
+
+    Client -->|"UDP datagram"| LSOcat
+    LSOcat -->|"fork child"| Channel
+    Channel -->|"stdin/stdout"| RSOcat
+    RSOcat -->|"UDP"| Service
+    Service -. "response" .-> RSOcat
+    RSOcat -. "stdout" .-> Channel
+    Channel -. "response" .-> LSOcat
+    LSOcat -. "UDP response" .-> Client
+```
+
+Process name: `susops-udp-<conn>-<fw>-lsocat`
+
+**Latency note:** each datagram opens one SSH channel (~25–40 ms overhead on a typical WAN link). This is suitable for request/response protocols (DNS, database ping, STUN) but not for high-frequency streaming (real-time audio/video).
+
+### Architecture: remote UDP forward
+
+Three processes bridge the remote UDP listener to a local UDP service via an intermediate TCP port:
+
+```mermaid
+flowchart LR
+    subgraph remote["Remote SSH host"]
+        RClient["UDP client\non remote"]
+        RSOcat["rsocat\nUDP4-RECVFROM:src_port,fork\nTCP4:localhost:intermediate"]
+    end
+
+    subgraph local["Local machine"]
+        SSHSlave["SSH -R slave\n-R intermediate:localhost:intermediate"]
+        LSOcat["lsocat\nTCP4-LISTEN:intermediate,fork\nUDP4-SENDTO:dst_addr:dst_port"]
+        Service["UDP service\ndst_addr:dst_port"]
+    end
+
+    RClient -->|"UDP datagram"| RSOcat
+    RSOcat -->|"TCP to remote:intermediate\n(bound by SSH -R)"| SSHSlave
+    SSHSlave -->|"TCP to localhost:intermediate"| LSOcat
+    LSOcat -->|"UDP"| Service
+    Service -. "response" .-> LSOcat
+    LSOcat -. "TCP" .-> SSHSlave
+    SSHSlave -. "TCP" .-> RSOcat
+    RSOcat -. "UDP response" .-> RClient
+```
+
+Three managed processes per remote UDP forward:
+
+| Name | Runs on | Role |
+|------|---------|------|
+| `susops-udp-<conn>-<fw>-ssh`    | local  | SSH `-R` slave — requests remote SSH server to bind `intermediate` port and tunnel it back locally |
+| `susops-udp-<conn>-<fw>-rsocat` | remote | socat UDP → TCP (via SSH exec); connects to the `intermediate` port bound by the SSH -R slave      |
+| `susops-udp-<conn>-<fw>-lsocat` | local  | socat TCP → UDP; listens on `intermediate`, forwards UDP to the destination service                |
+
+### Use cases
+
+| Protocol | Direction | Example                                                |
+|----------|-----------|--------------------------------------------------------|
+| DNS      | local     | Route `dig` queries to an internal resolver (bypasses split-DNS) |
+| DNS      | local     | Use an external resolver (8.8.8.8) bypassing corporate DNS monitoring |
+| SNMP     | local     | Query internal SNMP agents (UDP 161) through the tunnel |
+| Syslog   | remote    | Receive syslog UDP 514 from remote host to a local collector |
+| VoIP/SIP | local     | Reach an internal SIP registrar over UDP 5060          |
+| NTP      | local     | Sync to an internal NTP server (UDP 123)               |
+| Gaming   | local     | Tunnel UDP game traffic to an internal game server     |
+
+### SSH server restrictions and UDP
+
+The EXEC-based local UDP approach runs a command on the remote SSH host for each datagram. This requires the SSH user to have command execution permission. A `ForceCommand /bin/false` or `restrict` without `command="..."` override will block UDP forwarding. If you need both security restrictions and UDP, use the remote UDP direction (which only requires TCP port forwarding on the server side) or relax `ForceCommand` for the specific socat command.
+
+---
+
 ## Python API
 
 ```python
@@ -546,6 +743,18 @@ mgr.on_log = lambda msg: print(f"[LOG] {msg}")
 # Test connectivity
 result = mgr.test("internal.example.com")
 print(result.success, result.latency_ms)
+
+# Test SSH reachability for a connection
+ok, msg = mgr.test_connection("work")
+print(ok, msg)   # True, "SSH OK (42 ms)"
+
+# Test a domain through a connection's SOCKS proxy
+ok, msg = mgr.test_domain("internal.example.com", conn_tag="work")
+print(ok, msg)   # True, "HTTP 200 (91 ms)"
+
+# Test liveness of a specific port forward
+results = mgr.test_forward("work", src_port=5432, direction="local")
+# {"tcp": (True, "port bound (PID 1234)"), "udp": (True, "socat running (PID 5678)")}
 
 # Share a file (multiple concurrent shares supported)
 from pathlib import Path
@@ -593,6 +802,7 @@ susops/
     core/
       config.py         # Pydantic v2 + ruamel.yaml
       ssh.py            # SSH ControlMaster/slave management + socket helpers
+      socat.py          # UDP forwarding via socat EXEC + SSH ControlMaster
       pac.py            # PAC generation + aiohttp HTTP server
       share.py          # AES-256-CTR file sharing + shared async event loop
       status.py         # aiohttp SSE StatusServer (/events endpoint)
@@ -608,7 +818,7 @@ susops/
       app.tcss          # Global CSS theme
       screens/
         dashboard.py        # Split-pane dashboard (sidebar + tabbed detail)
-        connection_editor.py # CRUD editor with modal dialogs
+        connections.py      # CRUD editor with modal dialogs
         share.py            # File share + fetch screen
         config_editor.py    # Read-only YAML viewer
     tray/

@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import threading
 
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
+from textual.containers import Horizontal
+from textual.screen import ModalScreen
+from textual.widgets import Button, Label, Static
 
-from susops.tui.screens.connection_editor import ConnectionEditorScreen
+from susops.tui.screens.connections import ConnectionsScreen
 from susops.tui.screens.dashboard import DashboardScreen
-from susops.tui.screens.share import ShareScreen
+from susops.tui.screens.shares import SharesScreen
 
 
 class _SusOpsCommands(Provider):
@@ -23,7 +26,7 @@ class _SusOpsCommands(Provider):
             ("Restart tunnels", app.action_restart_all, "Restart all SSH tunnels"),
             ("Dashboard", lambda: app.push_screen("dashboard"), "Go to dashboard"),
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
-            ("Share", lambda: app.push_screen("share"), "Share/fetch files"),
+            ("Shares", lambda: app.push_screen("shares"), "Share/fetch files"),
             ("Config", lambda: app.action_show_config(), "View config.yaml"),
             ("PAC file", lambda: app.action_show_pac(), "View PAC proxy config"),
             ("Quit", app.action_quit, "Quit SusOps"),
@@ -37,6 +40,35 @@ class _SusOpsCommands(Provider):
                     command=action,
                     help=description,
                 )
+
+
+class _ConfigErrorScreen(ModalScreen):
+    """Shown when config.yaml fails to load. Allows the user to open $EDITOR to fix it."""
+
+    def __init__(self, error: str, config_path: str) -> None:
+        super().__init__()
+        self._error = error
+        self._config_path = config_path
+
+    def compose(self) -> ComposeResult:
+        with Static(classes="modal-dialog"):
+            yield Label("[bold red]Config file error[/bold red]")
+            yield Label(f"[dim]{self._config_path}[/dim]")
+            yield Label(self._error)
+            yield Label("\nFix the file and restart susops, or press [bold]e[/bold] to open in $EDITOR.")
+            with Horizontal(classes="modal-btn-row"):
+                yield Button("Open in $EDITOR", id="btn-edit", variant="warning")
+                yield Button("Quit", id="btn-quit", variant="error")
+
+    def on_button_pressed(self, event) -> None:
+        import os
+        import subprocess
+        if event.button.id == "btn-edit":
+            editor = os.environ.get("EDITOR", "nano")
+            subprocess.run([editor, self._config_path])
+            self.dismiss(None)
+        else:
+            self.app.exit(1)
 
 
 class SusOpsTuiApp(App):
@@ -53,7 +85,7 @@ class SusOpsTuiApp(App):
 
     BINDINGS = [
         Binding("c", "push_screen('connections')", "Connections", show=False),
-        Binding("f", "push_screen('share')", "Share", show=False),
+        Binding("f", "push_screen('shares')", "Shares", show=False),
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
@@ -63,18 +95,27 @@ class SusOpsTuiApp(App):
 
     SCREENS = {
         "dashboard": DashboardScreen,
-        "connections": ConnectionEditorScreen,
-        "share": ShareScreen,
+        "connections": ConnectionsScreen,
+        "shares": SharesScreen,
     }
 
     COMMANDS = App.COMMANDS | {_SusOpsCommands}
 
     def __init__(self, verbose: bool = False) -> None:
         super().__init__()
-        from susops.facade import SusOpsManager
-        self.manager = SusOpsManager(verbose=verbose)
+        self._verbose = verbose
+        self.manager = None  # type: ignore[assignment]
 
     def on_mount(self) -> None:
+        from pathlib import Path
+        from susops.facade import SusOpsManager
+        workspace = Path.home() / ".susops"
+        try:
+            self.manager = SusOpsManager(verbose=self._verbose)
+        except Exception as exc:
+            config_path = str(workspace / "config.yaml")
+            self.push_screen(_ConfigErrorScreen(str(exc), config_path))
+            return
         self.push_screen("dashboard")
 
     def action_quit(self) -> None:

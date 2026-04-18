@@ -59,6 +59,9 @@ class PortForward(BaseModel):
     src_port: int
     dst_addr: str = "localhost"
     dst_port: int
+    tcp: bool = True
+    udp: bool = False
+    enabled: bool = True
 
     @model_validator(mode="before")
     @classmethod
@@ -69,6 +72,14 @@ class PortForward(BaseModel):
             data["src_port"] = int(data.pop("src"))
             data["dst_port"] = int(data.pop("dst", data["src_port"]))
         return data
+
+    @model_validator(mode="after")
+    def require_at_least_one_protocol(self) -> "PortForward":
+        # Runs after handle_legacy_schema has already normalised the dict,
+        # so self.tcp and self.udp are already coerced to bool.
+        if not self.tcp and not self.udp:
+            raise ValueError("At least one of tcp/udp must be True")
+        return self
 
 
 class Forwards(BaseModel):
@@ -89,8 +100,10 @@ class Connection(BaseModel):
     tag: str
     ssh_host: str
     socks_proxy_port: int = 0
+    enabled: bool = True
     forwards: Forwards = Forwards()
     pac_hosts: list[str] = []
+    pac_hosts_disabled: list[str] = []
     file_shares: list[FileShare] = []
 
 

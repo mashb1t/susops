@@ -24,7 +24,7 @@ __all__ = ["StatusServer"]
 class StatusServer:
     """Async SSE server that broadcasts events to connected clients.
 
-    Reuses the shared event loop from share.py so both servers run on the
+    Reuses the shared event loop from shares.py so both servers run on the
     same daemon thread.
     """
 

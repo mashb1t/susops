@@ -49,6 +49,7 @@ src/susops/
   core/
     config.py        # Pydantic v2 models + ruamel.yaml I/O
     ssh.py           # SSH ControlMaster/slave subprocess + PID tracking + socket helpers
+    socat.py         # UDP port forwarding via socat EXEC + SSH ControlMaster
     pac.py           # PAC JS generation + aiohttp HTTP server (shared async loop)
     share.py         # AES-256-CTR HTTP file sharing + client fetch (shared async loop)
     status.py        # SSE StatusServer — aiohttp, broadcasts state/share/forward events
@@ -82,6 +83,7 @@ flowchart TD
     Facade["SusOpsManager — facade.py\nconfig I/O · PID mgmt · bandwidth sampling\nserver lifecycle"]
 
     SSH["ssh.py\nControlMaster + forward slaves"]
+    Socat["socat.py\nUDP forwards via socat"]
     PAC["pac.py\nPAC server (aiohttp)"]
     Share["share.py\nShareServer(s) (aiohttp)"]
 
@@ -95,12 +97,17 @@ flowchart TD
     Master["susops-ssh-&lt;tag&gt;\nSSH ControlMaster\n(-M -N -D socks_port)"]
     Slave["susops-fwd-&lt;tag&gt;-&lt;fw&gt;\nSSH forward slave\n(-O forward -L/-R)"]
     PacProc["susops-pac\nPAC HTTP server"]
+    UDPLocal["susops-udp-&lt;tag&gt;-&lt;fw&gt;-lsocat\nLocal socat\n(UDP4-RECVFROM,fork EXEC:'ssh…socat')"]
+    UDPSsh["susops-udp-&lt;tag&gt;-&lt;fw&gt;-ssh\nSSH -R slave\n(intermediate TCP port)"]
+    UDPRsocat["susops-udp-&lt;tag&gt;-&lt;fw&gt;-rsocat\nRemote socat\n(UDP→TCP via SSH exec)"]
+    UDPLsocat["susops-udp-&lt;tag&gt;-&lt;fw&gt;-lsocat\nLocal socat\n(TCP→UDP to local service)"]
 
     TUI --> Facade
     CLI --> Facade
     Tray --> Facade
 
     Facade --> SSH
+    Facade --> Socat
     Facade --> PAC
     Facade --> Share
 
@@ -114,20 +121,58 @@ flowchart TD
     SSH -->|spawns| Master
     Master -->|multiplexes| Slave
     PAC -->|spawns| PacProc
+    Socat -->|local UDP| UDPLocal
+    Socat -->|remote UDP| UDPSsh
+    Socat -->|remote UDP| UDPRsocat
+    Socat -->|remote UDP| UDPLsocat
+    Master -.->|ControlMaster socket| UDPLocal
+    Master -.->|ControlMaster socket| UDPSsh
+    Master -.->|ControlMaster socket| UDPRsocat
 ```
 
 ## Key Design Patterns
 
 **Facade is the only entry point.** Never import from `susops.core.*` in a frontend — always go through `SusOpsManager`. The facade owns config I/O, PID file management, bandwidth sampling, and the PAC/share/status server lifecycle.
 
-**SSH ControlMaster + slaves.** Each connection runs one ControlMaster process (`ssh -M -N -D socks_port`) and zero or more slave forward processes (`ssh -O forward -L/-R`). Slaves attach to the master's Unix socket (`~/.susops/pids/susops-<tag>.sock`). This avoids re-authenticating per-forward and gives independent lifecycle control per forward.
+**SSH ControlMaster + `-O forward`/`-O cancel`.** Each connection runs one ControlMaster process. The master command contains only the SOCKS proxy (`-D socks_port`) — no `-L`/`-R` flags — so process arguments stay minimal and forward destinations are never visible in `ps aux`. Forwards are registered live via `ssh -O forward` through the Unix socket (`~/.susops/sockets/<tag>.sock`) and released via `ssh -O cancel`. On reconnect, `_ReconnectMonitor` detects the socket coming back and calls `_reregister_forwards` to re-register all enabled forwards. No separate slave processes are tracked — the master owns all port bindings.
 
-- `start_master(conn, ...)` — starts the ControlMaster, waits for socket
-- `start_forward(conn, fw, direction, ...)` — attaches a slave to the existing socket
-- `stop_forward(conn_tag, fw_tag, ...)` — kills only that slave
-- `stop_tunnel(conn_tag, ...)` — kills all slaves + the master
+- `start_master(conn, ...)` — starts the ControlMaster; enabled TCP forwards are bundled in the command and python restarts them atomically on reconnect
+- `start_forward(conn, fw, direction, workspace)` — registers a forward live via `ssh -O forward` (no process spawned; master holds the port)
+- `cancel_forward(conn, fw, direction, workspace)` — releases a master-held port via `ssh -O cancel`
+- `stop_tunnel(conn_tag, ...)` — stops the ssh master (and all its forwards)
 - `find_master_pid(tag, workspace)` — scans `/proc/*/cmdline` to recover PID when the PID file is stale
 - `is_socket_alive(tag, workspace)` — runs `ssh -O check` against the socket to verify liveness
+
+**UDP port forwarding via socat.** `core/socat.py` manages UDP forwards through the existing ControlMaster socket. Two architectures depending on direction:
+
+- **Local UDP** (`direction="local"`): one `socat` process with `UDP4-RECVFROM:port,reuseaddr,fork EXEC:'ssh -o ControlPath=<sock> -T <host> socat - UDP4-SENDTO:dst:port'`. Each datagram forks a child that opens one SSH channel through the ControlMaster and runs a remote `socat` instance. No TCP intermediate port needed. `-T15` closes idle fork children after 15 s.
+
+  ```mermaid
+  flowchart LR
+      Client["UDP client"] -->|UDP| LSOcat["lsocat\nUDP4-RECVFROM,fork\nEXEC:'ssh...'"]
+      LSOcat -->|"fork → SSH channel"| RSOcat["remote socat\nsocat - UDP4-SENDTO"]
+      RSOcat -->|UDP| Service["UDP service"]
+  ```
+
+  Process name: `susops-udp-<conn>-<fw>-lsocat`
+
+- **Remote UDP** (`direction="remote"`): three processes using an intermediate TCP port allocated by `get_random_free_port()`:
+  1. `ssh` slave — `-R intermediate:localhost:intermediate` through ControlMaster socket (process: `…-ssh`)
+  2. Remote socat via SSH exec — `UDP4-RECVFROM:src_port,fork TCP4:localhost:intermediate` (process: `…-rsocat`)
+  3. Local socat — `TCP4-LISTEN:intermediate,fork UDP4-SENDTO:dst_addr:dst_port` (process: `…-lsocat`)
+
+  ```mermaid
+  flowchart LR
+      RClient["UDP client\n(remote)"] -->|UDP| RSOcat["rsocat on remote\nUDP4-RECVFROM,fork\nTCP4:intermediate"]
+      RSOcat -->|"TCP (via SSH -R tunnel)"| LSOcat["lsocat on local\nTCP4-LISTEN\nUDP4-SENDTO"]
+      LSOcat -->|UDP| Service["UDP service\n(local)"]
+  ```
+
+Key implementation notes:
+- EXEC quoting: `EXEC:'<cmd>'` (single quotes inside the socat argument) is required when the exec'd command has spaces — without them socat errors "wrong number of parameters".
+- `socat.py` public API: `start_udp_forward`, `stop_udp_forward`, `stop_all_udp_forwards_for_connection`. All are called from `facade.py`; never call from frontends directly.
+- `stop_all_udp_forwards_for_connection` is called unconditionally in `stop()` — socat processes may outlive a crashed SSH master and must be cleaned up regardless of whether `stop_tunnel` succeeded.
+- `UDP4-SENDTO` is used (not `UDP4-DATAGRAM`) — unconnected socket allows receipt from any source address, which is required for protocols where the server responds from a different port.
 
 **Zombie detection.** `process.py:is_running()` reads `/proc/{pid}/status` and checks for `State: Z`. Zombies are reaped with `os.waitpid(pid, os.WNOHANG)`, their PID file deleted, and `False` returned so callers treat them as stopped. `os.kill(pid, 0)` alone is not sufficient — it returns 0 for zombies.
 
@@ -169,7 +214,9 @@ flowchart TD
 
 - Config file: `~/.susops/config.yaml` (Pydantic model, ruamel.yaml preserves comments)
 - PID files: `~/.susops/pids/susops-ssh-<tag>.pid`, `susops-fwd-<tag>-<fw>.pid`, `susops-pac.pid`
+- UDP process PID files: `susops-udp-<tag>-<fw>-lsocat.pid`, `…-rsocat.pid`, `…-ssh.pid`
 - Socket files: `~/.susops/pids/susops-<tag>.sock` (SSH ControlMaster socket)
+- Log files: `~/.susops/logs/<process-name>.log` — socat/SSH stderr for UDP processes goes here
 - Port `0` in config means auto-assign at start; the chosen port is written back to config
 - `ephemeral_ports: true` in `susops_app:` section skips the write-back (ports stay 0)
 
@@ -178,18 +225,24 @@ flowchart TD
 ```yaml
 forwards:
   local:
-    - src_port: 5432      # local port to bind
-      src_addr: localhost  # local bind address
-      dst_port: 5432       # remote port
-      dst_addr: db.internal  # remote host
+    - src_port: 5432       # local port to bind
+      src_addr: localhost   # local bind address
+      dst_port: 5432        # remote port
+      dst_addr: db.internal # remote host
       tag: postgres
+      tcp: true             # SSH -L slave (default true)
+      udp: false            # socat EXEC approach (default false)
   remote:
-    - src_port: 8080      # remote port to bind on SSH server
-      src_addr: localhost  # remote bind address
-      dst_port: 8080       # local port to forward to
-      dst_addr: localhost  # local bind address
+    - src_port: 8080       # remote port to bind on SSH server
+      src_addr: localhost   # remote bind address
+      dst_port: 8080        # local port to forward to
+      dst_addr: localhost   # local bind address
       tag: webserver
+      tcp: true             # SSH -R slave
+      udp: false            # 3-process TCP bridge approach
 ```
+
+`tcp` and `udp` are independent — both can be `true` to forward the same port over both protocols simultaneously. At least one must be `true`. The facade calls `start_forward` for TCP and `start_udp_forward` for UDP separately, and cleans them up independently on stop.
 
 ## Adding a New Feature Checklist
 

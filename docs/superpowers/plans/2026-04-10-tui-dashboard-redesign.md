@@ -72,7 +72,7 @@ Expected: all pass (no tests reference the display string directly).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/susops/tui/screens/connection_editor.py
+git add src/susops/tui/screens/connections.py
 git commit -m "feat: rename 'PAC Hosts' to 'Domain / IP / CIDR' in connections editor UI"
 ```
 

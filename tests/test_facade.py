@@ -527,6 +527,106 @@ def test_restore_shares_on_start(tmp_path):
     mgr.stop_share(running[0].port)
 
 
+def test_add_local_udp_forward_persisted(tmp_path):
+    """UDP forward is saved to config with correct flags."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host", 1080)
+    fw = PortForward(src_port=53, dst_port=53, dst_addr="dns.internal", tcp=False, udp=True)
+    mgr.add_local_forward("work", fw)
+    config = mgr.list_config()
+    saved = config.connections[0].forwards.local[0]
+    assert saved.tcp is False
+    assert saved.udp is True
+    assert saved.dst_addr == "dns.internal"
+
+
+def test_start_logs_ssh_tail_on_failure(tmp_path, monkeypatch):
+    """When SSH fails to start, the facade logs the last lines of the SSH log."""
+    from susops.facade import SusOpsManager
+    import susops.facade as facade_mod
+
+    # Pre-write a fake SSH log that would normally be written by the SSH process
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "susops-ssh-demo.log").write_text(
+        "OpenSSH_9.0\nConnection refused (port 22)\n"
+    )
+
+    # Force start_master to raise so the exception handler is exercised
+    monkeypatch.setattr(facade_mod, "start_master", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("Connection refused (port 22)")))
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("demo", "user@nonexistent.invalid")
+
+    log_lines = []
+    mgr.on_log = log_lines.append
+
+    mgr.start(tag="demo")  # will fail — start_master raises
+
+    combined = "\n".join(log_lines)
+    assert "Connection refused" in combined, (
+        f"SSH log tail not surfaced in log output:\n{combined}"
+    )
+
+
+def test_reconnect_monitor_tracks_intended_tags(tmp_path):
+    """mark_running and mark_stopped maintain the intended set correctly."""
+    from susops.facade import _ReconnectMonitor
+
+    class _FakeMgr:
+        pass
+
+    monitor = _ReconnectMonitor(_FakeMgr())
+    assert "work" not in monitor._intended
+
+    monitor.mark_running("work")
+    assert "work" in monitor._intended
+
+    monitor.mark_running("home")
+    assert "home" in monitor._intended
+
+    monitor.mark_stopped("work")
+    assert "work" not in monitor._intended
+    assert "home" in monitor._intended
+
+
+def test_error_calls_both_on_log_and_on_error(tmp_path):
+    """_error() must invoke both on_log and on_error callbacks."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    log_msgs = []
+    error_msgs = []
+    mgr.on_log = log_msgs.append
+    mgr.on_error = error_msgs.append
+
+    mgr._error("something went wrong")
+
+    assert any("something went wrong" in m for m in log_msgs), "on_log not called"
+    assert any("something went wrong" in m for m in error_msgs), "on_error not called"
+
+
+def test_error_tolerates_missing_on_error(tmp_path):
+    """_error() must not raise when on_error is None."""
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.on_error = None
+    mgr._error("oops")  # must not raise
+
+
+def test_add_local_forward_both_protocols_persisted(tmp_path):
+    """Forward with tcp=True and udp=True is saved with both flags."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host", 1080)
+    fw = PortForward(src_port=53, dst_port=53, tcp=True, udp=True)
+    mgr.add_local_forward("work", fw)
+    saved = mgr.list_config().connections[0].forwards.local[0]
+    assert saved.tcp is True
+    assert saved.udp is True
+
+
 def test_restore_shares_missing_file_logs_warning(tmp_path):
     """A FileShare pointing to a nonexistent file must be skipped with a warning logged."""
     import os
@@ -565,3 +665,294 @@ def test_restore_shares_missing_file_logs_warning(tmp_path):
     )
     # No server should be running for this share
     assert mgr.list_shares() == [] or all(not s.running for s in mgr.list_shares())
+
+
+def test_disabled_forward_not_started(tmp_path):
+    """Forwards with enabled=False are not registered via ssh -O forward during start()."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("demo", "user@host")
+    mgr.add_local_forward("demo", PortForward(
+        src_port=5432, dst_port=5432, tag="pg", enabled=False
+    ))
+
+    started_forwards = []
+
+    def fake_start_forward(conn, fw, direction, ws):
+        started_forwards.append(fw.tag or str(fw.src_port))
+
+    with patch("susops.facade.start_forward", side_effect=fake_start_forward), \
+         patch("susops.facade.start_master", return_value=1234), \
+         patch("susops.core.ssh.is_socket_alive", return_value=True):
+        mgr.start(tag="demo")
+
+    assert "pg" not in started_forwards, "Disabled forward must not be registered"
+
+
+# ------------------------------------------------------------------ #
+# test_connection / test_domain / test_forward
+# ------------------------------------------------------------------ #
+
+def test_test_connection_success(tmp_path, monkeypatch):
+    """test_connection returns success=True and a latency when SSH is reachable."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "test_ssh_connectivity", lambda host: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@work.example.com")
+
+    result = mgr.test_connection("work")
+
+    assert result.success is True
+    assert result.target == "user@work.example.com"
+    assert result.message == "SSH reachable"
+    assert result.latency_ms is not None
+    assert result.latency_ms >= 0
+
+
+def test_test_connection_unreachable(tmp_path, monkeypatch):
+    """test_connection returns success=False when SSH is not reachable."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "test_ssh_connectivity", lambda host: False)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@work.example.com")
+
+    result = mgr.test_connection("work")
+
+    assert result.success is False
+    assert result.message == "SSH unreachable"
+    assert result.latency_ms is None
+
+
+def test_test_connection_unknown_conn(tmp_path, monkeypatch):
+    """test_connection returns failure when connection tag does not exist."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "test_ssh_connectivity", lambda host: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    result = mgr.test_connection("nonexistent")
+
+    assert result.success is False
+    assert result.target == "nonexistent"
+    assert "not found" in result.message.lower()
+
+
+def test_test_domain_success(tmp_path, monkeypatch):
+    """test_domain returns success when curl exits 0 through the SOCKS proxy."""
+    import subprocess
+    import susops.facade as facade_mod
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "200"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        assert "socks5h://127.0.0.1:1080" in cmd
+        assert "internal.example.com" in " ".join(cmd)
+        return _FakeResult()
+
+    monkeypatch.setattr(facade_mod.subprocess, "run", fake_run)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+
+    result = mgr.test_domain("internal.example.com", "work")
+
+    assert result.success is True
+    assert result.target == "internal.example.com"
+    assert "200" in result.message
+    assert result.latency_ms is not None
+
+
+def test_test_domain_strips_wildcard_prefix(tmp_path, monkeypatch):
+    """test_domain strips '*.' from wildcard hosts before passing to curl."""
+    import susops.facade as facade_mod
+
+    seen_cmds = []
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "200"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen_cmds.append(cmd)
+        return _FakeResult()
+
+    monkeypatch.setattr(facade_mod.subprocess, "run", fake_run)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+
+    result = mgr.test_domain("*.internal.example.com", "work")
+
+    assert result.success is True
+    # The wildcard prefix must have been stripped — curl must see the bare hostname
+    full_cmd = " ".join(seen_cmds[0])
+    assert "*.internal.example.com" not in full_cmd
+    assert "internal.example.com" in full_cmd
+
+
+def test_test_domain_curl_failure(tmp_path, monkeypatch):
+    """test_domain returns success=False when curl exits non-zero."""
+    import susops.facade as facade_mod
+
+    class _FakeResult:
+        returncode = 7  # connection refused
+        stdout = ""
+        stderr = "Connection refused"
+
+    monkeypatch.setattr(facade_mod.subprocess, "run", lambda cmd, **kwargs: _FakeResult())
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+
+    result = mgr.test_domain("internal.example.com", "work")
+
+    assert result.success is False
+    assert result.latency_ms is None
+
+
+def test_test_domain_no_socks_port(tmp_path):
+    """test_domain returns failure when socks_proxy_port is 0 (proxy not configured)."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")  # socks_proxy_port defaults to 0
+
+    result = mgr.test_domain("internal.example.com", "work")
+
+    assert result.success is False
+    assert "socks" in result.message.lower() or "proxy" in result.message.lower()
+
+
+def test_test_domain_unknown_conn(tmp_path):
+    """test_domain returns failure when connection tag does not exist."""
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    result = mgr.test_domain("internal.example.com", "nonexistent")
+
+    assert result.success is False
+    assert "socks" in result.message.lower() or "proxy" in result.message.lower()
+
+
+def test_test_domain_curl_timeout(tmp_path, monkeypatch):
+    """test_domain returns success=False and includes the exception message on timeout."""
+    import subprocess
+    import susops.facade as facade_mod
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, timeout=15)
+
+    monkeypatch.setattr(facade_mod.subprocess, "run", fake_run)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+
+    result = mgr.test_domain("internal.example.com", "work")
+
+    assert result.success is False
+    assert result.latency_ms is None
+
+
+def test_test_forward_tcp_local_port_bound(tmp_path, monkeypatch):
+    """test_forward returns tcp=True for a local TCP forward when src_port is bound."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tcp=True, udp=False))
+
+    result = mgr.test_forward("work", 5432, "local")
+
+    assert result == {"tcp": True}
+
+
+def test_test_forward_tcp_local_port_free(tmp_path, monkeypatch):
+    """test_forward returns tcp=False for a local TCP forward when src_port is free."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tcp=True, udp=False))
+
+    result = mgr.test_forward("work", 5432, "local")
+
+    assert result == {"tcp": False}
+
+
+def test_test_forward_tcp_remote_checks_socket(tmp_path, monkeypatch):
+    """test_forward for a remote TCP forward delegates to is_socket_alive."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "is_socket_alive", lambda tag, ws: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_remote_forward("work", PortForward(src_port=8080, dst_port=8080, tcp=True, udp=False))
+
+    result = mgr.test_forward("work", 8080, "remote")
+
+    assert result == {"tcp": True}
+
+
+def test_test_forward_udp_only_local(tmp_path, monkeypatch):
+    """test_forward returns only a 'udp' key for a UDP-only local forward."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "_is_udp_forward_running",
+                        lambda conn_tag, fw, direction, pm: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=53, dst_port=53, tcp=False, udp=True))
+
+    result = mgr.test_forward("work", 53, "local")
+
+    assert result == {"udp": True}
+    assert "tcp" not in result
+
+
+def test_test_forward_tcp_and_udp(tmp_path, monkeypatch):
+    """test_forward returns both 'tcp' and 'udp' keys for a dual-protocol forward."""
+    import susops.facade as facade_mod
+
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+    monkeypatch.setattr(facade_mod, "_is_udp_forward_running",
+                        lambda conn_tag, fw, direction, pm: True)
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=53, dst_port=53, tcp=True, udp=True))
+
+    result = mgr.test_forward("work", 53, "local")
+
+    assert result == {"tcp": True, "udp": True}
+
+
+def test_test_forward_unknown_connection_raises(tmp_path):
+    """test_forward raises ValueError when the connection tag does not exist."""
+    mgr = SusOpsManager(workspace=tmp_path)
+
+    with pytest.raises(ValueError, match="not found"):
+        mgr.test_forward("nonexistent", 5432, "local")
+
+
+def test_test_forward_unknown_forward_raises(tmp_path):
+    """test_forward raises ValueError when src_port is not configured for the connection."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+
+    with pytest.raises(ValueError, match="not found"):
+        mgr.test_forward("work", 9999, "local")

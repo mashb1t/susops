@@ -23,21 +23,27 @@ from susops.core.config import (
     save_config,
 )
 from susops.core.pac import PacServer, write_pac_file
-from susops.core.ports import get_random_free_port
+from susops.core.ports import get_random_free_port, is_port_free
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
+    cancel_forward,
     find_master_pid,
     is_socket_alive,
     is_tunnel_running,
     socket_path,
     start_forward,
     start_master,
-    stop_forward,
     stop_tunnel,
     test_ssh_connectivity,
+)
+from susops.core.socat import (
+    start_udp_forward,
+    stop_udp_forward,
+    stop_all_udp_forwards_for_connection,
+    is_udp_forward_running as _is_udp_forward_running,
 )
 from susops.core.status import StatusServer
 from susops.core.types import (
@@ -59,23 +65,61 @@ class _BandwidthSampler:
     """Background thread that samples per-connection bandwidth every 2 seconds."""
 
     INTERVAL = 2.0
+    _HISTORY_MAX = 60
+    _HISTORY_FILE = "bandwidth_history.json"
 
     def __init__(
             self,
             process_mgr: ProcessManager,
+            workspace: "Path | None" = None,
             on_sample: Callable[[str, float, float], None] | None = None,
     ) -> None:
         self._mgr = process_mgr
+        self._workspace = workspace
         self._rates: dict[str, tuple[float, float]] = {}
         self._totals: dict[str, tuple[float, float]] = {}  # tag -> (rx_total_bytes, tx_total_bytes)
         self._prev_net: tuple[float, float, float] | None = None
         self._prev_chars: dict[str, float] = {}
         self._lock = threading.Lock()
         self._on_sample = on_sample
+        # Per-tag rolling history: tag -> list of [rx_bps, tx_bps] (up to _HISTORY_MAX samples)
+        self._history: dict[str, list[list[float]]] = {}
+        self._load_history()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="susops-bw-sampler"
         )
         self._thread.start()
+
+    def _history_path(self) -> "Path | None":
+        if self._workspace is None:
+            return None
+        return self._workspace / self._HISTORY_FILE
+
+    def _load_history(self) -> None:
+        """Load persisted bandwidth history from disk if available."""
+        path = self._history_path()
+        if path is None or not path.exists():
+            return
+        try:
+            import json
+            data = json.loads(path.read_text())
+            if isinstance(data, dict):
+                for tag, samples in data.items():
+                    if isinstance(samples, list):
+                        self._history[tag] = samples[-self._HISTORY_MAX:]
+        except Exception:
+            pass
+
+    def _save_history(self) -> None:
+        """Persist the current bandwidth history to disk (called under self._lock)."""
+        path = self._history_path()
+        if path is None:
+            return
+        try:
+            import json
+            path.write_text(json.dumps(self._history))
+        except Exception:
+            pass
 
     def _run(self) -> None:
         while True:
@@ -164,6 +208,14 @@ class _BandwidthSampler:
                         prev_rx, prev_tx = self._totals.get(tag, (0.0, 0.0))
                         self._totals[tag] = (prev_rx + rx * dt, prev_tx + tx * dt)
 
+                    # Append to rolling per-tag history and persist
+                    for tag, (rx, tx) in new_rates.items():
+                        tag_hist = self._history.setdefault(tag, [])
+                        tag_hist.append([rx, tx])
+                        if len(tag_hist) > self._HISTORY_MAX:
+                            del tag_hist[:-self._HISTORY_MAX]
+                    self._save_history()
+
             self._prev_net = (sys_rx, sys_tx, now)
             self._prev_chars = dict(proc_chars)
 
@@ -185,10 +237,85 @@ class _BandwidthSampler:
                 self._totals.pop(tag, None)
 
 
+class _ReconnectMonitor:
+    """Background thread that monitors and restarts dropped SSH connections.
+
+    Tracks which connection tags were intentionally started. Every 15 seconds
+    it checks socket liveness per tag. When a socket goes down it attempts to
+    restart the ControlMaster immediately and on every subsequent poll until it
+    succeeds. Once the master is back, all enabled forwards are re-registered.
+    """
+
+    INTERVAL = 15.0
+
+    def __init__(self, mgr: "SusOpsManager") -> None:
+        self._mgr = mgr
+        self._intended: set[str] = set()
+        self._socket_was_alive: dict[str, bool] = {}
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="susops-reconnect"
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def mark_running(self, tag: str) -> None:
+        with self._lock:
+            self._intended.add(tag)
+            self._socket_was_alive[tag] = True  # assume alive at start
+
+    def mark_stopped(self, tag: str) -> None:
+        with self._lock:
+            self._intended.discard(tag)
+            self._socket_was_alive.pop(tag, None)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(timeout=self.INTERVAL):
+            with self._lock:
+                tags = list(self._intended)
+            for tag in tags:
+                try:
+                    self._check(tag)
+                except Exception:
+                    pass
+
+    def _check(self, tag: str) -> None:
+        alive = is_socket_alive(tag, self._mgr.workspace)
+        with self._lock:
+            was_alive = self._socket_was_alive.get(tag, True)
+            self._socket_was_alive[tag] = alive
+
+        if alive:
+            if not was_alive:
+                # Socket came back (reconnect succeeded on a previous poll).
+                self._mgr._log(f"[{tag}] Connection restored — re-registering forwards...")
+                self._mgr._reregister_forwards(tag)
+        else:
+            if was_alive:
+                self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
+                self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
+                self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
+            # Attempt to restart the master on every poll while the socket is down.
+            if self._mgr._try_reconnect(tag):
+                with self._lock:
+                    self._socket_was_alive[tag] = True
+                self._mgr._reregister_forwards(tag)
+
+
 class SusOpsManager:
     """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
-    def __init__(self, workspace: Path = _WORKSPACE_DEFAULT, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        workspace: Path = _WORKSPACE_DEFAULT,
+        verbose: bool = False,
+        _enable_background_threads: bool = True,
+    ) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
         self._verbose = verbose
@@ -200,12 +327,16 @@ class SusOpsManager:
         self._share_servers: dict[int, tuple[ShareServer, ShareInfo]] = {}
         self._log_buffer: deque[str] = deque(maxlen=500)
         self._bw_sampler = _BandwidthSampler(
-            self._process_mgr, on_sample=self._on_bandwidth
+            self._process_mgr, workspace=workspace, on_sample=self._on_bandwidth
         )
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
+        self._reconnect_monitor = _ReconnectMonitor(self)
+        if _enable_background_threads:
+            self._reconnect_monitor.start()
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
+        self.on_error: Callable[[str], None] | None = None
 
         # Auto-restart PAC server when tunnels are running but this is a
         # fresh process (e.g. TUI restarted without stop_on_quit).
@@ -225,6 +356,20 @@ class SusOpsManager:
         if self.on_log:
             self.on_log(msg)
 
+    def _error(self, msg: str) -> None:
+        """Log an error to the log buffer and fire the on_error callback.
+
+        Use this instead of _log() for failures that the user must see
+        immediately (connection failures, forward failures, share errors).
+        on_error is wired to the TUI's notify() toast in dashboard.py.
+        """
+        self._log(msg)
+        if self.on_error:
+            try:
+                self.on_error(msg)
+            except Exception:
+                pass
+
     def _debug(self, msg: str) -> None:
         """Log a debug message. Only active when verbose=True.
 
@@ -240,6 +385,27 @@ class SusOpsManager:
         else:
             import sys
             print(full, file=sys.stderr)
+
+    def _notify(self, title: str, body: str) -> None:
+        """Send a desktop notification. Best-effort — fails silently."""
+        import platform
+        import subprocess
+        try:
+            if platform.system() == "Darwin":
+                subprocess.Popen(
+                    ["osascript", "-e",
+                     f'display notification "{body}" with title "{title}"'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif platform.system() == "Linux":
+                subprocess.Popen(
+                    ["notify-send", title, body],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
 
     def _emit(self, event: str, data: dict) -> None:
         """Emit an SSE event and log it when verbose (bandwidth excluded — too noisy)."""
@@ -277,6 +443,7 @@ class SusOpsManager:
             running=running,
             pid=pid,
             socks_port=conn.socks_proxy_port,
+            enabled=conn.enabled,
         )
 
     def _ensure_socks_port(self, conn: Connection) -> Connection:
@@ -527,6 +694,10 @@ class SusOpsManager:
         errors = []
 
         for conn in connections:
+            if not conn.enabled:
+                self._log(f"[{conn.tag}] Disabled — skipping")
+                statuses.append(self._connection_status(conn))
+                continue
             if is_tunnel_running(conn.tag, self._process_mgr):
                 self._log(f"[{conn.tag}] Already running")
                 statuses.append(self._connection_status(conn))
@@ -543,18 +714,29 @@ class SusOpsManager:
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
 
-                # Start configured local/remote forwards as slaves
                 for fw in conn.forwards.local:
+                    if not fw.enabled:
+                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
+                        continue
                     try:
-                        start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                        if fw.tcp:
+                            start_forward(conn, fw, "local", self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 for fw in conn.forwards.remote:
+                    if not fw.enabled:
+                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
+                        continue
                     try:
-                        start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                        if fw.tcp:
+                            start_forward(conn, fw, "remote", self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
 
                 # Start HTTP servers for config-only (stopped) shares, then forward slaves
                 # for all running share servers belonging to this connection.
@@ -586,7 +768,7 @@ class SusOpsManager:
                             "conn_tag": conn.tag,
                         })
                     except Exception as exc:
-                        self._log(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+                        self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
 
                 for share_port, (_server, share_info) in list(self._share_servers.items()):
                     if share_info.conn_tag == conn.tag:
@@ -598,7 +780,7 @@ class SusOpsManager:
                             tag=f"share-{share_port}",
                         )
                         try:
-                            start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                            start_forward(conn, fw, "remote", self.workspace)
                         except Exception as exc:
                             self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
 
@@ -608,9 +790,16 @@ class SusOpsManager:
                 ))
                 self._start_times[conn.tag] = time.monotonic()
                 self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
+                self._reconnect_monitor.mark_running(conn.tag)
             except Exception as exc:
-                msg = f"[{conn.tag}] Failed: {exc}"
-                self._log(msg)
+                log_path = self.workspace / "logs" / f"susops-ssh-{conn.tag}.log"
+                tail = ""
+                if log_path.exists():
+                    lines = [l for l in log_path.read_text().splitlines() if l.strip()]
+                    if lines:
+                        tail = "\n  " + "\n  ".join(lines[-5:])
+                msg = f"[{conn.tag}] Failed: {exc}{tail}"
+                self._error(msg)
                 errors.append(msg)
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
                 self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
@@ -619,6 +808,8 @@ class SusOpsManager:
             cross_port = self._read_pac_port_file()
             if cross_port and self._probe_port(cross_port):
                 self._log(f"PAC server already running (cross-process) on port {cross_port}")
+                # Regenerate PAC file so cross-process server picks up the new connection
+                self._update_pac()
             else:
                 if cross_port:
                     self._remove_pac_port_file()
@@ -630,7 +821,11 @@ class SusOpsManager:
                     self._write_pac_port_file(self._pac_server.get_port())
                     self._log(f"PAC server started on port {pac_port}")
                 except Exception as exc:
+                    self._error(f"PAC server failed: {exc}")
                     errors.append(f"PAC server failed: {exc}")
+        else:
+            # PAC already running in-process — regenerate to include new connection's hosts
+            self._update_pac()
 
         # Start status server if not already running
         if not self._status_server.is_running():
@@ -707,6 +902,83 @@ class SusOpsManager:
                 break
             time.sleep(0.1)
 
+    def _try_reconnect(self, tag: str) -> bool:
+        """Attempt to restart the ControlMaster for a connection that went down.
+
+        Returns True if the master is now running, False if the attempt failed
+        (e.g. SSH server unreachable). Called by _ReconnectMonitor on every poll
+        while the socket is down.
+        """
+        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
+            return True
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None or not conn.enabled:
+            return False
+        try:
+            conn = self._ensure_socks_port(conn)
+            pid = start_master(conn, self._process_mgr, self.workspace)
+            self._log(f"[{tag}] Reconnected (PID {pid})")
+            return True
+        except Exception as exc:
+            self._log(f"[{tag}] Reconnect attempt failed: {exc}")
+            return False
+
+    def _reregister_forwards(self, tag: str) -> None:
+        """Re-register all enabled forwards
+
+        Called by _ReconnectMonitor when the ControlMaster socket comes back
+        alive. The fresh master starts with no forwards registered — all enabled
+        TCP forwards are re-registered via ``ssh -O forward``, stale UDP
+        processes are restarted, and active share forwards are re-registered.
+        """
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None:
+            return
+
+        # Clean up stale UDP processes — they died with the previous master.
+        stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+
+        for fw in conn.forwards.local:
+            if not fw.enabled:
+                continue
+            try:
+                if fw.tcp:
+                    start_forward(conn, fw, "local", self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
+
+        for fw in conn.forwards.remote:
+            if not fw.enabled:
+                continue
+            try:
+                if fw.tcp:
+                    start_forward(conn, fw, "remote", self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
+
+        for share_port, (_server, share_info) in list(self._share_servers.items()):
+            if share_info.conn_tag != tag:
+                continue
+            fw = PortForward(
+                src_port=share_port, dst_port=share_port,
+                src_addr="localhost", dst_addr="localhost",
+                tag=f"share-{share_port}",
+            )
+            try:
+                start_forward(conn, fw, "remote", self.workspace)
+            except Exception as exc:
+                self._log(f"[{tag}] Share forward {share_port} failed to re-register: {exc}")
+
+        pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}")
+        self._emit("state", {"tag": tag, "running": True, "pid": pid})
+        self._notify(f"SusOps [{tag}]", "Connection restored")
+
     def stop(self, keep_ports: bool = False, tag: str | None = None) -> StopResult:
         self._reload_config()
         errors = []
@@ -724,6 +996,8 @@ class SusOpsManager:
                     self._bw_sampler.reset_totals(conn.tag)
                     self._start_times.pop(conn.tag, None)
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                    self._reconnect_monitor.mark_stopped(conn.tag)
+                stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     updated = conn.model_copy(update={"socks_proxy_port": 0})
                     new_conns = [
@@ -805,8 +1079,8 @@ class SusOpsManager:
                             pass
                         self._remove_pac_port_file()
                         self._log("PAC server stopped (no active connections, remote)")
-            elif self._pac_server.is_running():
-                self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=remaining))
+            else:
+                self._update_pac()
 
         self._save()
         self._emit_state(self._compute_state())
@@ -859,11 +1133,39 @@ class SusOpsManager:
         if conn is None:
             raise ValueError(f"Connection '{tag}' not found")
         stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+        stop_all_udp_forwards_for_connection(tag, self._process_mgr)
         self.config = self.config.model_copy(
             update={"connections": [c for c in self.config.connections if c.tag != tag]}
         )
         self._save()
         self._log(f"Removed connection '{tag}'")
+
+    def set_connection_enabled(self, tag: str, enabled: bool) -> None:
+        self._reload_config()
+        conn = get_connection(self.config, tag)
+        if conn is None:
+            raise ValueError(f"Connection '{tag}' not found")
+        updated = conn.model_copy(update={"enabled": enabled})
+        self.config = self.config.model_copy(
+            update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
+        )
+        self._save()
+        self._log(f"[{tag}] {'enabled' if enabled else 'disabled'}")
+        if not enabled and (is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace)):
+            stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+            stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+            self._bw_sampler.reset_totals(tag)
+            self._start_times.pop(tag, None)
+            self._reconnect_monitor.mark_stopped(tag)
+            self._emit("state", {"tag": tag, "running": False, "pid": None})
+            # Regenerate PAC after stopping so this connection's hosts are removed
+            self._update_pac()
+
+    def _update_pac(self) -> None:
+        """Write the PAC file and reload the in-process server if running."""
+        pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
+        if self._pac_server.is_running():
+            self._pac_server.reload(pac_path)
 
     def test_ssh(self, ssh_host: str) -> bool:
         return test_ssh_connectivity(ssh_host)
@@ -888,8 +1190,7 @@ class SusOpsManager:
             update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
         )
         self._save()
-        if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._update_pac()
         self._log(f"[{tag}] Added PAC host '{host}'")
         self._emit_state(self._compute_state())
 
@@ -910,9 +1211,39 @@ class SusOpsManager:
             raise ValueError(f"Host '{host}' not found{scope}")
         self.config = self.config.model_copy(update={"connections": new_conns})
         self._save()
-        if self._pac_server.is_running():
-            self._pac_server.reload(write_pac_file(self.config, self.workspace, active_tags=self._active_tags()))
+        self._update_pac()
         self._log(f"Removed PAC host '{host}'")
+        self._emit_state(self._compute_state())
+
+    def set_pac_host_enabled(self, host: str, enabled: bool, conn_tag: str | None = None) -> None:
+        self._reload_config()
+        found = False
+        new_conns = []
+        conn_tag_label = f"[{conn_tag}] " if conn_tag else ""
+        for conn in self.config.connections:
+            if conn_tag and conn.tag != conn_tag:
+                new_conns.append(conn)
+                continue
+            if enabled and host in conn.pac_hosts_disabled:
+                found = True
+                new_conns.append(conn.model_copy(update={
+                    "pac_hosts": list(conn.pac_hosts) + [host],
+                    "pac_hosts_disabled": [h for h in conn.pac_hosts_disabled if h != host],
+                }))
+            elif not enabled and host in conn.pac_hosts:
+                found = True
+                new_conns.append(conn.model_copy(update={
+                    "pac_hosts": [h for h in conn.pac_hosts if h != host],
+                    "pac_hosts_disabled": list(conn.pac_hosts_disabled) + [host],
+                }))
+            else:
+                new_conns.append(conn)
+        if not found:
+            raise ValueError(f"{conn_tag_label}PAC host '{host}' not found")
+        self.config = self.config.model_copy(update={"connections": new_conns})
+        self._save()
+        self._update_pac()
+        self._log(f"{conn_tag_label}PAC host '{host}' {'enabled' if enabled else 'disabled'}")
         self._emit_state(self._compute_state())
 
     # ------------------------------------------------------------------ #
@@ -945,30 +1276,36 @@ class SusOpsManager:
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "local")
-        # If master is running, start the slave immediately (no restart needed)
+        # If master is running, register the forward live via ssh -O forward
         conn = get_connection(self.config, conn_tag)
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
-                start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                if fw.tcp:
+                    start_forward(conn, fw, "local", self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
                 self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"local-{fw.src_port}",
                     "direction": "local", "running": True,
                 })
             except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward slave: {exc}")
+                self._log(f"[{conn_tag}] Could not start forward: {exc}")
 
     def add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "remote")
         conn = get_connection(self.config, conn_tag)
-        if conn and is_tunnel_running(conn_tag, self._process_mgr):
+        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
             try:
-                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                if fw.tcp:
+                    start_forward(conn, fw, "remote", self.workspace)
+                if fw.udp:
+                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
                 self._emit("forward", {
                     "tag": conn_tag, "fw_tag": fw.tag or f"remote-{fw.src_port}",
                     "direction": "remote", "running": True,
                 })
             except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward slave: {exc}")
+                self._log(f"[{conn_tag}] Could not start forward: {exc}")
 
     def _remove_forward(self, src_port: int, direction: str) -> None:
         self._reload_config()
@@ -983,9 +1320,10 @@ class SusOpsManager:
                 key = "local" if direction == "local" else "remote"
                 new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
                 new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
-                # Stop the slave process if it exists
                 fw_tag = removed_fw.tag or f"{direction}-{src_port}"
-                stop_forward(conn.tag, fw_tag, self._process_mgr)
+                if removed_fw.tcp:
+                    cancel_forward(conn, removed_fw, direction, self.workspace)
+                stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
                     "tag": conn.tag, "fw_tag": fw_tag,
                     "direction": direction, "running": False,
@@ -1003,6 +1341,68 @@ class SusOpsManager:
 
     def remove_remote_forward(self, src_port: int) -> None:
         self._remove_forward(src_port, "remote")
+
+    def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
+        """Set the enabled flag on a forward and start/stop the live process accordingly.
+
+        If enabling and the connection is running, the forward slave is started immediately.
+        If disabling, the forward slave is stopped (if running).
+        """
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection {conn_tag!r} not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        for fw in forwards:
+            if fw.src_port == src_port:
+                fw.enabled = enabled
+                self._save()
+                fw_tag = fw.tag or f"{direction}-{src_port}"
+                self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
+                if enabled and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
+                    try:
+                        if fw.tcp:
+                            start_forward(conn, fw, direction, self.workspace)
+                        if fw.udp:
+                            start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
+                    except Exception as exc:
+                        self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
+                elif not enabled:
+                    if fw.tcp:
+                        cancel_forward(conn, fw, direction, self.workspace)
+                    stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
+                self._emit("forward", {
+                    "conn_tag": conn_tag,
+                    "src_port": src_port,
+                    "direction": direction,
+                    "enabled": enabled,
+                })
+                return
+        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+
+    def toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> bool:
+        """Toggle enabled on a forward. Returns the new enabled state."""
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection {conn_tag!r} not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        for fw in forwards:
+            if fw.src_port == src_port:
+                new_enabled = not fw.enabled
+                self.set_forward_enabled(conn_tag, src_port, direction, new_enabled)
+                return new_enabled
+        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+
+    def is_udp_forward_running(self, conn_tag: str, src_port: int, direction: str) -> bool:
+        """Return True if the UDP socat process for this forward is alive."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            return False
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        fw = next((f for f in forwards if f.src_port == src_port), None)
+        if fw is None or not fw.udp:
+            return False
+        return _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
 
     # ------------------------------------------------------------------ #
     # File sharing
@@ -1045,10 +1445,11 @@ class SusOpsManager:
         self._add_file_share_to_config(conn_tag, str(file), pw, info.port)
 
         conn = get_connection(self.config, conn_tag)
-        if conn and not is_tunnel_running(conn_tag, self._process_mgr):
+        _tunnel_up = conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace))
+        if conn and not _tunnel_up:
             # Tunnel not running — start it; start() will also launch the remote forward slave.
             self.start(conn_tag)
-        elif conn and is_tunnel_running(conn_tag, self._process_mgr):
+        elif _tunnel_up:
             # Tunnel already running — start the slave directly.
             fw = PortForward(
                 src_port=info.port,
@@ -1058,7 +1459,7 @@ class SusOpsManager:
                 tag=f"share-{info.port}",
             )
             try:
-                start_forward(conn, fw, "remote", self._process_mgr, self.workspace)
+                start_forward(conn, fw, "remote", self.workspace)
             except Exception as exc:
                 self._log(f"[{conn_tag}] Share forward {info.port} failed: {exc}")
 
@@ -1083,7 +1484,10 @@ class SusOpsManager:
                 info = entry[1]
                 self._log(f"File share on port {port} stopped")
                 if info.conn_tag:
-                    stop_forward(info.conn_tag, f"share-{port}", self._process_mgr)
+                    conn = get_connection(self.config, info.conn_tag)
+                    if conn:
+                        fw = PortForward(src_port=port, dst_port=port, src_addr="localhost", dst_addr="localhost")
+                        cancel_forward(conn, fw, "remote", self.workspace)
                 self._set_file_share_stopped(port, True)
                 self._emit("share", {
                     "port": port,
@@ -1099,7 +1503,10 @@ class SusOpsManager:
                 server.stop()
                 self._log(f"File share on port {p} stopped")
                 if info.conn_tag:
-                    stop_forward(info.conn_tag, f"share-{p}", self._process_mgr)
+                    conn = get_connection(self.config, info.conn_tag)
+                    if conn:
+                        fw = PortForward(src_port=p, dst_port=p, src_addr="localhost", dst_addr="localhost")
+                        cancel_forward(conn, fw, "remote", self.workspace)
                 self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
@@ -1196,7 +1603,7 @@ class SusOpsManager:
         sock = socket_path(conn_tag, self.workspace) if conn else None
         if conn and sock is not None and sock.exists():
             try:
-                start_forward(conn, fw, "local", self._process_mgr, self.workspace)
+                start_forward(conn, fw, "local", self.workspace)
                 # Poll until local port is accessible (up to 5 s)
                 for _ in range(50):
                     if self._probe_port(local_port):
@@ -1213,7 +1620,7 @@ class SusOpsManager:
             result = fetch_file(host="localhost", port=fetch_port, password=password, outfile=outfile)
         finally:
             if forward_started:
-                stop_forward(conn_tag, f"fetch-{port}", self._process_mgr)
+                cancel_forward(conn, fw, "local", self.workspace)
             if not tunnel_was_running:
                 stop_tunnel(conn_tag, self._process_mgr, self.workspace, conn.ssh_host if conn else None)
                 self._emit("state", {"tag": conn_tag, "running": False, "pid": None})
@@ -1249,6 +1656,73 @@ class SusOpsManager:
 
     def test_all(self) -> list[TestResult]:
         return [self.test(host) for conn in self.config.connections for host in conn.pac_hosts]
+
+    def test_connection(self, conn_tag: str) -> TestResult:
+        """Test SSH reachability for a specific connection."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            return TestResult(target=conn_tag, success=False, message="Connection not found")
+        start = time.monotonic()
+        ok = test_ssh_connectivity(conn.ssh_host)
+        latency = (time.monotonic() - start) * 1000
+        return TestResult(
+            target=conn.ssh_host,
+            success=ok,
+            message="SSH reachable" if ok else "SSH unreachable",
+            latency_ms=latency if ok else None,
+        )
+
+    def test_domain(self, host: str, conn_tag: str) -> TestResult:
+        """Test domain reachability via the specified connection's SOCKS proxy."""
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None or conn.socks_proxy_port == 0:
+            return TestResult(target=host, success=False, message="No active SOCKS proxy")
+        proxy = f"socks5h://127.0.0.1:{conn.socks_proxy_port}"
+        clean_host = host.lstrip("*.")
+        start = time.monotonic()
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                 "--proxy", proxy, "--max-time", "10", f"http://{clean_host}"],
+                capture_output=True, timeout=15, text=True,
+            )
+            latency = (time.monotonic() - start) * 1000
+            success = result.returncode == 0
+            return TestResult(
+                target=host, success=success,
+                message=f"HTTP {result.stdout.strip()}" if success else result.stderr.strip(),
+                latency_ms=latency if success else None,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            return TestResult(target=host, success=False, message=str(exc))
+
+    def test_forward(self, conn_tag: str, src_port: int, direction: str) -> dict[str, bool]:
+        """Check if a port forward is active.
+
+        Returns a dict with keys "tcp" and/or "udp" mapped to True/False.
+        For local TCP: checks whether src_port is bound (not free).
+        For remote TCP: checks whether the ControlMaster socket is alive.
+        For UDP (either direction): checks whether the socat lsocat process is alive.
+        """
+        self._reload_config()
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection '{conn_tag}' not found")
+        forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+        fw = next((f for f in forwards if f.src_port == src_port), None)
+        if fw is None:
+            raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        results: dict[str, bool] = {}
+        if fw.tcp:
+            if direction == "local":
+                results["tcp"] = not is_port_free(src_port)
+            else:
+                results["tcp"] = is_socket_alive(conn_tag, self.workspace)
+        if fw.udp:
+            results["udp"] = _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
+        return results
 
     # ------------------------------------------------------------------ #
     # Utilities

@@ -22,6 +22,11 @@ tui = [
 ]
 tray-linux = []
 # PyGObject (gi) and GTK3 must be installed via system package manager:
+udp = []
+# socat must be installed via system package manager for UDP port forwarding:
+#   macOS:  brew install socat
+#   Arch:   sudo pacman -S socat
+#   Ubuntu: sudo apt install socat
 #   Arch: sudo pacman -S python-gobject gtk3 libayatana-appindicator
 #   Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1
 tray-mac = [

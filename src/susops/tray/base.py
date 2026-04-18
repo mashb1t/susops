@@ -225,6 +225,106 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
+    def do_toggle_connection_enabled(self, tag: str) -> None:
+        def _run():
+            try:
+                cfg = self.manager.list_config()
+                conn = next((c for c in cfg.connections if c.tag == tag), None)
+                if conn is None:
+                    return f"Connection '{tag}' not found."
+                new_state = not conn.enabled
+                self.manager.set_connection_enabled(tag, new_state)
+                return f"Connection '{tag}' {'enabled' if new_state else 'disabled'}."
+            except Exception as e:
+                return f"Error: {e}"
+        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Connection", msg))
+
+    def do_start_connection(self, tag: str) -> None:
+        def _run():
+            result = self.manager.start(tag=tag)
+            return result.message, result.success
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Start failed", msg)
+        self.run_in_background(_run, _done)
+
+    def do_stop_connection(self, tag: str) -> None:
+        def _run():
+            result = self.manager.stop(tag=tag)
+            return result.message, result.success
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Stop failed", msg)
+        self.run_in_background(_run, _done)
+
+    def do_restart_connection(self, tag: str) -> None:
+        def _run():
+            result = self.manager.restart(tag=tag)
+            return result.message, result.success
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Restart failed", msg)
+        self.run_in_background(_run, _done)
+
+    def do_toggle_pac_host_enabled(self, host: str) -> None:
+        def _run():
+            try:
+                cfg = self.manager.list_config()
+                all_disabled = [h for c in cfg.connections for h in c.pac_hosts_disabled]
+                currently_disabled = host in all_disabled
+                self.manager.set_pac_host_enabled(host, currently_disabled)  # flip
+                return f"Domain '{host}' {'enabled' if currently_disabled else 'disabled'}."
+            except Exception as e:
+                return f"Error: {e}"
+        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Domain", msg))
+
+    def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
+        def _run():
+            try:
+                self.manager.toggle_forward_enabled(conn_tag, src_port, direction)
+                return f"Forward :{src_port} toggled."
+            except Exception as e:
+                return f"Error: {e}"
+        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Forward", msg))
+
+    def do_test_connection(self, conn_tag: str) -> None:
+        def _run():
+            result = self.manager.test_connection(conn_tag)
+            icon = "✓" if result.success else "✗"
+            lat = f" ({result.latency_ms:.0f} ms)" if result.latency_ms else ""
+            return f"{icon} {conn_tag}{lat}: {result.message}"
+        self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {conn_tag}", msg))
+
+    def do_test_domain(self, host: str, conn_tag: str) -> None:
+        def _run():
+            result = self.manager.test_domain(host, conn_tag)
+            icon = "✓" if result.success else "✗"
+            lat = f" ({result.latency_ms:.0f} ms)" if result.latency_ms else ""
+            return f"{icon} [{conn_tag}] {host}{lat}: {result.message}"
+        self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {host}", msg))
+
+    def do_test_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
+        def _run():
+            try:
+                results = self.manager.test_forward(conn_tag, src_port, direction)
+                lines = []
+                for proto, ok in results.items():
+                    icon = "✓" if ok else "✗"
+                    if proto == "tcp":
+                        detail = "port bound" if ok else "port not bound"
+                        if direction == "remote":
+                            detail = "master socket alive" if ok else "master socket dead"
+                    else:
+                        detail = "socat running" if ok else "socat not running"
+                    lines.append(f"{icon} {proto.upper()}: {detail}")
+                return "\n".join(lines) or "No results."
+            except Exception as e:
+                return f"Error: {e}"
+        self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {direction} :{src_port}", msg))
+
     def do_add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         try:
             # Facade starts the slave immediately if ControlMaster is running — no restart needed.

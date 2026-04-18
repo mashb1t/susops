@@ -91,8 +91,6 @@ class SusOpsMacTray(AbstractTrayApp):
             self._item_stop._menuitem.setEnabled_(not stopped)  # type: ignore[attr-defined]
         if hasattr(self, "_item_restart"):
             self._item_restart._menuitem.setEnabled_(not stopped)  # type: ignore[attr-defined]
-        if hasattr(self, "_item_test_any"):
-            self._item_test_any._menuitem.setEnabled_(not stopped)  # type: ignore[attr-defined]
         if hasattr(self, "_item_test_all"):
             self._item_test_all._menuitem.setEnabled_(not stopped)  # type: ignore[attr-defined]
         if hasattr(self, "_item_status"):
@@ -167,16 +165,44 @@ class SusOpsMacTray(AbstractTrayApp):
             "Remove Remote Forward", callback=lambda _: self._prompt_rm_remote()
         )
 
-        # Test submenu
-        self._item_test_any = rumps.MenuItem(
-            "Test Any", callback=lambda _: self.do_test()
+        # Manage submenu
+        manage_menu = rumps.MenuItem("Manage")
+        manage_menu["Toggle Connection Enabled…"] = rumps.MenuItem(
+            "Toggle Connection Enabled…", callback=lambda _: self._prompt_toggle_connection()
         )
+        manage_menu["Toggle Domain Enabled…"] = rumps.MenuItem(
+            "Toggle Domain Enabled…", callback=lambda _: self._prompt_toggle_domain()
+        )
+        manage_menu["Toggle Forward Enabled…"] = rumps.MenuItem(
+            "Toggle Forward Enabled…", callback=lambda _: self._prompt_toggle_forward()
+        )
+        manage_menu["---1"] = None
+        manage_menu["Start Connection…"] = rumps.MenuItem(
+            "Start Connection…", callback=lambda _: self._prompt_start_connection()
+        )
+        manage_menu["Stop Connection…"] = rumps.MenuItem(
+            "Stop Connection…", callback=lambda _: self._prompt_stop_connection()
+        )
+        manage_menu["Restart Connection…"] = rumps.MenuItem(
+            "Restart Connection…", callback=lambda _: self._prompt_restart_connection()
+        )
+
+        # Test submenu
         self._item_test_all = rumps.MenuItem(
-            "Test All", callback=lambda _: self.do_test()
+            "Test All PAC Hosts", callback=lambda _: self.do_test()
         )
         test_menu = rumps.MenuItem("Test")
-        test_menu["Test Any"] = self._item_test_any
-        test_menu["Test All"] = self._item_test_all
+        test_menu["Test Connection…"] = rumps.MenuItem(
+            "Test Connection…", callback=lambda _: self._prompt_test_connection()
+        )
+        test_menu["Test Domain…"] = rumps.MenuItem(
+            "Test Domain…", callback=lambda _: self._prompt_test_domain()
+        )
+        test_menu["Test Forward…"] = rumps.MenuItem(
+            "Test Forward…", callback=lambda _: self._prompt_test_forward()
+        )
+        test_menu["---"] = None
+        test_menu["Test All PAC Hosts"] = self._item_test_all
 
         # Launch Browser submenu
         browser_menu = rumps.MenuItem("Launch Browser")
@@ -210,6 +236,7 @@ class SusOpsMacTray(AbstractTrayApp):
             None,
             add_menu,
             rm_menu,
+            manage_menu,
             rumps.MenuItem("Open Config File", callback=lambda _: self.do_open_config_file()),
             None,
             self._item_start,
@@ -726,6 +753,36 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         dst_addr = r_dst_bind.text.strip() or "localhost"
 
+        win_tcp = rumps.Window(
+            message="Enable TCP forwarding? (yes/no)",
+            title=title,
+            default_text="yes",
+            ok="Next",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_tcp = win_tcp.run()
+        if r_tcp.clicked == 0:
+            return
+        tcp = r_tcp.text.strip().lower() in ("yes", "y", "true", "1")
+
+        win_udp = rumps.Window(
+            message="Enable UDP forwarding? (yes/no)",
+            title=title,
+            default_text="no",
+            ok="Add",
+            cancel="Cancel",
+            dimensions=(320, 24),
+        )
+        r_udp = win_udp.run()
+        if r_udp.clicked == 0:
+            return
+        udp = r_udp.text.strip().lower() in ("yes", "y", "true", "1")
+
+        if not tcp and not udp:
+            self.show_alert("Protocol Required", "At least one protocol (TCP or UDP) must be selected.")
+            return
+
         try:
             src_int = int(src)
             dst_int = int(dst)
@@ -735,12 +792,11 @@ class SusOpsMacTray(AbstractTrayApp):
         if not validate_port(src_int) or not validate_port(dst_int):
             self.show_alert("Invalid Port", "Ports must be between 1 and 65535.")
             return
-        local_port = dst_int if remote else src_int
-        if not is_port_free(local_port):
-            self.show_alert("Port In Use", f"Local port {local_port} is already in use.")
+        if not remote and not is_port_free(src_int):
+            self.show_alert("Port In Use", f"Local port {src_int} is already in use.")
             return
 
-        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int)
+        fw = PortForward(src_addr=src_addr, src_port=src_int, dst_addr=dst_addr, dst_port=dst_int, tcp=tcp, udp=udp)
         if remote:
             self.do_add_remote_forward(conn_tag, fw)
         else:
@@ -785,17 +841,107 @@ class SusOpsMacTray(AbstractTrayApp):
         if selected and selected in port_map:
             self.do_remove_remote_forward(port_map[selected])
 
-    def _pick_from_list(self, title: str, items: list[str]) -> str | None:
+    def _prompt_toggle_connection(self) -> None:
+        cfg = self.manager.list_config()
+        items = [f"[{'✓' if c.enabled else '✗'}] {c.tag}" for c in cfg.connections]
+        selected = self._pick_from_list("Toggle Connection Enabled", items, ok_label="Toggle")
+        if selected:
+            tag = selected.split("] ", 1)[-1]
+            self.do_toggle_connection_enabled(tag)
+
+    def _prompt_toggle_domain(self) -> None:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                enabled = h not in c.pac_hosts_disabled
+                items.append(f"[{'✓' if enabled else '✗'}] {h}")
+        selected = self._pick_from_list("Toggle Domain Enabled", items, ok_label="Toggle")
+        if selected:
+            host = selected.split("] ", 1)[-1]
+            self.do_toggle_pac_host_enabled(host)
+
+    def _prompt_toggle_forward(self) -> None:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                state = "✓" if fw.enabled else "✗"
+                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Toggle Forward Enabled", items, ok_label="Toggle")
+        if selected:
+            import re
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
+                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+
+    def _prompt_start_connection(self) -> None:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Start Connection", tags, ok_label="Start")
+        if selected:
+            self.do_start_connection(selected)
+
+    def _prompt_stop_connection(self) -> None:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Stop Connection", tags, ok_label="Stop")
+        if selected:
+            self.do_stop_connection(selected)
+
+    def _prompt_restart_connection(self) -> None:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Restart Connection", tags, ok_label="Restart")
+        if selected:
+            self.do_restart_connection(selected)
+
+    def _prompt_test_connection(self) -> None:
+        tags = [c.tag for c in self.manager.list_config().connections]
+        selected = self._pick_from_list("Test Connection", tags, ok_label="Test")
+        if selected:
+            self.do_test_connection(selected)
+
+    def _prompt_test_domain(self) -> None:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for h in c.pac_hosts:
+                items.append(f"[{c.tag}] {h}")
+        selected = self._pick_from_list("Test Domain", items, ok_label="Test")
+        if selected:
+            import re
+            m = re.match(r"\[([^\]]+)\] (.+)", selected)
+            if m:
+                self.do_test_domain(m.group(2), m.group(1))
+
+    def _prompt_test_forward(self) -> None:
+        cfg = self.manager.list_config()
+        items = []
+        for c in cfg.connections:
+            for fw in c.forwards.local:
+                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for fw in c.forwards.remote:
+                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+        selected = self._pick_from_list("Test Forward", items, ok_label="Test")
+        if selected:
+            import re
+            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
+            if m:
+                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
+
+    def _pick_from_list(self, title: str, items: list[str], ok_label: str = "Remove") -> str | None:
         """Show a rumps window to pick one item from a list."""
         if not items:
-            self.show_alert("Nothing to Remove", "The list is empty.")
+            self.show_alert("Nothing to Select", "The list is empty.")
             return None
         numbered = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(items))
         win = self._rumps.Window(
             message=f"{numbered}\n\nEnter number:",
             title=title,
             default_text="1",
-            ok="Remove",
+            ok=ok_label,
             cancel="Cancel",
             dimensions=(320, 24),
         )
