@@ -240,13 +240,13 @@ class _BandwidthSampler:
 class _ReconnectMonitor:
     """Background thread that monitors and restarts dropped SSH connections.
 
-    Tracks which connection tags were intentionally started. Every 15 seconds
+    Tracks which connection tags were intentionally started. Every 5 seconds
     it checks socket liveness per tag. When a socket goes down it attempts to
     restart the ControlMaster immediately and on every subsequent poll until it
     succeeds. Once the master is back, all enabled forwards are re-registered.
     """
 
-    INTERVAL = 15.0
+    INTERVAL = 5.0
 
     def __init__(self, mgr: "SusOpsManager") -> None:
         self._mgr = mgr

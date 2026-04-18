@@ -68,7 +68,7 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-D", str(conn.socks_proxy_port),
         "-o", "ControlMaster=yes",
         "-o", f"ControlPath={sock}",
-        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=3",
         conn.ssh_host,
     ]
