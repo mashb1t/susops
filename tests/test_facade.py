@@ -956,3 +956,151 @@ def test_test_forward_unknown_forward_raises(tmp_path):
 
     with pytest.raises(ValueError, match="not found"):
         mgr.test_forward("work", 9999, "local")
+
+
+# ------------------------------------------------------------------ #
+# process_info()
+# ------------------------------------------------------------------ #
+
+def test_process_info_empty_config(mgr):
+    info = mgr.process_info()
+    assert info["conn_children"] == {}
+    assert info["reconnect"]["daemon_running"] is False
+    assert info["reconnect"]["pid"] is None
+
+
+def test_process_info_no_children_without_forwards(mgr):
+    mgr.add_connection("work", "user@host.com")
+    info = mgr.process_info()
+    assert "work" not in info["conn_children"]
+
+
+def test_process_info_tcp_forward_master_down(tmp_path):
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tcp=True))
+    info = mgr.process_info()
+    children = info["conn_children"].get("work", [])
+    assert len(children) == 1
+    assert children[0]["running"] is False
+    assert children[0]["pid"] is None
+    assert "fwd local" in children[0]["display"]
+    assert "5432" in children[0]["display"]
+
+
+def test_process_info_tcp_forward_master_up(tmp_path):
+    import os
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tcp=True))
+    (tmp_path / "pids" / "susops-ssh-work.pid").write_text(str(os.getpid()))
+    info = mgr.process_info()
+    children = info["conn_children"]["work"]
+    assert children[0]["running"] is True
+
+
+def test_process_info_disabled_forward_excluded(tmp_path):
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tcp=True, enabled=False))
+    info = mgr.process_info()
+    assert "work" not in info["conn_children"]
+
+
+def test_process_info_remote_forward_shown(tmp_path):
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_remote_forward("work", PortForward(src_port=8080, dst_port=8080, tcp=True))
+    info = mgr.process_info()
+    children = info["conn_children"].get("work", [])
+    assert len(children) == 1
+    assert "fwd remote" in children[0]["display"]
+
+
+def test_process_info_udp_forward_no_process(tmp_path):
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=53, dst_port=53, tcp=False, udp=True, tag="dns"))
+    info = mgr.process_info()
+    children = info["conn_children"].get("work", [])
+    assert len(children) == 1
+    assert children[0]["running"] is False
+    assert children[0]["pid"] is None
+    assert "udp local" in children[0]["display"]
+
+
+def test_process_info_udp_forward_running(tmp_path):
+    import os
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=53, dst_port=53, tcp=False, udp=True, tag="dns"))
+    our_pid = os.getpid()
+    (tmp_path / "pids" / "susops-udp-work-dns-lsocat.pid").write_text(str(our_pid))
+    info = mgr.process_info()
+    children = info["conn_children"]["work"]
+    assert children[0]["running"] is True
+    assert children[0]["pid"] == our_pid
+
+
+def test_process_info_reconnect_daemon_running(tmp_path):
+    import os
+    mgr = SusOpsManager(workspace=tmp_path)
+    # Write after init so it isn't cleared by __init__'s stop() call
+    our_pid = os.getpid()
+    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(our_pid))
+    info = mgr.process_info()
+    assert info["reconnect"]["daemon_running"] is True
+    assert info["reconnect"]["pid"] == our_pid
+
+
+def test_process_info_tcp_and_udp_forward(tmp_path):
+    """A dual-protocol forward produces two children: one fwd and one udp."""
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_local_forward("work", PortForward(src_port=53, dst_port=53, tcp=True, udp=True, tag="dns"))
+    info = mgr.process_info()
+    children = info["conn_children"].get("work", [])
+    assert len(children) == 2
+    displays = [c["display"] for c in children]
+    assert any("fwd local" in d for d in displays)
+    assert any("udp local" in d for d in displays)
+
+
+# ------------------------------------------------------------------ #
+# detach_reconnect_monitor
+# ------------------------------------------------------------------ #
+
+def test_detach_reconnect_monitor_noop_if_running(tmp_path):
+    """force=False must not spawn a new process if the daemon is already running."""
+    import os
+    mgr = SusOpsManager(workspace=tmp_path)
+    # Fake running daemon (write after init so not cleared by __init__)
+    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(os.getpid()))
+
+    started = []
+    mgr._process_mgr.start = lambda name, cmd, **kw: started.append(name)
+    mgr.detach_reconnect_monitor(force=False)
+    assert started == []
+
+
+def test_detach_reconnect_monitor_force_kills_and_respawns(tmp_path):
+    """force=True must stop the old daemon and start a fresh one."""
+    import os
+    mgr = SusOpsManager(workspace=tmp_path)
+    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(os.getpid()))
+
+    stopped = []
+    started = []
+
+    def mock_stop(name, **kw):
+        stopped.append(name)
+        pid_file = tmp_path / "pids" / f"{name}.pid"
+        pid_file.unlink(missing_ok=True)
+        return True
+
+    mgr._process_mgr.stop = mock_stop
+    mgr._process_mgr.start = lambda name, cmd, **kw: started.append(name)
+    mgr.detach_reconnect_monitor(force=True)
+
+    assert "susops-reconnect" in stopped
+    assert "susops-reconnect" in started

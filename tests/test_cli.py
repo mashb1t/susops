@@ -43,6 +43,20 @@ def run(argv: list[str], workspace: Path) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def run_with_manager(argv: list[str], m) -> tuple[int, str, str]:
+    """Like run(), but uses a pre-created manager (allows mocking its methods)."""
+    args = parse(argv)
+    out = StringIO()
+    err = StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = args.func(args, m)
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    return code, out.getvalue(), err.getvalue()
+
+
 @pytest.fixture
 def ws(tmp_path):
     return tmp_path
@@ -328,3 +342,84 @@ def test_cmd_firefox_no_pac(ws_with_conn):
     code, _, err = run(["firefox"], ws_with_conn)
     assert code == 1
     assert "PAC" in err
+
+
+# ---------------------------------------------------------------------------
+# ps — hierarchy characters and process tree
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def ws_with_forward(ws_with_conn):
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+    m = SusOpsManager(workspace=ws_with_conn)
+    m.add_local_forward("work", PortForward(src_port=5432, dst_port=5432))
+    return ws_with_conn
+
+
+@pytest.fixture
+def ws_with_two_forwards(ws_with_conn):
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+    m = SusOpsManager(workspace=ws_with_conn)
+    m.add_local_forward("work", PortForward(src_port=5432, dst_port=5432))
+    m.add_local_forward("work", PortForward(src_port=6543, dst_port=6543))
+    return ws_with_conn
+
+
+def test_cmd_ps_single_forward_uses_corner(ws_with_forward):
+    """Single child process uses └ (corner), never ├."""
+    code, out, _ = run(["ps"], ws_with_forward)
+    assert "└" in out
+    assert "├" not in out
+    assert "5432" in out
+
+
+def test_cmd_ps_multiple_forwards_uses_tree_chars(ws_with_two_forwards):
+    """Multiple children: non-last uses ├, last uses └."""
+    code, out, _ = run(["ps"], ws_with_two_forwards)
+    assert "├" in out
+    assert "└" in out
+
+
+def test_cmd_ps_shows_reconnect_daemon_running(ws):
+    """● Reconnect daemon pid=N is printed when daemon_running=True."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    m = SusOpsManager(workspace=ws)
+    fake_info = {
+        "conn_children": {},
+        "reconnect": {"pid": 1234, "running": True, "daemon_running": True, "thread_alive": False},
+    }
+    with patch.object(m, "process_info", return_value=fake_info):
+        code, out, _ = run_with_manager(["ps"], m)
+
+    assert "● Reconnect daemon" in out
+    assert "pid=1234" in out
+
+
+def test_cmd_ps_shows_reconnect_not_running(ws):
+    """○ Reconnect is printed when daemon is not running."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    m = SusOpsManager(workspace=ws)
+    fake_info = {
+        "conn_children": {},
+        "reconnect": {"pid": None, "running": False, "daemon_running": False, "thread_alive": False},
+    }
+    with patch.object(m, "process_info", return_value=fake_info):
+        code, out, _ = run_with_manager(["ps"], m)
+
+    assert "○ Reconnect" in out
+
+
+# ---------------------------------------------------------------------------
+# stop — with -c TAG
+# ---------------------------------------------------------------------------
+
+def test_cmd_stop_with_tag(ws_with_conn):
+    """`susops -c work stop` must not raise and must succeed when nothing is running."""
+    code, out, _ = run(["-c", "work", "stop"], ws_with_conn)
+    assert code == 0
