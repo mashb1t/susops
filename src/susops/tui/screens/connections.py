@@ -704,7 +704,7 @@ class ConnectionsScreen(Screen):
             try:
                 mgr.set_connection_enabled(tag, not conn.enabled)
             except Exception as exc:
-                self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+                self.app.call_from_thread(self.notify, str(exc), title="SusOps", severity="error", timeout=3)
         self.app.call_from_thread(self._bg_reload)
 
     @work(thread=True)
@@ -717,7 +717,7 @@ class ConnectionsScreen(Screen):
             try:
                 mgr.set_pac_host_enabled(host, not currently_enabled, conn_tag=conn_tag)
             except Exception as exc:
-                self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+                self.app.call_from_thread(self.notify, str(exc), title="SusOps", severity="error", timeout=3)
         self.app.call_from_thread(self._bg_reload)
 
     @work(thread=True)
@@ -726,7 +726,7 @@ class ConnectionsScreen(Screen):
         try:
             mgr.toggle_forward_enabled(conn_tag, src_port, direction)
         except Exception as exc:
-            self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+            self.app.call_from_thread(self.notify, str(exc), title="SusOps", severity="error", timeout=3)
         self.app.call_from_thread(self._bg_reload)
 
     @work(thread=True)
@@ -752,7 +752,7 @@ class ConnectionsScreen(Screen):
                 mgr.set_forward_enabled(conn_tag, src_port, direction, False)
                 mgr.set_forward_enabled(conn_tag, src_port, direction, True)
         except Exception as exc:
-            self.app.call_from_thread(self.notify, str(exc), severity="error", timeout=3)
+            self.app.call_from_thread(self.notify, str(exc), title="SusOps", severity="error", timeout=3)
         self.app.call_from_thread(self._bg_reload)
 
     # --- Connection CRUD ---
@@ -765,7 +765,7 @@ class ConnectionsScreen(Screen):
                 self.app.manager.add_connection(data["tag"], data["host"], data["port"])  # type: ignore[attr-defined]
                 self._bg_reload()
             except ValueError as e:
-                self.app.notify(str(e), severity="error")
+                self.app.notify(str(e), title="SusOps", severity="error")
 
         self.app.push_screen(_AddConnectionDialog(), _on_result)
 
@@ -779,7 +779,7 @@ class ConnectionsScreen(Screen):
             self.app.manager.remove_connection(tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
-            self.app.notify(str(e), severity="error")
+            self.app.notify(str(e), title="SusOps", severity="error")
 
     # --- PAC host CRUD ---
 
@@ -791,7 +791,7 @@ class ConnectionsScreen(Screen):
                 self.app.manager.add_pac_host(data["host"], conn_tag=data["conn"])  # type: ignore[attr-defined]
                 self._bg_reload()
             except ValueError as e:
-                self.app.notify(str(e), severity="error")
+                self.app.notify(str(e), title="SusOps", severity="error")
 
         config = self.app.manager.list_config()  # type: ignore[attr-defined]
         pac_hosts = {c.tag: list(c.pac_hosts) for c in config.connections}
@@ -808,7 +808,7 @@ class ConnectionsScreen(Screen):
             self.app.manager.remove_pac_host(host, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
-            self.app.notify(str(e), severity="error")
+            self.app.notify(str(e), title="SusOps", severity="error")
 
     # --- Port forward CRUD ---
 
@@ -832,7 +832,7 @@ class ConnectionsScreen(Screen):
                     self.app.manager.add_remote_forward(data["conn"], fw)  # type: ignore[attr-defined]
                 self._bg_reload()
             except ValueError as e:
-                self.app.notify(str(e), severity="error")
+                self.app.notify(str(e), title="SusOps", severity="error")
 
         self.app.push_screen(_AddForwardDialog(direction, self._conn_tags()), _on_result)
 
@@ -850,4 +850,4 @@ class ConnectionsScreen(Screen):
                 self.app.manager.remove_remote_forward(port)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
-            self.app.notify(str(e), severity="error")
+            self.app.notify(str(e), title="SusOps", severity="error")
