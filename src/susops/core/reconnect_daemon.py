@@ -20,12 +20,13 @@ def main() -> None:
     workspace = Path(args.workspace)
 
     from susops.core.ssh import is_socket_alive
-    from susops.facade import SusOpsManager
+    from susops.facade import SusOpsManager, _RECONNECT_DAEMON_NAME
 
     mgr = SusOpsManager(
         workspace=workspace,
         _enable_background_threads=False,
         _skip_restore=True,
+        process_name=_RECONNECT_DAEMON_NAME,
     )
 
     for conn in mgr.config.connections:

@@ -79,7 +79,7 @@ class AbstractTrayApp(ABC):
     """
 
     def __init__(self) -> None:
-        self.manager = SusOpsManager()
+        self.manager = SusOpsManager(process_name="susops-tray")
         self.manager.on_state_change = self._on_state_change_safe
         self.state = ProcessState.INITIAL
 

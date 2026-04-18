@@ -300,7 +300,7 @@ class _ReconnectMonitor:
             if was_alive:
                 self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
                 self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
-                self._mgr._notify(f"SusOps [{tag}]", "Connection lost — reconnecting...")
+                self._mgr._notify(f"{self._mgr._process_name} [{tag}]", "Connection lost — reconnecting...")
             # Attempt to restart the master on every poll while the socket is down.
             if self._mgr._try_reconnect(tag):
                 with self._lock:
@@ -317,9 +317,11 @@ class SusOpsManager:
         verbose: bool = False,
         _enable_background_threads: bool = True,
         _skip_restore: bool = False,
+        process_name: str = "SusOps",
     ) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self._process_name = process_name
         self._verbose = verbose
 
         self.config: SusOpsConfig = load_config(workspace)
@@ -1057,7 +1059,7 @@ class SusOpsManager:
 
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}")
         self._emit("state", {"tag": tag, "running": True, "pid": pid})
-        self._notify(f"SusOps [{tag}]", "Connection restored")
+        self._notify(f"{self._process_name} [{tag}]", "Connection restored")
 
     def stop(self, keep_ports: bool = False, tag: str | None = None) -> StopResult:
         self._reload_config()
