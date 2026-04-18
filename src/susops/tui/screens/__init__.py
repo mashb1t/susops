@@ -8,9 +8,22 @@ from pathlib import Path
 import susops
 from textual.app import ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import Footer, Static
+from textual.widgets import Footer, Label, Static
 
 from susops.core.config import PortForward as _PortForward
+
+
+class _CollapsingLabel(Label):
+    """Label that is display:none with zero margin/padding when empty, visible when it has content."""
+
+    def on_mount(self) -> None:
+        self.styles.margin = 0
+        self.styles.padding = 0
+        self.display = False
+
+    def update(self, renderable="") -> None:
+        super().update(renderable)
+        self.display = bool(str(renderable).strip())
 
 
 def open_path(path: str) -> None:

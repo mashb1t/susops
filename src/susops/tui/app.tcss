@@ -43,11 +43,21 @@ Footer { background: $surface-darken-2; }
 #pac-area { height: 1fr; border: round $primary-darken-1; border-title-align: left; margin: 0 1 1 1; }
 
 /* ── Modals ── */
-.modal-dialog { width: 60; height: auto; border: round $primary; padding: 1 2; background: $surface; }
+ModalScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
+.modal-dialog { width: 76; height: auto; border: round $primary; padding: 1 2; background: $surface; }
 .modal-dialog Label { margin-top: 1; }
+.modal-dialog > Label:first-child { margin-top: 0; }
 .modal-dialog Input { margin-bottom: 1; }
 .modal-dialog Select { margin-bottom: 1; }
-.modal-error { color: $error; height: 1; }
-.modal-hint { height: 1; }
-.modal-btn-row { layout: horizontal; }
+.modal-dialog .modal-error { color: $error; margin-top: 0; }
+.modal-dialog .modal-hint { margin-top: 0; }
+.modal-btn-row { layout: horizontal; height: auto; margin-top: 1; }
 .modal-btn-row Button { margin-right: 1; }
+/* 2-column form rows */
+.modal-form-row { height: auto; margin-top: 1; }
+.modal-proto-row { height: auto; }
+.modal-field { width: 1fr; height: auto; layout: vertical; padding-right: 1; }
+.modal-field:last-child { padding-right: 0; }
+.modal-field Label { margin-top: 0; }
+.modal-field Input { margin-bottom: 0; }
+.modal-field Select { margin-bottom: 0; }

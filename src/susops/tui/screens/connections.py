@@ -20,7 +20,7 @@ from textual.widgets import (
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
 from susops.core.ssh_config import get_ssh_hosts
-from susops.tui.screens import compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
+from susops.tui.screens import _CollapsingLabel, compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
 
 
 def _fw_dot(mgr, fw: PortForward, conn_tag: str, direction: str, conn_running: bool) -> str:
@@ -47,8 +47,13 @@ class _AddConnectionDialog(ModalScreen):
         ssh_hosts = get_ssh_hosts()
         with Static(classes="modal-dialog"):
             yield Label("[bold]Add Connection[/bold]")
-            yield Label("Tag:")
-            yield Input(placeholder="e.g. work", id="tag")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Tag:")
+                    yield Input(placeholder="e.g. work", id="tag")
+                with Static(classes="modal-field"):
+                    yield Label("SOCKS port (0 = auto):")
+                    yield Input(placeholder="0", id="socks-port", value="0")
             if ssh_hosts:
                 yield Label("SSH host (pick from ~/.ssh/config or type below):")
                 options = [(h, h) for h in ssh_hosts]
@@ -56,9 +61,7 @@ class _AddConnectionDialog(ModalScreen):
             else:
                 yield Label("SSH host (user@host):")
             yield Input(placeholder="user@hostname", id="ssh-host")
-            yield Label("SOCKS port (0 = auto):")
-            yield Input(placeholder="0", id="socks-port", value="0")
-            yield Label("", id="error", classes="modal-error")
+            yield _CollapsingLabel("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
@@ -107,12 +110,15 @@ class _AddPacHostDialog(ModalScreen):
         options = [(tag, tag) for tag in self._connections]
         with Static(classes="modal-dialog"):
             yield Label("[bold]Add PAC Host[/bold]")
-            yield Label("Host / wildcard / CIDR:")
-            yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
-            yield Label("Connection")
-            yield Select(options, allow_blank=False, id="conn")
-            yield Label("", id="hint", classes="modal-hint")
-            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Host / wildcard / CIDR:")
+                    yield Input(placeholder="*.example.com or 10.0.0.0/8", id="host")
+                with Static(classes="modal-field"):
+                    yield Label("Connection:")
+                    yield Select(options, allow_blank=False, id="conn")
+            yield _CollapsingLabel("", id="hint", classes="modal-hint")
+            yield _CollapsingLabel("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
@@ -125,8 +131,13 @@ class _AddPacHostDialog(ModalScreen):
         if not host:
             hint.update("")
             return
+        in_same = selected_conn is not None and host in self._pac_hosts.get(selected_conn, [])
         others = [tag for tag, hosts in self._pac_hosts.items() if host in hosts and tag != selected_conn]
-        if others:
+        if in_same and others:
+            hint.update(f"[red]Already in this connection and: {', '.join(others)}[/red]")
+        elif in_same:
+            hint.update("[red]Already assigned to this connection[/red]")
+        elif others:
             hint.update(f"[yellow]Already in: {', '.join(others)}[/yellow]")
         else:
             hint.update("")
@@ -165,23 +176,33 @@ class _AddForwardDialog(ModalScreen):
         conn_options = [(tag, tag) for tag in self._connections]
         bind_options = [("localhost", "localhost"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "0.0.0.0")]
         with Static(classes="modal-dialog"):
-            yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
-            yield Label("Connection:")
-            yield Select(conn_options, allow_blank=False, id="conn")
-            yield Label("Label (optional):")
-            yield Input(placeholder="", id="tag")
-            yield Label("Forward Local Port *:" if d == "local" else "Forward Remote Port *:")
-            yield Input(placeholder="8080", id="src-port")
-            yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
-            yield Input(placeholder="8080", id="dst-port")
-            yield Label("Local Bind:" if d == "local" else "Remote Bind:")
-            yield Select(bind_options, allow_blank=False, id="src-addr")
-            yield Label("Remote Bind:" if d == "local" else "Local Bind:")
-            yield Select(bind_options, allow_blank=False, id="dst-addr")
+            yield Label( f"[bold]Add {d.capitalize()} Forward[/bold]")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Connection:")
+                    yield Select(conn_options, allow_blank=False, id="conn")
+                with Static(classes="modal-field"):
+                    yield Label("Label (optional):")
+                    yield Input(placeholder="", id="tag")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Forward Local Port *:" if d == "local" else "Forward Remote Port *:")
+                    yield Input(placeholder="8080", id="src-port")
+                with Static(classes="modal-field"):
+                    yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
+                    yield Input(placeholder="8080", id="dst-port")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Local Bind:" if d == "local" else "Remote Bind:")
+                    yield Select(bind_options, allow_blank=False, id="src-addr")
+                with Static(classes="modal-field"):
+                    yield Label("Remote Bind:" if d == "local" else "Local Bind:")
+                    yield Select(bind_options, allow_blank=False, id="dst-addr")
             yield Label("Protocol:")
-            yield Checkbox("TCP", value=True, id="proto-tcp")
-            yield Checkbox("UDP", value=False, id="proto-udp")
-            yield Label("", id="error", classes="modal-error")
+            with Horizontal(classes="modal-proto-row"):
+                yield Checkbox("TCP", value=True, id="proto-tcp")
+                yield Checkbox("UDP", value=False, id="proto-udp")
+            yield _CollapsingLabel("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
