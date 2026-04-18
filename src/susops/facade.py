@@ -705,6 +705,11 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def start(self, tag: str | None = None) -> StartResult:
+        # Kill any running background reconnect daemon. In TUI/tray mode the
+        # in-process monitor (started in __init__) takes over; in CLI mode the
+        # caller should call detach_reconnect_monitor() after start() to spawn
+        # a fresh daemon that includes the newly started connection(s).
+        self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
         self._reload_config()
         connections = (
             [get_connection(self.config, tag)] if tag
@@ -922,16 +927,23 @@ class SusOpsManager:
         self._write_pac_port_file(port)
         self._log(f"PAC server detached to background process on port {port}")
 
-    def detach_reconnect_monitor(self) -> None:
+    def detach_reconnect_monitor(self, force: bool = False) -> None:
         """Spawn a background reconnect daemon that survives TUI/tray quit.
 
         The daemon monitors all currently live SSH connections and restarts
         them on dropout — same behaviour as _ReconnectMonitor but persists
         after this process exits.  The in-process monitor is stopped first
         to avoid both competing on the same sockets.
+
+        Args:
+            force: Kill any existing daemon first and always spawn a fresh one.
+                   Use this after CLI ``stop -c TAG`` so the daemon no longer
+                   tries to reconnect the explicitly stopped connection.
         """
-        if self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
+        if not force and self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
             return
+        if self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
+            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
         self._reconnect_monitor.stop()
         self._process_mgr.start(
             _RECONNECT_DAEMON_NAME,

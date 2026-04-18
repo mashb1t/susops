@@ -375,7 +375,7 @@ class DashboardScreen(Screen):
             n = len(reconnect["watching"])
             reconnect_text = f"[green]●[/green] watching {n} connection{'s' if n != 1 else ''}"
         elif reconnect["thread_alive"]:
-            reconnect_text = "[dim]─ idle[/dim]"
+            reconnect_text = "[dim]○ idle[/dim]"
         elif reconnect["daemon_running"]:
             reconnect_text = "[yellow]●[/yellow] daemon (bg)"
         else:
