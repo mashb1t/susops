@@ -350,6 +350,10 @@ class SusOpsManager:
             if self.config.susops_app.restore_shares_on_start:
                 self._restore_shares()
 
+            # Mark already-running connections so the reconnect monitor watches them.
+            # Needed when the TUI restarts with connections still live (stop_on_quit=False).
+            self._restore_reconnect_monitor()
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
@@ -563,6 +567,20 @@ class SusOpsManager:
             self._log(f"PAC server restored on port {port}")
         except Exception as exc:
             self._log(f"PAC restore failed: {exc}")
+
+    def _restore_reconnect_monitor(self) -> None:
+        """Mark already-live connections so _ReconnectMonitor watches them on startup.
+
+        Called after __init__ when connections may already be running from a
+        previous session (stop_on_quit=False).  Without this, mark_running() is
+        never called for adopted connections and the monitor's _intended set
+        stays empty — watching nothing until the next explicit start().
+        """
+        for conn in self.config.connections:
+            if not conn.enabled:
+                continue
+            if is_tunnel_running(conn.tag, self._process_mgr) or is_socket_alive(conn.tag, self.workspace):
+                self._reconnect_monitor.mark_running(conn.tag)
 
     def _restore_shares(self) -> None:
         """Restart share servers for persisted FileShare entries whose connection is running.
