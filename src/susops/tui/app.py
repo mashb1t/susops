@@ -1,8 +1,6 @@
 """SusOps Textual TUI application."""
 from __future__ import annotations
 
-import threading
-
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import Hit, Hits, Provider
@@ -120,13 +118,8 @@ class SusOpsTuiApp(App):
 
     def action_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            # Run stop in a daemon thread so Python won't wait for it if the
-            # user presses ctrl+c before it finishes. SIGTERM is sent to all
-            # processes immediately; the wait loops are best-effort.
-            threading.Thread(target=self.manager.stop, daemon=True).start()
+            self.manager.stop_quick()
         else:
-            # Hand the PAC server off to a background process so it keeps
-            # serving while the TUI is closed.
             self.manager.detach_pac()
         self.exit()
 

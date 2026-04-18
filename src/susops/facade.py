@@ -852,6 +852,28 @@ class SusOpsManager:
             connection_statuses=tuple(statuses),
         )
 
+    def stop_quick(self) -> None:
+        """Non-blocking stop for TUI quit: signal all external processes immediately.
+
+        Sends SIGTERM to every tracked PID at once (no per-process waiting),
+        then shuts down in-process async servers. Used by the TUI so that all
+        connections are signaled before the Python process exits, regardless
+        of how many connections are configured.
+        """
+        self._reconnect_monitor.stop()
+        self._process_mgr.kill_all()
+        for server, _ in list(self._share_servers.values()):
+            try:
+                server.stop()
+            except Exception:
+                pass
+        self._share_servers.clear()
+        if self._pac_server.is_running():
+            try:
+                self._pac_server.stop()
+            except Exception:
+                pass
+
     def detach_pac(self) -> None:
         """Hand the PAC server off to a background process so it survives TUI quit.
 

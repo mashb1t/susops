@@ -121,6 +121,19 @@ class ProcessManager:
         except (ValueError, OSError):
             return None
 
+    def kill_all(self) -> None:
+        """Send SIGTERM to every tracked process and remove PID files. Non-blocking."""
+        for pid_file in list(self._pids_dir.glob("*.pid")):
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ValueError, OSError, ProcessLookupError):
+                pass
+            try:
+                pid_file.unlink()
+            except OSError:
+                pass
+
     def status_all(self) -> dict[str, bool]:
         """Return a dict of {name: is_running} for all tracked processes."""
         result = {}
