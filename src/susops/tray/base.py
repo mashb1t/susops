@@ -472,6 +472,8 @@ class AbstractTrayApp(ABC):
     def do_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
             self.manager.stop()
+        else:
+            self.manager.detach_reconnect_monitor()
 
     def _should_restart_after_change(self) -> bool:
         return self.state == ProcessState.RUNNING

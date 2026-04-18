@@ -59,6 +59,7 @@ from susops.core.types import (
 __all__ = ["SusOpsManager"]
 
 _WORKSPACE_DEFAULT = Path.home() / ".susops"
+_RECONNECT_DAEMON_NAME = "susops-reconnect"
 
 
 class _BandwidthSampler:
@@ -315,6 +316,7 @@ class SusOpsManager:
         workspace: Path = _WORKSPACE_DEFAULT,
         verbose: bool = False,
         _enable_background_threads: bool = True,
+        _skip_restore: bool = False,
     ) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -332,18 +334,21 @@ class SusOpsManager:
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
         self._reconnect_monitor = _ReconnectMonitor(self)
         if _enable_background_threads:
+            # Take over from any background reconnect daemon left by a previous session.
+            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
             self._reconnect_monitor.start()
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
         self.on_log: Callable[[str], None] | None = None
         self.on_error: Callable[[str], None] | None = None
 
-        # Auto-restart PAC server when tunnels are running but this is a
-        # fresh process (e.g. TUI restarted without stop_on_quit).
-        self._restore_pac()
+        if not _skip_restore:
+            # Auto-restart PAC server when tunnels are running but this is a
+            # fresh process (e.g. TUI restarted without stop_on_quit).
+            self._restore_pac()
 
-        if self.config.susops_app.restore_shares_on_start:
-            self._restore_shares()
+            if self.config.susops_app.restore_shares_on_start:
+                self._restore_shares()
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -897,6 +902,23 @@ class SusOpsManager:
         self._write_pac_port_file(port)
         self._log(f"PAC server detached to background process on port {port}")
 
+    def detach_reconnect_monitor(self) -> None:
+        """Spawn a background reconnect daemon that survives TUI/tray quit.
+
+        The daemon monitors all currently live SSH connections and restarts
+        them on dropout — same behaviour as _ReconnectMonitor but persists
+        after this process exits.  The in-process monitor is stopped first
+        to avoid both competing on the same sockets.
+        """
+        if self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
+            return
+        self._reconnect_monitor.stop()
+        self._process_mgr.start(
+            _RECONNECT_DAEMON_NAME,
+            [sys.executable, "-m", "susops.core.reconnect_daemon", "--workspace", str(self.workspace)],
+        )
+        self._log("Reconnect daemon detached to background process")
+
     def _active_tags(self) -> set[str]:
         """Return the set of connection tags that are currently running."""
         return {
@@ -1103,6 +1125,10 @@ class SusOpsManager:
                         self._log("PAC server stopped (no active connections, remote)")
             else:
                 self._update_pac()
+
+        # Kill any background reconnect daemon on a full stop
+        if tag is None:
+            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
 
         self._save()
         self._emit_state(self._compute_state())

@@ -120,6 +120,7 @@ class SusOpsTuiApp(App):
         if self.manager.app_config.stop_on_quit:
             self.manager.stop_quick()
         else:
+            self.manager.detach_reconnect_monitor()
             self.manager.detach_pac()
         self.exit()
 
