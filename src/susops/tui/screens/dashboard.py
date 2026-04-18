@@ -127,7 +127,8 @@ class DashboardScreen(Screen):
     #main-split { height: 1fr; }
     #conn-panel { width: 49; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
-    #pac-info   { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
+    #pac-info        { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
+    #reconnect-info  { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 0 1 1 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
     #detail-tabs  { height: 1fr; }
     #stats-content { height: auto; padding: 1 2; }
@@ -158,10 +159,11 @@ class DashboardScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-split"):
-            # Left: connection list + PAC status
+            # Left: connection list + PAC status + reconnect monitor
             with Vertical(id="conn-panel"):
                 yield ListView(id="conn-list")
                 yield Static(id="pac-info", markup=True)
+                yield Static(id="reconnect-info", markup=True)
             # Centre: stats + bandwidth + logs
             with Vertical(id="detail-panel"):
                 with TabbedContent(id="detail-tabs"):
@@ -193,6 +195,7 @@ class DashboardScreen(Screen):
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
         self.query_one("#pac-info", Static).border_title = "PAC"
+        self.query_one("#reconnect-info", Static).border_title = "Reconnect"
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
@@ -266,8 +269,9 @@ class DashboardScreen(Screen):
 
         shares = mgr.list_shares()
         config = mgr.list_config()
+        reconnect = mgr.reconnect_monitor_info()
         self.app.call_from_thread(
-            self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config
+            self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config, reconnect
         )
 
     def _apply_status(
@@ -279,6 +283,7 @@ class DashboardScreen(Screen):
             uptimes: dict,
             shares: list,
             config,
+            reconnect: dict,
     ) -> None:
         self._last_config = config
         self._last_shares = shares
@@ -364,6 +369,18 @@ class DashboardScreen(Screen):
         else:
             pac_text = "[dim]○ stopped[/dim]"
         self.query_one("#pac-info", Static).update(pac_text)
+
+        # Reconnect monitor status
+        if reconnect["thread_alive"] and reconnect["watching"]:
+            n = len(reconnect["watching"])
+            reconnect_text = f"[green]●[/green] watching {n} connection{'s' if n != 1 else ''}"
+        elif reconnect["thread_alive"]:
+            reconnect_text = "[dim]─ idle[/dim]"
+        elif reconnect["daemon_running"]:
+            reconnect_text = "[yellow]●[/yellow] daemon (bg)"
+        else:
+            reconnect_text = "[dim]○ stopped[/dim]"
+        self.query_one("#reconnect-info", Static).update(reconnect_text)
 
         # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)

@@ -919,6 +919,24 @@ class SusOpsManager:
         )
         self._log("Reconnect daemon detached to background process")
 
+    def reconnect_monitor_info(self) -> dict:
+        """Return display info about the current reconnect monitor state.
+
+        Returns a dict with:
+          thread_alive   – in-process _ReconnectMonitor thread is running
+          daemon_running – background susops-reconnect process is tracked
+          watching       – set of connection tags currently being monitored
+        """
+        thread_alive = self._reconnect_monitor._thread.is_alive()
+        daemon_running = self._process_mgr.is_running(_RECONNECT_DAEMON_NAME)
+        with self._reconnect_monitor._lock:
+            watching = set(self._reconnect_monitor._intended)
+        return {
+            "thread_alive": thread_alive,
+            "daemon_running": daemon_running,
+            "watching": watching,
+        }
+
     def _active_tags(self) -> set[str]:
         """Return the set of connection tags that are currently running."""
         return {
