@@ -987,9 +987,12 @@ class SusOpsManager:
     def _try_reconnect(self, tag: str) -> bool:
         """Attempt to restart the ControlMaster for a connection that went down.
 
-        Returns True if the master is now running, False if the attempt failed
-        (e.g. SSH server unreachable). Called by _ReconnectMonitor on every poll
-        while the socket is down.
+        Returns True only once the socket is confirmed alive — not merely when
+        the SSH process has spawned. This prevents the monitor from calling
+        _reregister_forwards (and sending "Connection restored") for a master
+        that started but immediately failed (e.g. WiFi off, host unreachable).
+
+        Called by _ReconnectMonitor on every poll while the socket is down.
         """
         if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
             return True
@@ -1000,6 +1003,19 @@ class SusOpsManager:
         try:
             conn = self._ensure_socks_port(conn)
             pid = start_master(conn, self._process_mgr, self.workspace)
+            self._log(f"[{tag}] Reconnect started (PID {pid}), waiting for socket…")
+            # Wait up to 10 s for the socket file to appear, then verify it is
+            # actually responding.  If SSH fails (host unreachable, auth error)
+            # the process exits and the socket never becomes alive — return False
+            # so the caller does not prematurely declare success.
+            sock = socket_path(tag, self.workspace)
+            for _ in range(100):
+                if sock.exists():
+                    break
+                time.sleep(0.1)
+            if not is_socket_alive(tag, self.workspace):
+                self._log(f"[{tag}] Reconnect started but socket not ready — will retry")
+                return False
             self._log(f"[{tag}] Reconnected (PID {pid})")
             return True
         except Exception as exc:
