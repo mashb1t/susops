@@ -28,19 +28,7 @@ def _manager(args=None):
     return SusOpsManager(verbose=verbose, _enable_background_threads=False, process_name="susops-cli")
 
 
-def _print_status(result) -> int:
-    """Print status and return the correct exit code."""
-    state = result.state
-    for cs in result.connection_statuses:
-        icon = "●" if cs.running else "○"
-        port = f" ({cs.socks_port})" if cs.socks_port else ""
-        pid = f" pid={cs.pid}" if cs.pid else ""
-        print(f"  {icon} SSH [{cs.tag}]{port}{pid}")
-    pac_icon = "●" if result.pac_running else "○"
-    pac_port = f" ({result.pac_port})" if result.pac_port else ""
-    print(f"  {pac_icon} PAC server{pac_port}")
-    print(f"State: {state.value}")
-
+def _state_exit_code(state) -> int:
     if state == ProcessState.RUNNING:
         return 0
     if state == ProcessState.STOPPED_PARTIALLY:
@@ -83,7 +71,36 @@ def cmd_restart(args, m) -> int:
 
 def cmd_ps(args, m) -> int:
     result = m.status()
-    return _print_status(result)
+    info = m.process_info()
+
+    for cs in result.connection_statuses:
+        icon = "●" if cs.running else "○"
+        port = f" (socks:{cs.socks_port})" if cs.socks_port else ""
+        pid = f" pid={cs.pid}" if cs.pid else ""
+        disabled = " [disabled]" if not cs.enabled else ""
+        print(f"  {icon} SSH [{cs.tag}]{port}{pid}{disabled}")
+        children = info["conn_children"].get(cs.tag, [])
+        for i, child in enumerate(children):
+            branch = "└" if i == len(children) - 1 else "├"
+            child_icon = "●" if child["running"] else "○"
+            child_pid = f" pid={child['pid']}" if child["pid"] else ""
+            print(f"    {branch} {child_icon} {child['display']}{child_pid}")
+
+    pac_icon = "●" if result.pac_running else "○"
+    pac_port = f" (port:{result.pac_port})" if result.pac_port else ""
+    print(f"  {pac_icon} PAC server{pac_port}")
+
+    rec = info["reconnect"]
+    if rec["daemon_running"]:
+        rec_pid = f" pid={rec['pid']}" if rec["pid"] else ""
+        print(f"  ● Reconnect daemon{rec_pid}")
+    elif rec["thread_alive"]:
+        print(f"  ● Reconnect (in-process)")
+    else:
+        print(f"  ○ Reconnect")
+
+    print(f"State: {result.state.value}")
+    return _state_exit_code(result.state)
 
 
 def cmd_ls(args, m) -> int:

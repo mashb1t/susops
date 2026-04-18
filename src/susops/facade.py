@@ -40,6 +40,7 @@ from susops.core.ssh import (
     test_ssh_connectivity,
 )
 from susops.core.socat import (
+    UDP_PROCESS_PREFIX,
     start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
@@ -967,6 +968,76 @@ class SusOpsManager:
             "thread_alive": thread_alive,
             "daemon_running": daemon_running,
             "watching": watching,
+        }
+
+    def process_info(self) -> dict:
+        """Return subprocess info grouped by connection for ``susops ps`` display.
+
+        TCP forwards have no separate processes — they are port bindings on the
+        ControlMaster.  They are sourced from config so they always appear.
+        UDP forwards have socat processes; their ``lsocat`` PID is shown.
+
+        Returns a dict with:
+          conn_children  – {tag: [{display, pid, running}, ...]}
+          reconnect      – {pid, running, thread_alive, daemon_running}
+        """
+        # Index UDP lsocat processes by (conn_tag, fw_tag) for fast lookup.
+        # Only lsocat is shown — it is the entry-point process for both local
+        # and remote UDP forwards and best represents "is this forward active".
+        udp_lsocat: dict[tuple, dict] = {}
+        for name, proc_running in self._process_mgr.status_all().items():
+            if not name.startswith(UDP_PROCESS_PREFIX + "-"):
+                continue
+            remainder = name[len(UDP_PROCESS_PREFIX) + 1:]
+            if not remainder.endswith("-lsocat"):
+                continue
+            for conn in self.config.connections:
+                if remainder.startswith(conn.tag + "-"):
+                    fw_tag = remainder[len(conn.tag) + 1: -len("-lsocat")]
+                    pid = self._process_mgr.get_pid(name)
+                    udp_lsocat[(conn.tag, fw_tag)] = {"pid": pid, "running": proc_running}
+                    break
+
+        conn_children: dict[str, list[dict]] = {}
+        for conn in self.config.connections:
+            # TCP forwards are bound to the ControlMaster and never have their
+            # own PID files.  Mark them running whenever the master is up.
+            master_up = is_tunnel_running(conn.tag, self._process_mgr)
+            children: list[dict] = []
+            for direction, fwds in (("local", conn.forwards.local), ("remote", conn.forwards.remote)):
+                for fw in fwds:
+                    if not fw.enabled:
+                        continue
+                    src = f"{fw.src_addr}:{fw.src_port}" if fw.src_addr != "localhost" else str(fw.src_port)
+                    dst = f"{fw.dst_addr}:{fw.dst_port}"
+                    label = f" [{fw.tag}]" if fw.tag else ""
+                    fw_tag = fw.tag if fw.tag else f"{direction[0]}-{fw.src_port}"
+                    if fw.tcp:
+                        children.append({
+                            "display": f"fwd {direction}  {src} → {dst}{label}",
+                            "pid": None,
+                            "running": master_up,
+                        })
+                    if fw.udp:
+                        proc = udp_lsocat.get((conn.tag, fw_tag))
+                        children.append({
+                            "display": f"udp {direction}  {src} → {dst}{label}",
+                            "pid": proc["pid"] if proc else None,
+                            "running": proc["running"] if proc else False,
+                        })
+            if children:
+                conn_children[conn.tag] = children
+
+        reconnect_pid = self._process_mgr.get_pid(_RECONNECT_DAEMON_NAME)
+        reconnect_info = self.reconnect_monitor_info()
+        return {
+            "conn_children": conn_children,
+            "reconnect": {
+                "pid": reconnect_pid,
+                "running": reconnect_info["daemon_running"],
+                "thread_alive": reconnect_info["thread_alive"],
+                "daemon_running": reconnect_info["daemon_running"],
+            },
         }
 
     def _active_tags(self) -> set[str]:
