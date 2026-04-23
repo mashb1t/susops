@@ -306,6 +306,22 @@ class ConnectionsScreen(Screen):
         tbl = self.query_one("#tbl-remote", DataTable)
         tbl.add_columns("Status", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
 
+    @staticmethod
+    def _reload_table(tbl: DataTable, rows: list[tuple[tuple, "str | None"]]) -> None:
+        """Repopulate a DataTable while preserving the cursor row.
+
+        rows is a list of (row_values_tuple, key_or_None) pairs.
+        """
+        cur = tbl.cursor_row
+        tbl.clear()
+        for row_args, key in rows:
+            if key is not None:
+                tbl.add_row(*row_args, key=key)
+            else:
+                tbl.add_row(*row_args)
+        if tbl.row_count:
+            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
+
     @work(thread=True)
     def _bg_reload(self) -> None:
         """Background status refresh — fetches live tunnel state then updates UI."""
@@ -329,66 +345,50 @@ class ConnectionsScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         config = mgr.list_config()
 
-        tbl = self.query_one("#tbl-connections", DataTable)
-        cur = tbl.cursor_row
-        tbl.clear()
+        conn_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
             running = status_map.get(conn.tag, False)
-            dot = status_dot(running, conn.enabled)
-            tbl.add_row(
-                dot,
+            conn_rows.append((
+                (status_dot(running, conn.enabled), conn.tag, conn.ssh_host,
+                 str(conn.socks_proxy_port) if conn.socks_proxy_port else "auto",
+                 str(len(conn.pac_hosts)),
+                 str(len(conn.forwards.local) + len(conn.forwards.remote))),
                 conn.tag,
-                conn.ssh_host,
-                str(conn.socks_proxy_port) if conn.socks_proxy_port else "auto",
-                str(len(conn.pac_hosts)),
-                str(len(conn.forwards.local) + len(conn.forwards.remote)),
-                key=conn.tag,
-            )
-        if tbl.row_count:
-            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
+            ))
+        self._reload_table(self.query_one("#tbl-connections", DataTable), conn_rows)
 
-        tbl = self.query_one("#tbl-pac", DataTable)
-        cur = tbl.cursor_row
-        tbl.clear()
+        pac_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
             conn_running = status_map.get(conn.tag, False)
             for host in conn.pac_hosts:
-                dot = status_dot(conn_running)
-                tbl.add_row(dot, host, conn.tag, key=f"{conn.tag}:{host}:on")
+                pac_rows.append(((status_dot(conn_running), host, conn.tag), f"{conn.tag}:{host}:on"))
             for host in conn.pac_hosts_disabled:
-                tbl.add_row("─", host, conn.tag, key=f"{conn.tag}:{host}:off")
-        if tbl.row_count:
-            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
+                pac_rows.append((("─", host, conn.tag), f"{conn.tag}:{host}:off"))
+        self._reload_table(self.query_one("#tbl-pac", DataTable), pac_rows)
 
-        tbl = self.query_one("#tbl-local", DataTable)
-        cur = tbl.cursor_row
-        tbl.clear()
+        local_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
             conn_running = status_map.get(conn.tag, False)
             for fw in conn.forwards.local:
                 dot = _fw_dot(mgr, fw, conn.tag, "local", conn_running)
-                tbl.add_row(
-                    dot, conn.tag, str(fw.src_port), fw.src_addr,
-                    str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
-                    key=f"{conn.tag}:L:{fw.src_port}",
-                )
-        if tbl.row_count:
-            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
+                local_rows.append((
+                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
+                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:L:{fw.src_port}",
+                ))
+        self._reload_table(self.query_one("#tbl-local", DataTable), local_rows)
 
-        tbl = self.query_one("#tbl-remote", DataTable)
-        cur = tbl.cursor_row
-        tbl.clear()
+        remote_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
             conn_running = status_map.get(conn.tag, False)
             for fw in conn.forwards.remote:
                 dot = _fw_dot(mgr, fw, conn.tag, "remote", conn_running)
-                tbl.add_row(
-                    dot, conn.tag, str(fw.src_port), fw.src_addr,
-                    str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or "",
-                    key=f"{conn.tag}:R:{fw.src_port}",
-                )
-        if tbl.row_count:
-            tbl.move_cursor(row=min(cur, tbl.row_count - 1))
+                remote_rows.append((
+                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
+                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:R:{fw.src_port}",
+                ))
+        self._reload_table(self.query_one("#tbl-remote", DataTable), remote_rows)
 
     def _conn_tags(self) -> list[str]:
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
