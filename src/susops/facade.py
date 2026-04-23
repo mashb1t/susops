@@ -440,6 +440,26 @@ class SusOpsManager:
             update={"connections": [updated if c.tag == updated.tag else c for c in self.config.connections]}
         )
 
+    def _register_forwards(self, conn: Connection, error_suffix: str = "") -> None:
+        """Register all enabled forwards for conn through its ControlMaster.
+
+        Iterates local then remote. TCP forwards use ``ssh -O forward``; UDP
+        forwards start socat processes. Errors are user-visible but do not
+        abort registration of other forwards.
+        """
+        for direction, fwds in (("local", conn.forwards.local), ("remote", conn.forwards.remote)):
+            for fw in fwds:
+                if not fw.enabled:
+                    continue
+                try:
+                    if fw.tcp:
+                        start_forward(conn, fw, direction, self.workspace)
+                    if fw.udp:
+                        start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
+                except Exception as exc:
+                    suffix = f" {error_suffix}" if error_suffix else ""
+                    self._error(f"[{conn.tag}] Forward {fw.src_port} failed{suffix}: {exc}")
+
     def _on_bandwidth(self, tag: str, rx: float, tx: float) -> None:
         self._status_server.emit("bandwidth", {"tag": tag, "rx_bps": rx, "tx_bps": tx})
 
@@ -738,29 +758,7 @@ class SusOpsManager:
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
 
-                for fw in conn.forwards.local:
-                    if not fw.enabled:
-                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
-                        continue
-                    try:
-                        if fw.tcp:
-                            start_forward(conn, fw, "local", self.workspace)
-                        if fw.udp:
-                            start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
-                    except Exception as exc:
-                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
-
-                for fw in conn.forwards.remote:
-                    if not fw.enabled:
-                        self._log(f"[{conn.tag}] Forward {fw.tag or fw.src_port} disabled — skipping")
-                        continue
-                    try:
-                        if fw.tcp:
-                            start_forward(conn, fw, "remote", self.workspace)
-                        if fw.udp:
-                            start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
-                    except Exception as exc:
-                        self._error(f"[{conn.tag}] Forward {fw.src_port} failed: {exc}")
+                self._register_forwards(conn)
 
                 # Start HTTP servers for config-only (stopped) shares, then forward slaves
                 # for all running share servers belonging to this connection.
@@ -1114,27 +1112,7 @@ class SusOpsManager:
         # Clean up stale UDP processes — they died with the previous master.
         stop_all_udp_forwards_for_connection(tag, self._process_mgr)
 
-        for fw in conn.forwards.local:
-            if not fw.enabled:
-                continue
-            try:
-                if fw.tcp:
-                    start_forward(conn, fw, "local", self.workspace)
-                if fw.udp:
-                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
-            except Exception as exc:
-                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
-
-        for fw in conn.forwards.remote:
-            if not fw.enabled:
-                continue
-            try:
-                if fw.tcp:
-                    start_forward(conn, fw, "remote", self.workspace)
-                if fw.udp:
-                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
-            except Exception as exc:
-                self._error(f"[{tag}] Forward {fw.src_port} failed to re-register: {exc}")
+        self._register_forwards(conn, error_suffix="to re-register")
 
         for share_port, (_server, share_info) in list(self._share_servers.items()):
             if share_info.conn_tag != tag:
