@@ -1173,21 +1173,7 @@ class SusOpsManager:
                     errors.append(f"Share {p}: {exc}")
 
         if tag is None:
-            if self._pac_server.is_running():
-                try:
-                    self._pac_server.stop()
-                    self._remove_pac_port_file()
-                    self._log("PAC server stopped")
-                    if not keep_ports and ephemeral:
-                        self.config = self.config.model_copy(update={"pac_server_port": 0})
-                except Exception as exc:
-                    errors.append(f"PAC: {exc}")
-            else:
-                cross_port = self._read_pac_port_file()
-                if cross_port:
-                    self._fire_http(f"http://127.0.0.1:{cross_port}/stop")
-                    self._remove_pac_port_file()
-                    self._log("PAC server stopped (remote)")
+            self._stop_pac_server(errors, keep_ports, ephemeral)
 
         # Regenerate PAC (or stop it) when stopping a single connection
         if tag is not None:
@@ -1195,21 +1181,7 @@ class SusOpsManager:
             if not remaining:
                 # Last connection stopped — write empty PAC first for consistency, then shut down
                 write_pac_file(self.config, self.workspace, active_tags=set())
-                if self._pac_server.is_running():
-                    try:
-                        self._pac_server.stop()
-                        self._remove_pac_port_file()
-                        self._log("PAC server stopped (no active connections)")
-                        if not keep_ports and ephemeral:
-                            self.config = self.config.model_copy(update={"pac_server_port": 0})
-                    except Exception as exc:
-                        errors.append(f"PAC: {exc}")
-                else:
-                    cross_port = self._read_pac_port_file()
-                    if cross_port:
-                        self._fire_http(f"http://127.0.0.1:{cross_port}/stop")
-                        self._remove_pac_port_file()
-                        self._log("PAC server stopped (no active connections, remote)")
+                self._stop_pac_server(errors, keep_ports, ephemeral, context="no active connections")
             else:
                 self._update_pac()
 
@@ -1298,6 +1270,29 @@ class SusOpsManager:
         pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
         if self._pac_server.is_running():
             self._pac_server.reload(pac_path)
+
+    def _stop_pac_server(self, errors: list[str], keep_ports: bool, ephemeral: bool, context: str = "") -> None:
+        """Stop the PAC server (in-process or cross-process) and clean up.
+
+        context is appended to the log message in parentheses when non-empty,
+        e.g. ``context="no active connections"`` → ``"PAC server stopped (no active connections)"``.
+        """
+        suffix = f" ({context})" if context else ""
+        if self._pac_server.is_running():
+            try:
+                self._pac_server.stop()
+                self._remove_pac_port_file()
+                self._log(f"PAC server stopped{suffix}")
+                if not keep_ports and ephemeral:
+                    self.config = self.config.model_copy(update={"pac_server_port": 0})
+            except Exception as exc:
+                errors.append(f"PAC: {exc}")
+        else:
+            cross_port = self._read_pac_port_file()
+            if cross_port:
+                self._fire_http(f"http://127.0.0.1:{cross_port}/stop")
+                self._remove_pac_port_file()
+                self._log(f"PAC server stopped (remote{suffix})")
 
     def test_ssh(self, ssh_host: str) -> bool:
         return test_ssh_connectivity(ssh_host)
