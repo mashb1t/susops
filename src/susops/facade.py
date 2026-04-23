@@ -434,6 +434,12 @@ class SusOpsManager:
     def _save(self) -> None:
         save_config(self.config, self.workspace)
 
+    def _replace_connection(self, updated: Connection) -> None:
+        """Swap the connection with the same tag in self.config (does not save)."""
+        self.config = self.config.model_copy(
+            update={"connections": [updated if c.tag == updated.tag else c for c in self.config.connections]}
+        )
+
     def _on_bandwidth(self, tag: str, rx: float, tx: float) -> None:
         self._status_server.emit("bandwidth", {"tag": tag, "rx_bps": rx, "tx_bps": tx})
 
@@ -462,11 +468,7 @@ class SusOpsManager:
             return conn
         port = get_random_free_port()
         updated = conn.model_copy(update={"socks_proxy_port": port})
-        new_connections = [
-            updated if c.tag == conn.tag else c
-            for c in self.config.connections
-        ]
-        self.config = self.config.model_copy(update={"connections": new_connections})
+        self._replace_connection(updated)
         self._save()
         self._log(f"[{conn.tag}] Assigned SOCKS port {port}")
         return updated
@@ -645,15 +647,7 @@ class SusOpsManager:
             fs.model_copy(update={"port": new_port}) if f.file_path == fs.file_path else f
             for f in conn.file_shares
         ]
-        updated_conn = conn.model_copy(update={"file_shares": updated_shares})
-        self.config = self.config.model_copy(
-            update={
-                "connections": [
-                    updated_conn if c.tag == conn_tag else c
-                    for c in self.config.connections
-                ]
-            }
-        )
+        self._replace_connection(conn.model_copy(update={"file_shares": updated_shares}))
         self._save()
 
     def _add_file_share_to_config(
@@ -674,15 +668,7 @@ class SusOpsManager:
             new_shares = list(conn.file_shares) + [
                 FileShare(file_path=file_path, password=password, port=port)
             ]
-        updated = conn.model_copy(update={"file_shares": new_shares})
-        self.config = self.config.model_copy(
-            update={
-                "connections": [
-                    updated if c.tag == conn_tag else c
-                    for c in self.config.connections
-                ]
-            }
-        )
+        self._replace_connection(conn.model_copy(update={"file_shares": new_shares}))
         self._save()
 
     def _remove_file_share_from_config(self, port: int) -> None:
@@ -1187,12 +1173,7 @@ class SusOpsManager:
                     self._reconnect_monitor.mark_stopped(conn.tag)
                 stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
-                    updated = conn.model_copy(update={"socks_proxy_port": 0})
-                    new_conns = [
-                        updated if c.tag == conn.tag else c
-                        for c in self.config.connections
-                    ]
-                    self.config = self.config.model_copy(update={"connections": new_conns})
+                    self._replace_connection(conn.model_copy(update={"socks_proxy_port": 0}))
             except Exception as exc:
                 errors.append(f"[{conn.tag}] {exc}")
 
@@ -1321,10 +1302,7 @@ class SusOpsManager:
         conn = get_connection(self.config, tag)
         if conn is None:
             raise ValueError(f"Connection '{tag}' not found")
-        updated = conn.model_copy(update={"enabled": enabled})
-        self.config = self.config.model_copy(
-            update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
-        )
+        self._replace_connection(conn.model_copy(update={"enabled": enabled}))
         self._save()
         self._log(f"[{tag}] {'enabled' if enabled else 'disabled'}")
         if not enabled and (is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace)):
@@ -1361,10 +1339,7 @@ class SusOpsManager:
             raise ValueError(f"Connection '{tag}' not found")
         if host in conn.pac_hosts:
             raise ValueError(f"Host '{host}' already in PAC list for '{tag}'")
-        updated = conn.model_copy(update={"pac_hosts": list(conn.pac_hosts) + [host]})
-        self.config = self.config.model_copy(
-            update={"connections": [updated if c.tag == tag else c for c in self.config.connections]}
-        )
+        self._replace_connection(conn.model_copy(update={"pac_hosts": list(conn.pac_hosts) + [host]}))
         self._save()
         self._update_pac()
         self._log(f"[{tag}] Added PAC host '{host}'")
@@ -1443,10 +1418,7 @@ class SusOpsManager:
             new_fwds = conn.forwards.model_copy(
                 update={"remote": list(conn.forwards.remote) + [fw]}
             )
-        updated = conn.model_copy(update={"forwards": new_fwds})
-        self.config = self.config.model_copy(
-            update={"connections": [updated if c.tag == conn_tag else c for c in self.config.connections]}
-        )
+        self._replace_connection(conn.model_copy(update={"forwards": new_fwds}))
         self._save()
         self._log(f"[{conn_tag}] Added {direction} forward {fw.src_port}→{fw.dst_port}")
 
