@@ -460,6 +460,27 @@ class SusOpsManager:
                     suffix = f" {error_suffix}" if error_suffix else ""
                     self._error(f"[{conn.tag}] Forward {fw.src_port} failed{suffix}: {exc}")
 
+    def _maybe_start_forward_live(self, conn_tag: str, fw: PortForward, direction: str) -> None:
+        """Start a forward immediately if the connection master is currently running."""
+        conn = get_connection(self.config, conn_tag)
+        if not conn:
+            return
+        if not (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
+            return
+        try:
+            if fw.tcp:
+                start_forward(conn, fw, direction, self.workspace)
+            if fw.udp:
+                start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
+            self._emit("forward", {
+                "tag": conn_tag,
+                "fw_tag": fw.tag or f"{direction}-{fw.src_port}",
+                "direction": direction,
+                "running": True,
+            })
+        except Exception as exc:
+            self._log(f"[{conn_tag}] Could not start forward: {exc}")
+
     def _on_bandwidth(self, tag: str, rx: float, tx: float) -> None:
         self._status_server.emit("bandwidth", {"tag": tag, "rx_bps": rx, "tx_bps": tx})
 
@@ -1397,36 +1418,11 @@ class SusOpsManager:
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "local")
-        # If master is running, register the forward live via ssh -O forward
-        conn = get_connection(self.config, conn_tag)
-        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
-            try:
-                if fw.tcp:
-                    start_forward(conn, fw, "local", self.workspace)
-                if fw.udp:
-                    start_udp_forward(conn, fw, "local", self._process_mgr, self.workspace)
-                self._emit("forward", {
-                    "tag": conn_tag, "fw_tag": fw.tag or f"local-{fw.src_port}",
-                    "direction": "local", "running": True,
-                })
-            except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward: {exc}")
+        self._maybe_start_forward_live(conn_tag, fw, "local")
 
     def add_remote_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "remote")
-        conn = get_connection(self.config, conn_tag)
-        if conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
-            try:
-                if fw.tcp:
-                    start_forward(conn, fw, "remote", self.workspace)
-                if fw.udp:
-                    start_udp_forward(conn, fw, "remote", self._process_mgr, self.workspace)
-                self._emit("forward", {
-                    "tag": conn_tag, "fw_tag": fw.tag or f"remote-{fw.src_port}",
-                    "direction": "remote", "running": True,
-                })
-            except Exception as exc:
-                self._log(f"[{conn_tag}] Could not start forward: {exc}")
+        self._maybe_start_forward_live(conn_tag, fw, "remote")
 
     def _remove_forward(self, src_port: int, direction: str) -> None:
         self._reload_config()
