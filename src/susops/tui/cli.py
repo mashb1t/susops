@@ -346,6 +346,132 @@ def cmd_firefox(args, m) -> int:
     return 1
 
 
+def cmd_howto(args, m) -> int:
+    config = m.list_config()
+
+    # Resolve target connection
+    if args.connection:
+        conn = next((c for c in config.connections if c.tag == args.connection), None)
+        if conn is None:
+            print(f"Error: connection '{args.connection}' not found", file=sys.stderr)
+            return 1
+    elif config.connections:
+        conn = config.connections[0]
+    else:
+        print("Error: no connections configured", file=sys.stderr)
+        return 1
+
+    # Get live SOCKS port from a running process; fall back to saved config value
+    port = 0
+    running = False
+    for cs in m.status().connection_statuses:
+        if cs.tag == conn.tag:
+            port = cs.socks_port
+            running = cs.running
+            break
+    if port == 0:
+        port = conn.socks_proxy_port
+
+    proxy = f"socks5h://127.0.0.1:{port}" if port else "socks5h://127.0.0.1:<port>"
+    port_label = str(port) if port else "<port>"
+
+    # Warning banner when tunnel is not live
+    if not running:
+        print(f"Warning: tunnel '{conn.tag}' is not running — start with: susops start -c {conn.tag}")
+        if port:
+            print(f"         (port shown below is the configured value, not a live port)")
+        else:
+            print(f"         (start the tunnel first to see the assigned port)")
+        print()
+
+    print(f"susops howto — {conn.tag}  ({proxy})")
+    print("─" * 52)
+    print()
+
+    # Shell env vars
+    print("# Shell  (bash/zsh — add to ~/.zshrc or ~/.bash_profile)")
+    print(f"export ALL_PROXY={proxy}")
+    print(f"export HTTP_PROXY={proxy}")
+    print(f"export HTTPS_PROXY={proxy}")
+    print("export NO_PROXY=localhost,127.0.0.1")
+    print()
+
+    # Homebrew
+    print("# Homebrew")
+    print(f"ALL_PROXY={proxy} brew install <package>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-brew='ALL_PROXY={proxy} brew'")
+    print("# or set Homebrew's own env var:")
+    print(f"export HOMEBREW_ALL_PROXY={proxy}")
+    print()
+
+    # pip
+    print("# pip")
+    print(f"pip install --proxy {proxy} <package>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-pip='pip --proxy {proxy}'")
+    print(f"alias susops-pip3='pip3 --proxy {proxy}'")
+    print("# or permanently via config (~/.config/pip/pip.conf):")
+    print("#   [global]")
+    print(f"#   proxy = {proxy}")
+    print()
+
+    # npm / yarn / pnpm
+    print("# npm / yarn / pnpm")
+    print(f"npm config set proxy {proxy}")
+    print(f"npm config set https-proxy {proxy}")
+    print(f"yarn config set proxy {proxy}")
+    print(f"pnpm config set proxy {proxy}")
+    print("# undo: npm config delete proxy && npm config delete https-proxy")
+    print()
+
+    # git
+    print("# git")
+    print(f"git config --global http.proxy {proxy}")
+    print("# undo: git config --global --unset http.proxy")
+    print()
+
+    # curl
+    print("# curl")
+    print(f"curl --proxy {proxy} <url>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-curl='curl --proxy {proxy}'")
+    print(f"# or permanently via ~/.curlrc:  proxy = {proxy}")
+    print()
+
+    # wget
+    print("# wget")
+    print(f"http_proxy={proxy} wget <url>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-wget='http_proxy={proxy} wget'")
+    print()
+
+    # apt / apt-get
+    print("# apt / apt-get")
+    print(f'sudo apt-get -o Acquire::http::Proxy="{proxy}" install <pkg>')
+    print("# permanent (/etc/apt/apt.conf.d/99proxy):")
+    print(f'#   Acquire::http::Proxy "{proxy}";')
+    print(f'#   Acquire::https::Proxy "{proxy}";')
+    print()
+
+    # Docker
+    print("# Docker daemon  (/etc/systemd/system/docker.service.d/proxy.conf)")
+    print("# [Service]")
+    print(f'# Environment="HTTPS_PROXY={proxy}"')
+    print(f'# Environment="HTTP_PROXY={proxy}"')
+    print('# Environment="NO_PROXY=localhost,127.0.0.1"')
+    print("# Then: sudo systemctl daemon-reload && sudo systemctl restart docker")
+    print()
+
+    # proxychains
+    print("# Generic (proxychains4)")
+    print("proxychains4 <any-command>")
+    print("# configure /etc/proxychains4.conf:")
+    print(f"#   socks5  127.0.0.1  {port_label}")
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="susops",
@@ -450,6 +576,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("chrome", help="Launch Chrome with PAC proxy").set_defaults(func=cmd_chrome)
     sub.add_parser("chrome-proxy-settings", help="Open Chrome proxy settings").set_defaults(func=cmd_chrome_proxy_settings)
     sub.add_parser("firefox", help="Launch Firefox with PAC proxy").set_defaults(func=cmd_firefox)
+
+    # howto
+    sub.add_parser("howto", help="Print proxy setup guide for common tools").set_defaults(func=cmd_howto)
 
     return parser
 
