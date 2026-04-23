@@ -1271,7 +1271,7 @@ requires-dist = [
     { name = "textual-dev", marker = "extra == 'dev'" },
     { name = "textual-plotext", marker = "extra == 'tui'", specifier = ">=0.2" },
 ]
-provides-extras = ["tui", "tray-linux", "tray-mac", "share", "crypto", "dev"]
+provides-extras = ["tui", "tray-linux", "udp", "tray-mac", "share", "crypto", "dev"]
 
 [[package]]
 name = "textual"
