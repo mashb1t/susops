@@ -502,6 +502,14 @@ class SusOpsManager:
         except OSError:
             return False
 
+    @staticmethod
+    def _fire_http(url: str, timeout: int = 2) -> None:
+        """POST to url, ignoring all errors (fire-and-forget)."""
+        try:
+            urllib.request.urlopen(url, data=b"", timeout=timeout)
+        except Exception:
+            pass
+
     def _ensure_pac_port(self) -> int:
         if self.config.pac_server_port != 0:
             return self.config.pac_server_port
@@ -1218,15 +1226,7 @@ class SusOpsManager:
             else:
                 cross_port = self._read_pac_port_file()
                 if cross_port:
-                    try:
-                        import urllib.request
-                        urllib.request.urlopen(
-                            f"http://127.0.0.1:{cross_port}/stop",
-                            data=b"",
-                            timeout=2,
-                        )
-                    except Exception:
-                        pass
+                    self._fire_http(f"http://127.0.0.1:{cross_port}/stop")
                     self._remove_pac_port_file()
                     self._log("PAC server stopped (remote)")
 
@@ -1248,15 +1248,7 @@ class SusOpsManager:
                 else:
                     cross_port = self._read_pac_port_file()
                     if cross_port:
-                        try:
-                            import urllib.request
-                            urllib.request.urlopen(
-                                f"http://127.0.0.1:{cross_port}/stop",
-                                data=b"",
-                                timeout=2,
-                            )
-                        except Exception:
-                            pass
+                        self._fire_http(f"http://127.0.0.1:{cross_port}/stop")
                         self._remove_pac_port_file()
                         self._log("PAC server stopped (no active connections, remote)")
             else:
