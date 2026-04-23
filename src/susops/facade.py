@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -103,7 +105,6 @@ class _BandwidthSampler:
         if path is None or not path.exists():
             return
         try:
-            import json
             data = json.loads(path.read_text())
             if isinstance(data, dict):
                 for tag, samples in data.items():
@@ -118,7 +119,6 @@ class _BandwidthSampler:
         if path is None:
             return
         try:
-            import json
             path.write_text(json.dumps(self._history))
         except Exception:
             pass
@@ -395,7 +395,6 @@ class SusOpsManager:
         if self.on_log:
             self.on_log(full)
         else:
-            import sys
             print(full, file=sys.stderr)
 
     def _notify(self, title: str, body: str) -> None:
