@@ -379,13 +379,14 @@ def cmd_howto(args, m) -> int:
     if not running:
         print(f"Warning: tunnel '{conn.tag}' is not running — start with: susops start -c {conn.tag}")
         if port:
-            print(f"         (port shown below is the configured value, not a live port)")
+            print("         (port shown below is the configured value, not a live port)")
         else:
-            print(f"         (start the tunnel first to see the assigned port)")
+            print("         (start the tunnel first to see the assigned port)")
         print()
 
-    print(f"susops howto — {conn.tag}  ({proxy})")
-    print("─" * 52)
+    header = f"susops howto — {conn.tag}  ({proxy})"
+    print(header)
+    print("─" * len(header))
     print()
 
     # Shell env vars
