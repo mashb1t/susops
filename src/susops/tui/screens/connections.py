@@ -23,6 +23,12 @@ from susops.core.ssh_config import get_ssh_hosts
 from susops.tui.screens import _CollapsingLabel, compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
 
 
+def _select_str(screen: ModalScreen, selector_id: str, default: str = "") -> str:
+    """Return a Select widget's value as str, or default when nothing is selected."""
+    val = screen.query_one(selector_id, Select).value
+    return val if isinstance(val, str) else default
+
+
 def _fw_dot(mgr, fw: PortForward, conn_tag: str, direction: str, conn_running: bool) -> str:
     """Return the status dot for a port forward, handling TCP+UDP partial state."""
     if not fw.enabled:
@@ -125,8 +131,7 @@ class _AddPacHostDialog(ModalScreen):
 
     def _update_hint(self) -> None:
         host = self.query_one("#host", Input).value.strip()
-        conn_val = self.query_one("#conn", Select).value
-        selected_conn = conn_val if isinstance(conn_val, str) else None
+        selected_conn = _select_str(self, "#conn") or None
         hint = self.query_one("#hint", Label)
         if not host:
             hint.update("")
@@ -155,8 +160,7 @@ class _AddPacHostDialog(ModalScreen):
             self.dismiss(None)
             return
         host = self.query_one("#host", Input).value.strip()
-        conn_val = self.query_one("#conn", Select).value
-        conn = conn_val if isinstance(conn_val, str) else None
+        conn = _select_str(self, "#conn") or None
         if not host:
             self.query_one(".modal-error", Label).update("Host pattern is required.")
             return
@@ -211,12 +215,9 @@ class _AddForwardDialog(ModalScreen):
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
-        conn_val = self.query_one("#conn", Select).value
-        conn = conn_val if isinstance(conn_val, str) else ""
-        src_addr_val = self.query_one("#src-addr", Select).value
-        src_addr = src_addr_val if isinstance(src_addr_val, str) else "localhost"
-        dst_addr_val = self.query_one("#dst-addr", Select).value
-        dst_addr = dst_addr_val if isinstance(dst_addr_val, str) else "localhost"
+        conn = _select_str(self, "#conn")
+        src_addr = _select_str(self, "#src-addr", "localhost")
+        dst_addr = _select_str(self, "#dst-addr", "localhost")
         tag = self.query_one("#tag", Input).value.strip()
         tcp = self.query_one("#proto-tcp", Checkbox).value
         udp = self.query_one("#proto-udp", Checkbox).value
