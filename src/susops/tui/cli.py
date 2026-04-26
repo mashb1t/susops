@@ -346,7 +346,7 @@ def cmd_firefox(args, m) -> int:
     return 1
 
 
-def cmd_howto(args, m) -> int:
+def cmd_guide(args, m) -> int:
     config = m.list_config()
 
     # Resolve target connection
@@ -375,6 +375,10 @@ def cmd_howto(args, m) -> int:
     proxy = f"socks5h://127.0.0.1:{port}" if port else "socks5h://127.0.0.1:<port>"
     port_label = str(port) if port else "<port>"
 
+    is_macos = sys.platform == "darwin"
+    # socksify (dante) is the macOS equivalent of proxychains4; it needs SOCKS_SERVER=host:port
+    proxy_cmd = f"SOCKS_SERVER=127.0.0.1:{port_label} socksify" if is_macos else "proxychains4"
+
     # Warning banner when tunnel is not live
     if not running:
         print(f"Warning: tunnel '{conn.tag}' is not running — start with: susops start -c {conn.tag}")
@@ -384,7 +388,7 @@ def cmd_howto(args, m) -> int:
             print("         (start the tunnel first to see the assigned port)")
         print()
 
-    header = f"susops howto — {conn.tag}  ({proxy})"
+    header = f"susops guide — {conn.tag}  ({proxy})"
     print(header)
     print("─" * len(header))
     print()
@@ -392,8 +396,6 @@ def cmd_howto(args, m) -> int:
     # Shell env vars
     print("# Shell  (bash/zsh — add to ~/.zshrc or ~/.bash_profile)")
     print(f"export ALL_PROXY={proxy}")
-    print(f"export HTTP_PROXY={proxy}")
-    print(f"export HTTPS_PROXY={proxy}")
     print("export NO_PROXY=localhost,127.0.0.1")
     print()
 
@@ -417,13 +419,13 @@ def cmd_howto(args, m) -> int:
     print(f"#   proxy = {proxy}")
     print()
 
-    # npm / yarn / pnpm
+    # npm / yarn / pnpm  (Node.js has no native SOCKS5 support)
     print("# npm / yarn / pnpm")
-    print(f"npm config set proxy {proxy}")
-    print(f"npm config set https-proxy {proxy}")
-    print(f"yarn config set proxy {proxy}")
-    print(f"pnpm config set proxy {proxy}")
-    print("# undo: npm config delete proxy && npm config delete https-proxy")
+    print(f"{proxy_cmd} npm install <package>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-npm='{proxy_cmd} npm'")
+    print(f"alias susops-yarn='{proxy_cmd} yarn'")
+    print(f"alias susops-pnpm='{proxy_cmd} pnpm'")
     print()
 
     # git
@@ -440,35 +442,47 @@ def cmd_howto(args, m) -> int:
     print(f"# or permanently via ~/.curlrc:  proxy = {proxy}")
     print()
 
-    # wget
+    # wget  (no native SOCKS5 support)
     print("# wget")
-    print(f"http_proxy={proxy} wget <url>")
+    print(f"{proxy_cmd} wget <url>")
     print("# permanent alias (add to ~/.zshrc):")
-    print(f"alias susops-wget='http_proxy={proxy} wget'")
+    print(f"alias susops-wget='{proxy_cmd} wget'")
     print()
 
-    # apt / apt-get
-    print("# apt / apt-get")
-    print(f'sudo apt-get -o Acquire::http::Proxy="{proxy}" install <pkg>')
-    print("# permanent (/etc/apt/apt.conf.d/99proxy):")
-    print(f'#   Acquire::http::Proxy "{proxy}";')
-    print(f'#   Acquire::https::Proxy "{proxy}";')
+    # apt / apt-get  (Linux only — no native SOCKS5 support)
+    if not is_macos:
+        print("# apt / apt-get")
+        print(f"sudo {proxy_cmd} apt-get install <pkg>")
+        print("# permanent alias (add to ~/.zshrc):")
+        print("# alias sudo='sudo '  # allows sudo to expand aliases")
+        print(f"alias susops-apt='{proxy_cmd} apt-get'")
+        print()
+
+    # Docker  (Go's net/http supports SOCKS5 via ALL_PROXY natively)
+    print("# Docker")
+    print(f"ALL_PROXY={proxy} docker pull <image>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print(f"alias susops-docker='ALL_PROXY={proxy} docker'")
+    if is_macos:
+        print("# permanent for daemon: Docker Desktop → Settings → Resources → Proxies")
+        print(f"#   set SOCKS proxy to 127.0.0.1:{port_label}")
+    else:
+        print("# permanent for daemon (/etc/systemd/system/docker.service.d/proxy.conf):")
+        print("# [Service]")
+        print(f'# Environment="ALL_PROXY={proxy}"')
+        print('# Environment="NO_PROXY=localhost,127.0.0.1"')
+        print("# Then: sudo systemctl daemon-reload && sudo systemctl restart docker")
     print()
 
-    # Docker
-    print("# Docker daemon  (/etc/systemd/system/docker.service.d/proxy.conf)")
-    print("# [Service]")
-    print(f'# Environment="HTTPS_PROXY={proxy}"')
-    print(f'# Environment="HTTP_PROXY={proxy}"')
-    print('# Environment="NO_PROXY=localhost,127.0.0.1"')
-    print("# Then: sudo systemctl daemon-reload && sudo systemctl restart docker")
-    print()
-
-    # proxychains
-    print("# Generic (proxychains4)")
-    print("proxychains4 <any-command>")
-    print("# configure /etc/proxychains4.conf:")
-    print(f"#   socks5  127.0.0.1  {port_label}")
+    # Generic wrapper
+    if is_macos:
+        print("# Generic (socksify — install: brew install dante)")
+        print(f"SOCKS_SERVER=127.0.0.1:{port_label} socksify <any-command>")
+    else:
+        print("# Generic (proxychains4)")
+        print("proxychains4 <any-command>")
+        print("# configure /etc/proxychains4.conf:")
+        print(f"#   socks5  127.0.0.1  {port_label}")
 
     return 0
 
@@ -578,8 +592,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("chrome-proxy-settings", help="Open Chrome proxy settings").set_defaults(func=cmd_chrome_proxy_settings)
     sub.add_parser("firefox", help="Launch Firefox with PAC proxy").set_defaults(func=cmd_firefox)
 
-    # howto
-    sub.add_parser("howto", help="Print proxy setup guide for common tools").set_defaults(func=cmd_howto)
+    # guide
+    sub.add_parser("guide", help="Print proxy setup guide for common tools").set_defaults(func=cmd_guide)
 
     return parser
 

@@ -426,24 +426,24 @@ def test_cmd_stop_with_tag(ws_with_conn):
 
 
 # ---------------------------------------------------------------------------
-# howto — proxy setup guide
+# guide — proxy setup guide
 # ---------------------------------------------------------------------------
 
-def test_cmd_howto_no_connections(ws):
+def test_cmd_guide_no_connections(ws):
     """No connections configured → exit 1, error to stderr."""
-    code, out, err = run(["howto"], ws)
+    code, out, err = run(["guide"], ws)
     assert code == 1
     assert "Error" in err
 
 
-def test_cmd_howto_unknown_tag(ws_with_conn):
+def test_cmd_guide_unknown_tag(ws_with_conn):
     """-c ghost with only 'work' configured → exit 1, error to stderr."""
-    code, out, err = run(["-c", "ghost", "howto"], ws_with_conn)
+    code, out, err = run(["-c", "ghost", "guide"], ws_with_conn)
     assert code == 1
     assert "Error" in err
 
 
-def test_cmd_howto_running(ws_with_conn):
+def test_cmd_guide_running(ws_with_conn):
     """Live connection with socks_port=1080 → proxy URL in output, no warning."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
@@ -460,14 +460,14 @@ def test_cmd_howto_running(ws_with_conn):
         message="",
     )
     with patch.object(m, "status", return_value=fake_status):
-        code, out, err = run_with_manager(["howto"], m)
+        code, out, err = run_with_manager(["guide"], m)
 
     assert code == 0
     assert "socks5h://127.0.0.1:1080" in out
     assert "Warning" not in out
 
 
-def test_cmd_howto_not_running_config_port(ws):
+def test_cmd_guide_not_running_config_port(ws):
     """Tunnel stopped but config has a saved port → warning shown, config port used."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
@@ -486,14 +486,14 @@ def test_cmd_howto_not_running_config_port(ws):
         message="",
     )
     with patch.object(m, "status", return_value=fake_status):
-        code, out, err = run_with_manager(["howto"], m)
+        code, out, err = run_with_manager(["guide"], m)
 
     assert code == 0
     assert "Warning" in out
     assert "socks5h://127.0.0.1:9050" in out
 
 
-def test_cmd_howto_port_unknown(ws_with_conn):
+def test_cmd_guide_port_unknown(ws_with_conn):
     """Tunnel stopped and port is 0 in config → warning shown, <port> placeholder used."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
@@ -510,14 +510,14 @@ def test_cmd_howto_port_unknown(ws_with_conn):
         message="",
     )
     with patch.object(m, "status", return_value=fake_status):
-        code, out, err = run_with_manager(["howto"], m)
+        code, out, err = run_with_manager(["guide"], m)
 
     assert code == 0
     assert "Warning" in out
     assert "<port>" in out
 
 
-def test_cmd_howto_contains_tool_sections(ws_with_conn):
+def test_cmd_guide_contains_tool_sections(ws_with_conn):
     """All expected tool sections appear in the guide."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
@@ -534,17 +534,22 @@ def test_cmd_howto_contains_tool_sections(ws_with_conn):
         message="",
     )
     with patch.object(m, "status", return_value=fake_status):
-        code, out, _ = run_with_manager(["howto"], m)
+        code, out, _ = run_with_manager(["guide"], m)
 
     assert code == 0
     for section in ("Shell", "Homebrew", "pip", "npm", "git", "curl", "wget", "apt", "Docker", "proxychains"):
         assert section in out, f"Missing section: {section}"
-    # Each tool that supports aliases must show an alias line
-    for tool_alias in ("alias susops-brew=", "alias susops-pip=", "alias susops-pip3=", "alias susops-curl=", "alias susops-wget="):
+    # Each tool must show an alias line
+    for tool_alias in (
+        "alias susops-brew=", "alias susops-pip=", "alias susops-pip3=",
+        "alias susops-curl=", "alias susops-wget=",
+        "alias susops-npm=", "alias susops-yarn=", "alias susops-pnpm=",
+        "alias susops-docker=", "alias susops-apt=",
+    ):
         assert tool_alias in out, f"Missing alias: {tool_alias}"
 
 
-def test_cmd_howto_default_connection(ws_with_conn):
+def test_cmd_guide_default_connection(ws_with_conn):
     """Without -c, uses the first connection in config."""
     from unittest.mock import patch
     from susops.facade import SusOpsManager
@@ -561,7 +566,7 @@ def test_cmd_howto_default_connection(ws_with_conn):
         message="",
     )
     with patch.object(m, "status", return_value=fake_status):
-        code, out, _ = run_with_manager(["howto"], m)
+        code, out, _ = run_with_manager(["guide"], m)
 
     assert code == 0
     assert "work" in out
