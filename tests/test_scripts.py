@@ -71,3 +71,48 @@ def test_compute_excludes_dev_packages():
     assert "rich" in result
     assert "susops" not in result
     assert "pytest" not in result
+
+
+# ── update_aur_pkgver ─────────────────────────────────────────────────────────
+
+def test_update_pkgbuild_bumps_version(tmp_path):
+    from update_aur_pkgver import update_pkgbuild
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgver=3.0.0\npkgrel=2\nsha256sums=('SKIP')\n")
+    update_pkgbuild(pkgbuild, "3.1.0", "abc123")
+    text = pkgbuild.read_text()
+    assert "pkgver=3.1.0" in text
+    assert "pkgrel=1" in text
+    assert "sha256sums=('abc123')" in text
+
+
+def test_update_pkgbuild_rejects_bad_version(tmp_path):
+    from update_aur_pkgver import update_pkgbuild
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgver=3.0.0\npkgrel=1\nsha256sums=('SKIP')\n")
+    with pytest.raises(ValueError, match="X.Y.Z"):
+        update_pkgbuild(pkgbuild, "bad-version", "abc123")
+
+
+def test_fetch_sha256_downloads_and_hashes():
+    from update_aur_pkgver import fetch_sha256
+    content = b"fake tarball bytes"
+    expected = hashlib.sha256(content).hexdigest()
+    with patch("urllib.request.urlopen", return_value=_mock_resp(content)):
+        result = fetch_sha256("https://example.com/pkg.tar.gz")
+    assert result == expected
+
+
+def test_main_aur_patches_file(tmp_path, monkeypatch):
+    from update_aur_pkgver import main
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgver=3.0.0\npkgrel=1\nsha256sums=('SKIP')\n")
+    content = b"fake tarball"
+    expected_sha = hashlib.sha256(content).hexdigest()
+    monkeypatch.setattr("sys.argv", ["script", "3.1.0"])
+    monkeypatch.setattr("update_aur_pkgver.PKGBUILD", pkgbuild)
+    with patch("urllib.request.urlopen", return_value=_mock_resp(content)):
+        main()
+    text = pkgbuild.read_text()
+    assert "pkgver=3.1.0" in text
+    assert f"sha256sums=('{expected_sha}')" in text
