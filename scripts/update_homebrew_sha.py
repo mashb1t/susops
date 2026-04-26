@@ -14,6 +14,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# Ensure sibling scripts are importable when run directly from repo root
+_scripts_dir = str(Path(__file__).parent)
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+
 FORMULA = Path("packaging/homebrew/Formula/susops.rb")
 CASK    = Path("packaging/homebrew/Casks/susops.rb")
 _GITHUB_TARBALL = "https://github.com/mashb1t/susops/archive/v{version}.tar.gz"
