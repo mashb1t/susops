@@ -355,6 +355,14 @@ susops chrome     # Launch Chrome/Chromium with --proxy-pac-url
 susops firefox    # Launch Firefox with a temporary PAC profile
 ```
 
+#### Proxy setup guide
+
+```bash
+susops [-c TAG] guide    # Print copy-paste proxy config for common tools
+```
+
+Shows `socks5h://127.0.0.1:<port>` snippets for shell, Homebrew, pip, npm/yarn/pnpm, git, curl, wget, apt, Docker, and proxychains4. Uses the live port if the tunnel is running, falls back to the saved config port, or shows a `<port>` placeholder with a warning if the port is unknown.
+
 #### Reset
 
 ```bash
