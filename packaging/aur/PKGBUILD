@@ -1,4 +1,4 @@
-# Maintainer: Your Name <you@example.com>
+# Maintainer: Manuel Schmid <manuel.schmid@odt.net>
 pkgname=susops
 pkgver=3.0.0
 pkgrel=1
@@ -8,26 +8,23 @@ url="https://github.com/mashb1t/susops"
 license=('MIT')
 depends=(
     'python'
-    'python-gobject'
-    'gtk3'
-    'libayatana-appindicator'
     'python-pydantic'
     'python-psutil'
+    'python-ruamel-yaml'
 )
 optdepends=(
     'python-textual: interactive TUI interface'
+    'python-textual-plotext: bandwidth chart in TUI'
+    'python-gobject: GTK3 system tray app'
+    'gtk3: GTK3 system tray app'
+    'libayatana-appindicator: GTK3 system tray app'
     'python-cryptography: encrypted file sharing'
     'python-aiohttp: file sharing and SSE status server'
     'socat: UDP port forwarding support'
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
-# No go-yq dependency — replaced by pure Python
 source=("$pkgname-$pkgver.tar.gz::https://github.com/mashb1t/susops/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
-
-# ruamel.yaml is not in the official repos; install via pip inside venv or use python-ruamel-yaml from AUR
-# For a production PKGBUILD, add:
-#   depends+=('python-ruamel-yaml')
 
 build() {
     cd "$pkgname-$pkgver"
@@ -37,11 +34,7 @@ build() {
 package() {
     cd "$pkgname-$pkgver"
     python -m installer --destdir="$pkgdir" dist/*.whl
-
-    # Install desktop entry for tray app
     install -Dm644 packaging/aur/susops-tray.desktop \
         "$pkgdir/usr/share/applications/susops-tray.desktop"
-
-    # Install license
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

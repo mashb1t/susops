@@ -4,7 +4,14 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
+
+# Add scripts/ to sys.path for packaging helper tests
+_scripts_dir = str(Path(__file__).parent.parent / "scripts")
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
 
 
 def _kill_susops_ssh_processes() -> None:
