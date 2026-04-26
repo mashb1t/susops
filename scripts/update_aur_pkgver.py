@@ -45,7 +45,11 @@ def main() -> None:
     version = sys.argv[1].lstrip("v")
     tarball_url = _GITHUB_TARBALL.format(version=version)
     print(f"Fetching {tarball_url} ...", flush=True)
-    sha = fetch_sha256(tarball_url)
+    try:
+        sha = fetch_sha256(tarball_url)
+    except Exception as e:
+        print(f"Error: Failed to fetch {tarball_url}: {e}", file=sys.stderr)
+        sys.exit(1)
     print(f"sha256: {sha}")
     update_pkgbuild(PKGBUILD, version, sha)
     print(f"Updated {PKGBUILD}")
