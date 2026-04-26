@@ -116,3 +116,66 @@ def test_main_aur_patches_file(tmp_path, monkeypatch):
     text = pkgbuild.read_text()
     assert "pkgver=3.1.0" in text
     assert f"sha256sums=('{expected_sha}')" in text
+
+
+# ── update_homebrew_sha ───────────────────────────────────────────────────────
+
+def _formula_template() -> str:
+    return (
+        'class Susops < Formula\n'
+        '  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"\n'
+        '  sha256 "mainsha000000000000000000000000000000000000000000000000000000"\n\n'
+        '  resource "rich" do\n'
+        '    url "https://files.pythonhosted.org/packages/source/r/rich/rich-14.3.3.tar.gz"\n'
+        '    sha256 "PLACEHOLDER"\n'
+        '  end\n\n'
+        '  resource "pydantic" do\n'
+        '    url "https://files.pythonhosted.org/packages/source/p/pydantic/pydantic-2.12.5.tar.gz"\n'
+        '    sha256 "PLACEHOLDER"\n'
+        '  end\n'
+        'end\n'
+    )
+
+
+def test_update_formula_main_sha(tmp_path):
+    from update_homebrew_sha import update_formula_main_sha
+    formula = tmp_path / "susops.rb"
+    formula.write_text(_formula_template())
+    update_formula_main_sha(formula, "3.1.0", "newsha256abc")
+    text = formula.read_text()
+    assert 'url "https://github.com/mashb1t/susops/archive/v3.1.0.tar.gz"' in text
+    lines = text.splitlines()
+    first_sha = next(l for l in lines if "sha256" in l)
+    assert "newsha256abc" in first_sha
+
+
+def test_update_formula_resource_shas(tmp_path):
+    from update_homebrew_sha import update_formula_resource_shas
+    formula = tmp_path / "susops.rb"
+    formula.write_text(_formula_template())
+    shas = {
+        "rich":    {"sha256": "richsha123",    "url": "https://example.com/rich.tar.gz"},
+        "pydantic": {"sha256": "pydanticsha456", "url": "https://example.com/pydantic.tar.gz"},
+    }
+    update_formula_resource_shas(formula, shas)
+    text = formula.read_text()
+    assert "richsha123" in text
+    assert "pydanticsha456" in text
+    assert "PLACEHOLDER" not in text
+
+
+def test_update_cask_sha(tmp_path):
+    from update_homebrew_sha import update_cask_sha
+    cask = tmp_path / "susops.rb"
+    cask.write_text(
+        'cask "susops" do\n'
+        '  version :latest\n'
+        '  sha256 :no_check\n'
+        '  url "https://github.com/mashb1t/susops/releases/latest/download/SusOps-#{version}-arm64.dmg"\n'
+        'end\n'
+    )
+    update_cask_sha(cask, "3.1.0", "dmgsha789")
+    text = cask.read_text()
+    assert 'version "3.1.0"' in text
+    assert 'sha256 "dmgsha789"' in text
+    assert "SusOps-3.1.0-arm64.dmg" in text
