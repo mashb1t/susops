@@ -1,8 +1,8 @@
 cask "susops" do
-  version "3.0.0"
-  sha256 "PLACEHOLDER"
+  version :latest
+  sha256 :no_check
 
-  url "https://github.com/mashb1t/susops/releases/download/v#{version}/SusOps-#{version}.dmg"
+  url "https://github.com/mashb1t/susops/releases/latest/download/SusOps-#{version}-arm64.dmg"
   name "SusOps"
   desc "SSH SOCKS5 proxy manager — macOS tray app"
   homepage "https://github.com/mashb1t/susops"
