@@ -1,3 +1,4 @@
+"""Single source of truth for the susops package version."""
 from importlib.metadata import version, PackageNotFoundError
 
 try:
