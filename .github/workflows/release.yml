@@ -6,39 +6,163 @@ on:
       - "v*"
 
 permissions:
-  contents: write  # needed to create GitHub release and upload assets
+  contents: write
+
+env:
+  VERSION: ${{ github.ref_name }}
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra share
+      - run: uv run pytest -x -q
 
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --extra dev --extra share
-
-      - name: Run tests
-        run: uv run pytest -x -q
-
-      - name: Build wheel and sdist
-        run: uv build
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+  build-pypi:
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv build
+      - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
-
-      - name: Publish to PyPI
-        run: uv publish
+      - run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  build-dmg:
+    needs: [test]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install pyinstaller rumps pyobjc && pip install -e ".[tray-mac]"
+      - name: Generate susops.icns
+        run: |
+          mkdir -p SusOps.iconset
+          sips -z 16   16   assets/icon.png --out SusOps.iconset/icon_16x16.png
+          sips -z 32   32   assets/icon.png --out SusOps.iconset/icon_16x16@2x.png
+          sips -z 32   32   assets/icon.png --out SusOps.iconset/icon_32x32.png
+          sips -z 64   64   assets/icon.png --out SusOps.iconset/icon_32x32@2x.png
+          sips -z 128  128  assets/icon.png --out SusOps.iconset/icon_128x128.png
+          sips -z 256  256  assets/icon.png --out SusOps.iconset/icon_128x128@2x.png
+          sips -z 256  256  assets/icon.png --out SusOps.iconset/icon_256x256.png
+          sips -z 512  512  assets/icon.png --out SusOps.iconset/icon_256x256@2x.png
+          sips -z 512  512  assets/icon.png --out SusOps.iconset/icon_512x512.png
+          iconutil -c icns SusOps.iconset -o assets/susops.icns
+      - name: Build SusOps.app
+        run: pyinstaller packaging/macos/susops.spec --clean --noconfirm
+      - name: Create dmg
+        run: |
+          VER="${VERSION#v}"
+          hdiutil create -volname "SusOps" -srcfolder dist/SusOps.app -ov -format UDZO "SusOps-${VER}-arm64.dmg"
+        env:
+          VERSION: ${{ env.VERSION }}
+      - name: Upload dmg to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          VER="${VERSION#v}"
+          for i in $(seq 1 12); do gh release view "$VERSION" && break || sleep 10; done
+          gh release upload "$VERSION" "SusOps-${VER}-arm64.dmg" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: "SusOps-*-arm64.dmg"
+          retention-days: 1
+
+  update-tap:
+    needs: [build-pypi, build-dmg]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: main
+      - uses: actions/checkout@v4
+        with:
+          repository: mashb1t/homebrew-susops
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmg
+          path: main
+      - name: Update formula and cask sha256s
+        working-directory: main
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          VER="${VERSION#v}"
+          pip install -e ".[share]"
+          python scripts/update_homebrew_sha.py "${VER}" --dmg "SusOps-${VER}-arm64.dmg"
+      - name: Copy to tap
+        run: |
+          cp main/packaging/homebrew/Formula/susops.rb tap/Formula/susops.rb
+          cp main/packaging/homebrew/Casks/susops.rb  tap/Casks/susops.rb
+      - name: Commit and push
+        working-directory: tap
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/susops.rb Casks/susops.rb
+          git commit -m "chore: bump to ${VERSION}"
+          git push
+
+  update-aur:
+    needs: [build-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Update PKGBUILD
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          VER="${VERSION#v}"
+          python scripts/update_aur_pkgver.py "${VER}"
+      - name: Generate .SRCINFO via Arch Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/packaging/aur:/pkg" \
+            archlinux:base-devel \
+            sh -c "useradd -m builder && chown builder /pkg && su builder -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'"
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
+      - name: Add AUR host key
+        run: ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+      - name: Clone and push AUR repo
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          git clone ssh://aur@aur.archlinux.org/susops.git aur-repo
+          cp packaging/aur/PKGBUILD  aur-repo/PKGBUILD
+          cp packaging/aur/.SRCINFO  aur-repo/.SRCINFO
+          cd aur-repo
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "chore: bump to ${VERSION}"
+          git push
