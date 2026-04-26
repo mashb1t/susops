@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=SusOps Tray
+Comment=SSH SOCKS5 proxy manager — system tray
+Exec=susops-tray
+Icon=susops
+Type=Application
+Categories=Network;Utility;
+StartupNotify=false
