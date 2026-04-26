@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 _DEV_PACKAGES: frozenset[str] = frozenset({
@@ -25,8 +26,12 @@ _DEV_PACKAGES: frozenset[str] = frozenset({
 
 def get_pypi_sdist(name: str, version: str) -> dict | None:
     """Return {url, sha256} for the sdist of name==version, or None."""
-    with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json") as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{version}/json") as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as e:
+        print(f"WARNING: failed to fetch {name}=={version} from PyPI: {e}", file=sys.stderr)
+        return None
     return next(
         ({"url": u["url"], "sha256": u["digests"]["sha256"]}
          for u in data["urls"] if u["packagetype"] == "sdist"),
