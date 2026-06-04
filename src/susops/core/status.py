@@ -107,13 +107,17 @@ class StatusServer:
                 self._queues.append(queue)
                 count = len(self._queues)
             self._fire_clients_changed(count)
-            filter_str = (
-                f", events {','.join(sorted(event_filter))}"
-                if event_filter is not None else ""
+            # Always include the subscribed event set in the connect line —
+            # "all" when the client sent no X-Susops-Events filter, the
+            # explicit list otherwise. Useful to confirm what each client
+            # actually subscribed to (e.g. tray opts out of bandwidth).
+            events_str = (
+                ",".join(sorted(event_filter))
+                if event_filter is not None else "all"
             )
             self._fire_log(
                 f"SSE client connected: {client_type} v{client_version} "
-                f"(pid {client_pid}, peer {peer_str}{filter_str}) — {count} active"
+                f"(pid {client_pid}, peer {peer_str}, events {events_str}) — {count} active"
             )
 
             try:
