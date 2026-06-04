@@ -67,12 +67,7 @@ def update_formula_resource_shas(
 
 
 def update_cask_sha(cask_path: Path, version: str, sha256: str) -> None:
-    """Pin the cask to a specific version + sha256. Idempotent — works whether
-    the file currently has ``version :latest`` / ``sha256 :no_check`` (initial
-    state) or a previously-pinned ``version "x.y.z"`` / ``sha256 "..."``.
-
-    The URL is templated with ``#{version}`` so it doesn't need rewriting.
-    """
+    """Pin cask version + sha256. Idempotent across :latest/:no_check and previously-pinned states."""
     content = cask_path.read_text()
     content = re.sub(
         r'version (?::latest|"[^"]*")',

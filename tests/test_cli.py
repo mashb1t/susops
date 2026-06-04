@@ -92,7 +92,8 @@ def test_no_subcommand_returns_1(ws):
 def test_cmd_ps_no_connections(ws):
     code, out, _ = run(["ps"], ws)
     assert code == 3  # STOPPED
-    assert "State:" in out
+    assert "SusOps stopped" in out
+    assert "CONNECTIONS" in out
 
 
 def test_cmd_ps_with_connection(ws_with_conn):
@@ -395,7 +396,8 @@ def test_cmd_ps_shows_reconnect_daemon_running(ws):
     with patch.object(m, "process_info", return_value=fake_info):
         code, out, _ = run_with_manager(["ps"], m)
 
-    assert "● Reconnect daemon" in out
+    assert "Reconnect" in out
+    assert "daemon" in out
     assert "pid=1234" in out
 
 
@@ -412,7 +414,8 @@ def test_cmd_ps_shows_reconnect_not_running(ws):
     with patch.object(m, "process_info", return_value=fake_info):
         code, out, _ = run_with_manager(["ps"], m)
 
-    assert "○ Reconnect" in out
+    assert "Reconnect" in out
+    assert "stopped" in out
 
 
 # ---------------------------------------------------------------------------

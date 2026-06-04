@@ -1,6 +1,5 @@
 cask "susops" do
-  # version + sha256 are rewritten on every tag by
-  # scripts/update_homebrew_sha.py (called from .github/workflows/release.yml).
+  # version + sha256 rewritten by scripts/update_homebrew_sha.py on each tag.
   version "0.0.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 

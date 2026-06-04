@@ -171,11 +171,12 @@ def test_update_cask_sha(tmp_path):
         'cask "susops" do\n'
         '  version :latest\n'
         '  sha256 :no_check\n'
-        '  url "https://github.com/mashb1t/susops/releases/latest/download/SusOps-#{version}-arm64.dmg"\n'
+        '  url "https://github.com/mashb1t/susops/releases/download/v#{version}/SusOps-#{version}-arm64.dmg"\n'
         'end\n'
     )
     update_cask_sha(cask, "3.1.0", "dmgsha789")
     text = cask.read_text()
     assert 'version "3.1.0"' in text
     assert 'sha256 "dmgsha789"' in text
-    assert "SusOps-3.1.0-arm64.dmg" in text
+    # URL stays templated with #{version}, interpolated by Ruby at install.
+    assert '#{version}' in text

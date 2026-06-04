@@ -1,16 +1,8 @@
-"""Unit tests for scripts/update_homebrew_sha.py.
-
-We don't network-fetch the real tarball/PyPI here — that's CI's job. These
-tests cover the regex rewriting logic that bumps version + sha256 in the
-Cask, since that has been a recurring source of silent breakage when the
-file's state diverged between releases.
-"""
+"""Regression tests for update_cask_sha regex idempotency."""
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-
-import pytest
 
 _SCRIPTS = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))
@@ -49,7 +41,6 @@ def test_cask_update_rewrites_pinned_values(tmp_path: Path) -> None:
     assert 'version "3.1.0"' in out
     assert f'sha256 "{"a" * 64}"' in out
 
-    # Run again with a new version — the previous pin must not block the rewrite.
     update_cask_sha(p, "3.2.0", "b" * 64)
     out = p.read_text()
     assert 'version "3.2.0"' in out
@@ -66,13 +57,11 @@ def test_cask_update_handles_legacy_initial_state(tmp_path: Path) -> None:
     out = p.read_text()
     assert 'version "3.0.0-rc2"' in out
     assert f'sha256 "{"c" * 64}"' in out
-    # ``url ...#{version}...`` template is left intact — no spurious rewrite.
     assert '#{version}' in out
 
 
 def test_cask_update_only_touches_first_occurrence(tmp_path: Path) -> None:
-    """Defence against accidental multi-line replacement if the Cask ever
-    references the literal strings inside a comment or a livecheck block."""
+    """Only the first version/sha256 is replaced, even if the file has more."""
     p = tmp_path / "susops.rb"
     p.write_text(
         'cask "susops" do\n'
