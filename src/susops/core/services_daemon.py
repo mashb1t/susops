@@ -176,6 +176,7 @@ def main() -> int:
 
     mgr = None
     try:
+        import time as _time
         from susops.core.rpc_server import serve
         from susops.facade import SusOpsManager
 
@@ -184,8 +185,92 @@ def main() -> int:
         _port_path(workspace).write_text(str(actual_port))
         log.info("RPC listening on 127.0.0.1:%d", actual_port)
 
+        # Start the SSE status server eagerly so frontends can connect
+        # immediately on daemon spawn, and so the daemon-startup log can
+        # report the SSE port too. Previously this was lazy (started on the
+        # first tunnel `start()` call), which left SSE listeners spinning in
+        # backoff for several seconds after a fresh daemon spawn.
+        sse_port = mgr.ensure_sse_status_server()
+
+        # Surface daemon-startup details in the in-memory log buffer too so
+        # they show up in the TUI Logs tab and the tray Logs window — the
+        # `log.info` calls only land on the daemon process's stderr.
+        try:
+            sse_str = f"SSE port {sse_port}" if sse_port else "SSE port unavailable"
+            mgr._log(
+                f"Daemon started — RPC port {actual_port}, {sse_str} (PID {os.getpid()})"
+            )
+            mgr._log(f"Workspace: {workspace}")
+        except Exception:
+            pass
+
+        # Idle-shutdown. Exit when the last SSE client disconnects AND there's
+        # no in-flight work (no SSH masters, no shares, no PAC, no watched
+        # connections). Startup gets a small grace so a frontend that calls
+        # ensure_daemon_running() has time to make its first SSE connection
+        # before the periodic check fires.
+        _IDLE_STARTUP_GRACE_S = 3.0
+        _IDLE_CHECK_INTERVAL_S = 5.0
+        startup_time = _time.monotonic()
+
+        def _should_exit() -> bool:
+            if _time.monotonic() - startup_time < _IDLE_STARTUP_GRACE_S:
+                return False
+            if mgr is None:
+                return False
+            if mgr._status_server.client_count() > 0:
+                return False
+            return mgr.is_idle()
+
+        def _on_clients_changed(count: int) -> None:
+            # Fast path — react immediately when the last SSE client drops.
+            # The periodic check below handles the "no SSE was ever opened"
+            # case (e.g. `susops ps` fires one RPC and exits).
+            if count > 0:
+                return
+            if _should_exit():
+                msg = "Last client disconnected and no work pending — shutting down"
+                log.info(msg)
+                try:
+                    mgr._log(msg)
+                except Exception:
+                    pass
+                stop_event.set()
+
+        mgr._status_server.on_clients_changed = _on_clients_changed
+        # Surface SSE connect/disconnect in the in-memory log buffer so the
+        # TUI Logs tab and tray Logs window can show "tui connected" etc.
+        mgr._status_server.on_log = mgr._log
+
+        def _idle_watcher() -> None:
+            while not stop_event.is_set():
+                if stop_event.wait(_IDLE_CHECK_INTERVAL_S):
+                    return
+                if _should_exit():
+                    msg = (f"Idle for {_IDLE_CHECK_INTERVAL_S:.0f}s with "
+                           f"no clients — shutting down")
+                    log.info(msg)
+                    try:
+                        mgr._log(msg)
+                    except Exception:
+                        pass
+                    stop_event.set()
+                    return
+
+        threading.Thread(
+            target=_idle_watcher, daemon=True, name="susops-idle-watcher",
+        ).start()
+
         log.info("Daemon started, pid=%d, workspace=%s", os.getpid(), workspace)
         stop_event.wait()
+        # If we land here it's because the idle-watcher or a signal asked us
+        # to exit — surface it in the in-memory log so frontends can see
+        # *why* the daemon went away rather than just noticing it's gone.
+        if mgr is not None:
+            try:
+                mgr._log("Daemon shutting down")
+            except Exception:
+                pass
     finally:
         # Remove PID + port files FIRST so subsequent ensure_daemon_running()
         # calls don't think we're still alive while we're shutting down.
