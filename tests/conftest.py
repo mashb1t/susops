@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+pytest_plugins = ("aiohttp.pytest_plugin",)
+
 # Add scripts/ to sys.path for packaging helper tests
 _scripts_dir = str(Path(__file__).parent.parent / "scripts")
 if _scripts_dir not in sys.path:
