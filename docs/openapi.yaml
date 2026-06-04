@@ -8,7 +8,6 @@ info:
     address:** `127.0.0.1` — loopback only.\n\n**Authentication:** none. Any local process that can reach
     loopback and read `~/.susops/pids/susops-services.port` can invoke any allowlisted method. See the
     README's [Access & Authentication](https://github.com/mashb1t/susops#access--authentication) section."
-  x-generated-at: '2026-06-05'
   x-generator: tools/gen_openapi.py
 servers:
 - url: http://127.0.0.1:{port}

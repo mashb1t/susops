@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import datetime
 import inspect
 import sys
 import typing
@@ -396,7 +395,6 @@ def build_openapi() -> dict:
                 "[Access & Authentication](https://github.com/mashb1t/susops"
                 "#access--authentication) section."
             ),
-            "x-generated-at": datetime.date.today().isoformat(),
             "x-generator": "tools/gen_openapi.py",
         },
         "servers": [
