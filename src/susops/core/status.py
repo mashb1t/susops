@@ -3,8 +3,6 @@
 Provides a Server-Sent Events endpoint at GET /events that broadcasts
 state, share, bandwidth, and forward events to all connected clients.
 
-Requires: aiohttp>=3.9 (install with pip install susops[share])
-
 Event types:
   state     — {"tag": "work", "running": true, "pid": 1234}
   share     — {"port": 52100, "file": "report.pdf", "running": true, "conn_tag": "work"}

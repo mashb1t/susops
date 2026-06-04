@@ -20,7 +20,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync --extra dev --extra share --extra tui
+      - run: uv sync --extra dev --extra tui
       - run: uv run pytest -x -q -m "not gui"
 
   build-pypi:
@@ -33,7 +33,7 @@ jobs:
           enable-cache: true
       - run: uv python install 3.12
       - name: Install dependencies for OpenAPI generation
-        run: uv sync --extra dev --extra share
+        run: uv sync --extra dev
       - name: Regenerate OpenAPI spec
         # Always regenerate against the source at tag time — guarantees the
         # spec attached to the release matches the released code, even if the
@@ -122,11 +122,10 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           VER="${VERSION#v}"
-          # Install every runtime extra so compute_resource_shas.py sees
-          # the full dependency closure (textual + plotext from [tui],
-          # cryptography + aiohttp from [share]) and writes accurate
+          # Install [tui] so compute_resource_shas.py sees the full runtime
+          # closure (core deps + textual/plotext) and writes accurate
           # sha256s for every resource listed in the Formula.
-          pip install -e ".[share,tui]"
+          pip install -e ".[tui]"
           python scripts/update_homebrew_sha.py "${VER}" --dmg "SusOps-${VER}-arm64.dmg"
       - name: Copy to tap
         run: |
