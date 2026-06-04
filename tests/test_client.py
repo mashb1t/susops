@@ -124,3 +124,50 @@ def test_client_raises_daemon_unavailable_when_dead(ws):
     # raise DaemonUnavailableError.
     with pytest.raises(DaemonUnavailableError):
         client.list_config()
+
+
+def test_client_recovers_when_daemon_restarts_between_calls(running_daemon, ws):
+    """If the daemon dies between calls (or hasn't quite come up yet), the
+    NEXT call should auto-respawn and retry transparently. This is the
+    fix for the tray crashing with `DaemonUnavailableError: Daemon
+    unreachable: Connection refused` on user clicks.
+    """
+    client = SusOpsClient(workspace=ws)
+    # Warm the client (cache the port + verify alive).
+    assert client.list_config() is not None
+
+    # Kill the daemon hard. The fixture's `proc` is still tracked so it
+    # gets cleaned up at the end; we send SIGKILL ourselves so the
+    # finally block in the daemon can't run cleanup before we test the
+    # client's recovery.
+    pid = int((ws / "pids" / "susops-services.pid").read_text())
+    os.kill(pid, signal.SIGKILL)
+    # Wait until it's really gone + pid file is removed (manually here
+    # since SIGKILL skips the daemon's finally block).
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except OSError:
+            break
+    (ws / "pids" / "susops-services.pid").unlink(missing_ok=True)
+    (ws / "pids" / "susops-services.port").unlink(missing_ok=True)
+
+    # Next call should NOT raise — the client should respawn the daemon
+    # and retry. This is the regression the tray crash exposed.
+    cfg = client.list_config()
+    assert cfg is not None
+    assert hasattr(cfg, "connections")
+
+    # Confirm we have a brand-new daemon.
+    new_pid = int((ws / "pids" / "susops-services.pid").read_text())
+    assert new_pid != pid, "client retry should have respawned the daemon"
+
+    # Clean up the spawned daemon (the fixture only tracks the original).
+    os.kill(new_pid, signal.SIGTERM)
+    for _ in range(30):
+        try:
+            os.kill(new_pid, 0)
+            time.sleep(0.1)
+        except OSError:
+            break

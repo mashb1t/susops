@@ -147,34 +147,60 @@ class SusOpsClient:
     # ------------------------------------------------------------------ #
 
     def _invoke(self, method: str, args: list, kwargs: dict) -> Any:
-        if self._port is None:
-            self._port = ensure_daemon_running(self.workspace)
-
+        """Issue one RPC call. On connection-refused (daemon died / wasn't
+        running yet), reset the cached port, re-run ensure_daemon_running
+        (which respawns if needed), and retry exactly once. Tray + TUI
+        otherwise crash on the first menu click after a daemon restart.
+        """
         req = InvocationRequest(method=method, args=args, kwargs=kwargs)
-        http_req = urllib.request.Request(
-            f"http://127.0.0.1:{self._port}/rpc",
-            data=req.to_json().encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(http_req, timeout=30) as resp:
-                body = InvocationResponse.from_json(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            # 4xx/5xx — body should still be a valid InvocationResponse JSON.
+        last_exc: Exception | None = None
+
+        for attempt in (1, 2):
+            if self._port is None:
+                try:
+                    self._port = ensure_daemon_running(self.workspace)
+                except DaemonUnavailableError as exc:
+                    last_exc = exc
+                    continue
+
+            http_req = urllib.request.Request(
+                f"http://127.0.0.1:{self._port}/rpc",
+                data=req.to_json().encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
             try:
-                body = InvocationResponse.from_json(exc.read().decode("utf-8"))
-            except Exception:
-                raise DaemonUnavailableError(f"Daemon HTTP error: {exc}") from exc
-        except urllib.error.URLError as exc:
-            # Connection refused → daemon dead or wrong port.
-            self._port = None
-            raise DaemonUnavailableError(f"Daemon unreachable: {exc}") from exc
-        except Exception as exc:
-            self._port = None
-            raise DaemonUnavailableError(f"Daemon RPC failed: {exc}") from exc
+                with urllib.request.urlopen(http_req, timeout=30) as resp:
+                    body = InvocationResponse.from_json(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                # 4xx/5xx — body should still be a valid InvocationResponse JSON.
+                # Don't retry; the daemon answered, the call just failed.
+                try:
+                    body = InvocationResponse.from_json(exc.read().decode("utf-8"))
+                except Exception:
+                    raise DaemonUnavailableError(f"Daemon HTTP error: {exc}") from exc
+            except urllib.error.URLError as exc:
+                # Connection refused / unreachable. The daemon died, was
+                # killed, or hasn't come back up yet. Drop the cached port
+                # so the next iteration ensures+respawns.
+                last_exc = exc
+                self._port = None
+                if attempt == 1:
+                    continue
+                raise DaemonUnavailableError(f"Daemon unreachable: {exc}") from exc
+            except Exception as exc:
+                # Unknown transport error. Reset and retry once.
+                last_exc = exc
+                self._port = None
+                if attempt == 1:
+                    continue
+                raise DaemonUnavailableError(f"Daemon RPC failed: {exc}") from exc
 
-        if body.ok:
-            return body.result
+            if body.ok:
+                return body.result
+            exc_cls = _EXC_MAP.get(body.error_type or "", RuntimeError)
+            raise exc_cls(body.error or f"RPC {method} failed")
 
-        exc_cls = _EXC_MAP.get(body.error_type or "", RuntimeError)
-        raise exc_cls(body.error or f"RPC {method} failed")
+        # Both attempts exhausted (e.g. ensure_daemon_running kept failing).
+        raise DaemonUnavailableError(
+            f"Daemon unreachable after retry: {last_exc}"
+        ) from last_exc
