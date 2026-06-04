@@ -48,6 +48,7 @@ dev = [
 [project.scripts]
 susops = "susops.tui.__main__:main"
 so = "susops.tui.__main__:main"
+susops-services = "susops.core.services_daemon:main"
 
 [project.gui-scripts]
 susops-tray = "susops.tray:main"
