@@ -1997,16 +1997,21 @@ class SusOpsMacTray(AbstractTrayApp):
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
     def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
+        """Open Chrome/Edge/Brave/... directly on chrome://net-internals/#proxy.
+
+        `open -a <bundle> <url>` hands the URL to the launched app as an
+        argument; Chromium-family browsers interpret chrome://-scheme URLs
+        as internal pages, so this navigates straight to the proxy debug
+        view with no copy-paste step.
+        """
         def _spawn():
             try:
-                subprocess.Popen(["open", "-a", bundle_name])
-            except Exception:
-                pass
+                subprocess.Popen([
+                    "open", "-a", bundle_name, "chrome://net-internals/#proxy",
+                ])
+            except Exception as exc:
+                _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
-        _show_message(
-            "Open Proxy Settings",
-            f"Paste this URL into the {bundle_name} address bar:\n\nchrome://net-internals/#proxy",
-        )
 
     def _launch_firefox_app(self, bundle_name: str = "Firefox") -> None:
         pac_url = self.manager.get_pac_url()
