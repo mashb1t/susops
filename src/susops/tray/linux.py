@@ -694,7 +694,28 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(combo_logo, 1, row, 1, 1)
         row += 1
 
-        # PAC Server Port
+        # Server ports — RPC + SSE require daemon restart to apply, PAC is
+        # hot-restarted by the facade. Shown before the existing PAC field.
+        lbl = Gtk.Label(label="RPC Server Port:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        entry_rpc = Gtk.Entry(activates_default=True)
+        rpc_val = self.manager.config.rpc_server_port
+        entry_rpc.set_text(str(rpc_val) if rpc_val else "")
+        entry_rpc.set_placeholder_text("auto (0) — restart daemon to apply")
+        grid.attach(entry_rpc, 1, row, 1, 1)
+        row += 1
+
+        lbl = Gtk.Label(label="SSE Server Port:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        entry_sse = Gtk.Entry(activates_default=True)
+        sse_val = self.manager.config.status_server_port
+        entry_sse.set_text(str(sse_val) if sse_val else "")
+        entry_sse.set_placeholder_text("auto (0) — restart daemon to apply")
+        grid.attach(entry_sse, 1, row, 1, 1)
+        row += 1
+
         lbl = Gtk.Label(label="PAC Server Port:", xalign=1.0)
         lbl.set_width_chars(24)
         grid.attach(lbl, 0, row, 1, 1)
@@ -717,14 +738,30 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self.update_icon(self.state)
                 break
 
-            pac_text = entry_pac.get_text().strip() or "0"
-            if pac_text != "0" and not _is_valid_port(pac_text):
-                _alert(Gtk, dlg, "Invalid Port", "PAC Server Port must be between 1 and 65535.")
-                continue
-            current_pac_port = self.manager.config.pac_server_port
-            pac_port_changed = int(pac_text) != current_pac_port
-            if pac_text != "0" and pac_port_changed and not is_port_free(int(pac_text)):
-                _alert(Gtk, dlg, "Port In Use", f"Port {pac_text} is already in use.")
+            # Validate all three ports together — short-circuit on first
+            # invalid so the user keeps their other edits in the dialog.
+            cfg = self.manager.config
+            port_specs = [
+                ("RPC", entry_rpc, cfg.rpc_server_port),
+                ("SSE", entry_sse, cfg.status_server_port),
+                ("PAC", entry_pac, cfg.pac_server_port),
+            ]
+            port_values: dict[str, int] = {}
+            invalid = False
+            for label, entry, current in port_specs:
+                text = entry.get_text().strip() or "0"
+                if text != "0" and not _is_valid_port(text):
+                    _alert(Gtk, dlg, "Invalid Port",
+                           f"{label} Server Port must be between 1 and 65535.")
+                    invalid = True
+                    break
+                n = int(text)
+                if n != 0 and n != current and not is_port_free(n):
+                    _alert(Gtk, dlg, "Port In Use", f"Port {n} is already in use.")
+                    invalid = True
+                    break
+                port_values[label] = n
+            if invalid:
                 continue
 
             new_logo = logo_styles[combo_logo.get_active()] if combo_logo.get_active() >= 0 else _saved_logo
@@ -734,7 +771,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 restore_shares_on_start=sw_restore.get_active(),
                 logo_style=new_logo,
             )
-            self.manager.update_config(pac_server_port=int(pac_text))
+            self.manager.update_config(
+                rpc_server_port=port_values["RPC"],
+                status_server_port=port_values["SSE"],
+                pac_server_port=port_values["PAC"],
+            )
             self._apply_autostart(sw_login.get_active())
             self.update_icon(self.state)
             break

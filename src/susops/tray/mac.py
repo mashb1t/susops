@@ -376,6 +376,80 @@ def _try_restore_policy(_timer=None) -> None:
     _policy_prev = None
 
 
+_edit_menu_installed = False
+
+
+def _ensure_edit_menu() -> None:
+    """Install a minimal app-level Edit menu so Cmd+C/V/X/A/Z work in dialogs.
+
+    LSUIElement-style apps (no Dock icon, no menubar by default) get NO app
+    menu from AppKit. Without an Edit menu, ``performKeyEquivalent:`` walks
+    the menu hierarchy looking for an item whose key equivalent matches the
+    pressed combo + whose action selector exists somewhere on the responder
+    chain. With no menu, the lookup fails and Cmd+C / Cmd+V / Cmd+X /
+    Cmd+A / Cmd+Z fall through — text fields appear to "swallow" the
+    shortcut.
+
+    We install an Edit menu with nil-targeted items so AppKit routes the
+    selectors (``copy:``, ``paste:``, ``cut:``, ``selectAll:``, ``undo:``,
+    ``redo:``) up the responder chain to the field editor (NSText), which
+    has built-in implementations.
+
+    Idempotent — runs at most once per process.
+    """
+    global _edit_menu_installed
+    if _edit_menu_installed:
+        return
+    try:
+        from AppKit import NSApplication, NSMenu, NSMenuItem  # type: ignore[import]
+
+        app = NSApplication.sharedApplication()
+        main_menu = app.mainMenu()
+        if main_menu is None:
+            main_menu = NSMenu.alloc().init()
+            app.setMainMenu_(main_menu)
+
+        # AppKit conventions: the first top-level item is the "app menu"
+        # (whose label gets ignored — macOS uses the app name). Even though
+        # we don't populate it, having it present makes the menubar render
+        # correctly during the activation-policy regular scope.
+        if main_menu.numberOfItems() == 0:
+            app_item = NSMenuItem.alloc().init()
+            app_item.setSubmenu_(NSMenu.alloc().initWithTitle_("SusOps"))
+            main_menu.addItem_(app_item)
+
+        edit_item = NSMenuItem.alloc().init()
+        edit_item.setTitle_("Edit")
+        edit_submenu = NSMenu.alloc().initWithTitle_("Edit")
+
+        # (label, selector, key-equivalent). Nil target → walks responder
+        # chain → reaches the text field's editor, which implements these.
+        spec = [
+            ("Undo",       "undo:",      "z"),
+            ("Redo",       "redo:",      "Z"),  # Cmd+Shift+Z
+            (None,         None,         None),  # separator
+            ("Cut",        "cut:",       "x"),
+            ("Copy",       "copy:",      "c"),
+            ("Paste",      "paste:",     "v"),
+            (None,         None,         None),
+            ("Select All", "selectAll:", "a"),
+        ]
+        for label, selector, key in spec:
+            if label is None:
+                edit_submenu.addItem_(NSMenuItem.separatorItem())
+                continue
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                label, selector, key,
+            )
+            edit_submenu.addItem_(item)
+
+        edit_item.setSubmenu_(edit_submenu)
+        main_menu.addItem_(edit_item)
+        _edit_menu_installed = True
+    except Exception:
+        pass
+
+
 class _RegularPolicyScope:
     """Context manager: ensure app is in .regular activation policy while open.
 
@@ -384,6 +458,9 @@ class _RegularPolicyScope:
     dialogs reliably receive key-window focus. Stacks safely: chained scopes
     share one policy transition; restoration is delayed by 0.3 s so a chained
     dialog cancels the pending restore.
+
+    Also lazily installs the app-level Edit menu on first entry so Cmd+C /
+    Cmd+V / etc. work in text fields inside dialogs — see _ensure_edit_menu.
     """
 
     def __enter__(self):
@@ -393,6 +470,7 @@ class _RegularPolicyScope:
                 NSApplication,
                 NSApplicationActivationPolicyRegular,
             )
+            _ensure_edit_menu()
             _cancel_policy_restore_timer()
             app = NSApplication.sharedApplication()
             current = app.activationPolicy()
@@ -2173,7 +2251,10 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _show_settings_dialog(self) -> None:
         ac = self.manager.app_config
-        pac_port = self.manager.config.pac_server_port
+        cfg = self.manager.config
+        pac_port = cfg.pac_server_port
+        rpc_port = cfg.rpc_server_port
+        sse_port = cfg.status_server_port
         saved_logo = ac.logo_style
         logo_styles = list(LogoStyle)
 
@@ -2200,6 +2281,8 @@ class SusOpsMacTray(AbstractTrayApp):
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
             "logo_style": logo_styles.index(saved_logo),
+            "rpc_port": str(rpc_port) if rpc_port else "",
+            "sse_port": str(sse_port) if sse_port else "",
             "pac_port": str(pac_port) if pac_port else "",
         }
 
@@ -2216,6 +2299,14 @@ class SusOpsMacTray(AbstractTrayApp):
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
+                # Server ports — RPC + SSE require a daemon restart to take
+                # effect; PAC is hot-restarted by the facade.
+                {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
+                 "default": defaults["rpc_port"],
+                 "hint": "auto (0) — restart daemon to apply"},
+                {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
+                 "default": defaults["sse_port"],
+                 "hint": "auto (0) — restart daemon to apply"},
                 {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
                  "default": defaults["pac_port"],
                  "hint": "auto (0)"},
@@ -2230,17 +2321,35 @@ class SusOpsMacTray(AbstractTrayApp):
             # Refresh defaults so a re-show on validation failure keeps user edits.
             defaults.update(result)
 
-            pac_text = (result.get("pac_port") or "").strip() or "0"
-            try:
-                pac_int = int(pac_text)
-            except ValueError:
-                _show_message("Invalid Port", f"'{pac_text}' is not a valid port number.")
-                continue
-            if not validate_port(pac_int, allow_zero=True):
-                _show_message("Invalid Port", "PAC port must be 0 (auto) or between 1 and 65535.")
-                continue
-            if pac_int != 0 and pac_int != pac_port and not is_port_free(pac_int):
-                _show_message("Port In Use", f"Port {pac_int} is already in use.")
+            # Validate all three port fields; the helper short-circuits to
+            # the inner loop on failure so the user re-edits the offending
+            # value without losing their other edits.
+            port_ints: dict[str, int] = {}
+            port_specs = [
+                ("rpc_port",  "RPC", rpc_port),
+                ("sse_port",  "SSE", sse_port),
+                ("pac_port",  "PAC", pac_port),
+            ]
+            invalid = False
+            for key, label, current in port_specs:
+                raw = (result.get(key) or "").strip() or "0"
+                try:
+                    n = int(raw)
+                except ValueError:
+                    _show_message("Invalid Port", f"'{raw}' is not a valid {label} port.")
+                    invalid = True
+                    break
+                if not validate_port(n, allow_zero=True):
+                    _show_message("Invalid Port",
+                                  f"{label} port must be 0 (auto) or between 1 and 65535.")
+                    invalid = True
+                    break
+                if n != 0 and n != current and not is_port_free(n):
+                    _show_message("Port In Use", f"Port {n} is already in use.")
+                    invalid = True
+                    break
+                port_ints[key] = n
+            if invalid:
                 continue
 
             new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
@@ -2251,7 +2360,11 @@ class SusOpsMacTray(AbstractTrayApp):
                 restore_shares_on_start=result["restore_shares"],
                 logo_style=new_logo,
             )
-            self.manager.update_config(pac_server_port=pac_int)
+            self.manager.update_config(
+                rpc_server_port=port_ints["rpc_port"],
+                status_server_port=port_ints["sse_port"],
+                pac_server_port=port_ints["pac_port"],
+            )
             # Apply Launch at Login off the main thread — osascript may block
             # for several seconds the first time (TCC prompt).
             desired_login = bool(result["launch_at_login"])
