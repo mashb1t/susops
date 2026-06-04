@@ -1098,3 +1098,99 @@ def test_process_info_tcp_and_udp_forward(tmp_path):
     assert any("udp local" in d for d in displays)
 
 
+
+
+def test_compute_state_running_when_only_enabled_are_running(tmp_path):
+    """Disabled connections must not count toward STOPPED_PARTIALLY.
+
+    Regression for the tray showing 'stopped_partially' when one connection
+    is up and another is intentionally disabled.
+    """
+    from susops.facade import SusOpsManager
+    from susops.core.types import ProcessState
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("active", "u@h")
+    mgr.add_connection("benched", "u@h")
+    mgr.set_connection_enabled("benched", False)
+
+    # Pretend "active" is running and PAC is up; "benched" is not running
+    # (which is the *correct* state for a disabled connection).
+    from susops.core.types import ConnectionStatus
+    statuses = (
+        ConnectionStatus(tag="active", running=True, socks_port=1080, pid=42, enabled=True),
+        ConnectionStatus(tag="benched", running=False, socks_port=0, pid=None, enabled=False),
+    )
+    assert mgr._compute_state(statuses=statuses, pac_running=True) is ProcessState.RUNNING
+
+
+def test_compute_state_all_disabled_treated_as_stopped(tmp_path):
+    """If every connection is disabled, there's effectively nothing to run."""
+    from susops.facade import SusOpsManager
+    from susops.core.types import ProcessState, ConnectionStatus
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("a", "u@h")
+    mgr.set_connection_enabled("a", False)
+
+    statuses = (
+        ConnectionStatus(tag="a", running=False, socks_port=0, pid=None, enabled=False),
+    )
+    assert mgr._compute_state(statuses=statuses, pac_running=False) is ProcessState.STOPPED
+
+
+def test_compute_state_partial_when_an_enabled_one_is_down(tmp_path):
+    """Mixed enabled-running + enabled-down is still partial."""
+    from susops.facade import SusOpsManager
+    from susops.core.types import ProcessState, ConnectionStatus
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("up", "u@h")
+    mgr.add_connection("down", "u@h")
+
+    statuses = (
+        ConnectionStatus(tag="up", running=True, socks_port=1080, pid=42, enabled=True),
+        ConnectionStatus(tag="down", running=False, socks_port=0, pid=None, enabled=True),
+    )
+    assert mgr._compute_state(statuses=statuses, pac_running=True) is ProcessState.STOPPED_PARTIALLY
+
+
+def test_is_idle_fresh_workspace(tmp_path):
+    """A brand-new workspace with no tracked processes is idle."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    assert mgr.is_idle() is True
+
+
+def test_is_idle_false_when_pid_file_present(tmp_path):
+    """A tracked SSH master pid file blocks idle shutdown."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    # Pid 1 (init) is always alive, so the pid file is non-stale.
+    (pid_dir / "susops-ssh-work.pid").write_text("1")
+    assert mgr.is_idle() is False
+
+
+def test_is_idle_ignores_own_services_pid(tmp_path):
+    """The daemon's own pid file must not block idle shutdown."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    (pid_dir / "susops-services.pid").write_text("1")
+    assert mgr.is_idle() is True
+
+
+def test_is_idle_false_when_reconnect_watching(tmp_path):
+    """Active reconnect monitor watching a tag blocks idle shutdown."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    with mgr._reconnect_monitor._lock:
+        mgr._reconnect_monitor._intended.add("work")
+    try:
+        assert mgr.is_idle() is False
+    finally:
+        with mgr._reconnect_monitor._lock:
+            mgr._reconnect_monitor._intended.discard("work")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import json
 import subprocess
 import sys
@@ -12,7 +13,6 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
-from rich.markup import escape as markup_escape
 
 from susops.core.config import (
     Connection,
@@ -428,11 +428,20 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _log(self, msg: str) -> None:
-        msg = markup_escape(msg)
-
-        self._log_buffer.append(msg)
+        # Store the raw, human-readable message. Markup-escaping (so Rich-based
+        # frontends like the TUI's RichLog don't interpret "[pi3]" as a tag) is
+        # the consumer's job — the tray + plain-text consumers want the raw
+        # text so users can copy it and read it normally.
+        #
+        # Every line gets a `[HH:MM:SS]` prefix so logs are temporally
+        # navigable in the TUI + tray viewers, where the user can't easily
+        # tell when an entry landed. The shared log_style parser has a
+        # dedicated rule that colours the timestamp dim so it doesn't
+        # crowd the message.
+        stamped = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}"
+        self._log_buffer.append(stamped)
         if self.on_log:
-            self.on_log(msg)
+            self.on_log(stamped)
 
     def _error(self, msg: str) -> None:
         """Log an error to the log buffer and fire the on_error callback.
@@ -456,7 +465,7 @@ class SusOpsManager:
         """
         if not self._verbose:
             return
-        full = f"[debug] {msg}"
+        full = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [debug] {msg}"
         self._log_buffer.append(full)
         if self.on_log:
             self.on_log(full)
@@ -638,8 +647,17 @@ class SusOpsManager:
             pac_running = self._pac_server.is_running()
         if not self.config.connections:
             return ProcessState.STOPPED
-        running_count = sum(1 for s in statuses if s.running)
-        total = len(statuses)
+        # Disabled connections shouldn't count toward "partial" — the user
+        # explicitly took them out of rotation. State is computed only over
+        # connections the user wants up.
+        enabled_statuses = [s for s in statuses if s.enabled]
+        if not enabled_statuses:
+            # All connections are disabled — there's nothing to run, so we're
+            # stopped (PAC is irrelevant in this case but we don't actively
+            # demote RUNNING → STOPPED if it happens to be up).
+            return ProcessState.STOPPED if not pac_running else ProcessState.STOPPED_PARTIALLY
+        running_count = sum(1 for s in enabled_statuses if s.running)
+        total = len(enabled_statuses)
         if running_count == total and pac_running:
             return ProcessState.RUNNING
         if running_count == 0 and not pac_running:
@@ -938,22 +956,7 @@ class SusOpsManager:
             self._update_pac()
 
         # Start status server if not already running
-        if not self._status_server.is_running():
-            try:
-                status_port = self.config.susops_app.status_server_port
-                actual_port = self._status_server.start(port=status_port)
-                if actual_port != status_port and status_port == 0:
-                    self.config = self.config.model_copy(
-                        update={
-                            "susops_app": self.config.susops_app.model_copy(
-                                update={"status_server_port": actual_port}
-                            )
-                        }
-                    )
-                    self._save()
-                self._log(f"Status server started on port {actual_port}")
-            except Exception as exc:
-                self._log(f"Status server failed: {exc}")
+        self.ensure_sse_status_server()
 
         self._emit_state(self._compute_state())
         return StartResult(
@@ -983,6 +986,70 @@ class SusOpsManager:
                 self._pac_server.stop()
             except Exception:
                 pass
+
+    def ensure_sse_status_server(self) -> int | None:
+        """Start the SSE status server if not already running.
+
+        Returns the bound port on success, or None if startup failed. Persists
+        an auto-allocated port back to config so subsequent daemon spawns
+        reuse it (which matters when frontends cache the URL).
+        """
+        if self._status_server.is_running():
+            return self._status_server.get_port()
+        try:
+            status_port = self.config.susops_app.status_server_port
+            actual_port = self._status_server.start(port=status_port)
+            if actual_port != status_port and status_port == 0:
+                self.config = self.config.model_copy(
+                    update={
+                        "susops_app": self.config.susops_app.model_copy(
+                            update={"status_server_port": actual_port}
+                        )
+                    }
+                )
+                self._save()
+            return actual_port
+        except Exception as exc:
+            self._log(f"SSE status server failed: {exc}")
+            return None
+
+    def is_idle(self) -> bool:
+        """Return True when the daemon has no work to do.
+
+        Used to drive the services daemon's idle-shutdown logic: when the last
+        SSE client disconnects AND the daemon is idle, the process exits and
+        the next frontend respawns it (<1 s).
+
+        Idle means:
+          - no SSH masters or forwards tracked under our pids/ dir (anything
+            except the daemon's own susops-services.pid)
+          - no share servers running
+          - PAC server not running
+          - reconnect monitor not watching any connection
+        """
+        from susops.core.process import ProcessManager
+
+        blacklist = ProcessManager._KILL_ALL_BLACKLIST  # type: ignore[attr-defined]
+        try:
+            tracked = [
+                p for p in self._process_mgr._pids_dir.glob("*.pid")
+                if p.stem not in blacklist
+            ]
+        except Exception:
+            tracked = []
+        if tracked:
+            return False
+        if self._share_servers:
+            return False
+        if self._pac_server.is_running():
+            return False
+        try:
+            with self._reconnect_monitor._lock:
+                if self._reconnect_monitor._intended:
+                    return False
+        except Exception:
+            pass
+        return True
 
     def reconnect_monitor_info(self) -> dict:
         """Return display info about the current reconnect monitor state.
