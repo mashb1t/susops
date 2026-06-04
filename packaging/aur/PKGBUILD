@@ -1,6 +1,9 @@
 # Maintainer: Manuel Schmid <manuel.schmid@odt.net>
 pkgname=susops
-pkgver=3.0.0
+# AUR pkgver disallows hyphens. The git tag (and pyproject) use 3.0.0-rc2;
+# the URL below maps pkgver→tag via _tag.
+_tag=3.0.0-rc2
+pkgver=3.0.0rc2
 pkgrel=1
 pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
 arch=('any')
@@ -23,16 +26,16 @@ optdepends=(
     'socat: UDP port forwarding support'
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/mashb1t/susops/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/mashb1t/susops/archive/v$_tag.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname-$_tag"
     python -m build --wheel --no-isolation
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname-$_tag"
     python -m installer --destdir="$pkgdir" dist/*.whl
     install -Dm644 packaging/aur/susops-tray.desktop \
         "$pkgdir/usr/share/applications/susops-tray.desktop"
