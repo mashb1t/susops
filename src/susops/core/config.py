@@ -156,7 +156,16 @@ def load_config(workspace: Path = WORKSPACE_DEFAULT) -> SusOpsConfig:
 
 
 def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> None:
-    """Save config to workspace/config.yaml using ruamel.yaml for comment preservation."""
+    """Save config to workspace/config.yaml using ruamel.yaml for comment preservation.
+
+    Writes atomically (to a temp file, then POSIX rename) so a concurrent
+    load_config never observes a half-written or freshly-truncated file. The
+    old behaviour — `open(path, 'w')` — truncated the file to 0 bytes before
+    `yaml.dump` ran; a reader in that window got an empty file → empty config →
+    and any save that followed wiped the connections list. The TUI's
+    `@work(thread=True)` makes this a real (and reported) race on rapid Stop
+    clicks.
+    """
     path = get_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml = YAML()
@@ -166,8 +175,19 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
     data = config.model_dump(mode='python')
     # Convert enums to their values for serialization
     data['susops_app']['logo_style'] = config.susops_app.logo_style.value
-    with open(path, 'w') as f:
-        yaml.dump(data, f)
+    # Temp file in the same directory so the rename stays on one filesystem.
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp_path, 'w') as f:
+            yaml.dump(data, f)
+        tmp_path.replace(path)  # atomic on POSIX + Windows ≥ 3.3
+    except Exception:
+        # Best-effort cleanup of the temp file if the write failed.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def get_connection(config: SusOpsConfig, tag: str) -> Connection | None:
