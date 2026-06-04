@@ -1236,8 +1236,14 @@ class SusOpsManager:
             else:
                 self._update_pac()
 
-        # On a full stop, halt the in-process monitor so nothing is left "watching".
-        if tag is None:
+        # Halt the in-process monitor if there's nothing left to watch.
+        # Covers two cases: a full stop (tag=None), and a per-tag stop that
+        # happened to be the last live tag. Without this, the daemon's
+        # status would keep showing "● Reconnect" with an empty intended
+        # set, polling every 5 s for nothing.
+        with self._reconnect_monitor._lock:
+            still_watching = bool(self._reconnect_monitor._intended)
+        if not still_watching:
             self._reconnect_monitor.stop()
 
         self._save()

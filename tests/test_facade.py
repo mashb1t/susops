@@ -590,6 +590,49 @@ def test_reconnect_monitor_tracks_intended_tags(tmp_path):
     assert "home" in monitor._intended
 
 
+def test_stop_halts_monitor_when_last_tag_stopped(tmp_path):
+    """Per-tag stop that empties the intended set should halt the monitor —
+    otherwise the status display keeps showing '● Reconnect' for a
+    thread polling an empty set every 5 s.
+
+    Note: conftest autouse-mocks ReconnectMonitor.start so the real thread
+    never runs in tests. We instead verify that the facade calls
+    `monitor.stop()` exactly when intended becomes empty.
+    """
+    from unittest.mock import patch
+
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path, _enable_background_threads=True)
+    mgr.add_connection("only", "u@h", socks_port=0)
+    mgr._reconnect_monitor.mark_running("only")
+    assert "only" in mgr._reconnect_monitor._intended
+
+    with patch.object(mgr._reconnect_monitor, "stop") as mock_stop:
+        mgr.stop(tag="only")
+        mock_stop.assert_called_once()
+    assert mgr._reconnect_monitor._intended == set()
+
+
+def test_stop_keeps_monitor_alive_when_other_tags_still_live(tmp_path):
+    """Per-tag stop that leaves OTHER tags still intended must NOT halt
+    the monitor — those other tags still need watching."""
+    from unittest.mock import patch
+
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path, _enable_background_threads=True)
+    mgr.add_connection("a", "u@h", socks_port=0)
+    mgr.add_connection("b", "u@h", socks_port=0)
+    mgr._reconnect_monitor.mark_running("a")
+    mgr._reconnect_monitor.mark_running("b")
+
+    with patch.object(mgr._reconnect_monitor, "stop") as mock_stop:
+        mgr.stop(tag="a")
+        mock_stop.assert_not_called()
+    assert mgr._reconnect_monitor._intended == {"b"}
+
+
 def test_error_calls_both_on_log_and_on_error(tmp_path):
     """_error() must invoke both on_log and on_error callbacks."""
     from susops.facade import SusOpsManager
