@@ -56,7 +56,7 @@ def test_compute_excludes_dev_packages():
     from compute_resource_shas import compute_resource_shas
 
     pip_out = json.dumps([
-        {"name": "susops", "version": "3.0.0"},
+        {"name": "susops", "version": "3.0.0-rc2"},
         {"name": "pytest", "version": "9.0.3"},
         {"name": "rich", "version": "14.3.3"},
     ]).encode()
@@ -123,7 +123,7 @@ def test_main_aur_patches_file(tmp_path, monkeypatch):
 def _formula_template() -> str:
     return (
         'class Susops < Formula\n'
-        '  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"\n'
+        '  url "https://github.com/mashb1t/susops/archive/v3.0.0-rc2.tar.gz"\n'
         '  sha256 "mainsha000000000000000000000000000000000000000000000000000000"\n\n'
         '  resource "rich" do\n'
         '    url "https://files.pythonhosted.org/packages/source/r/rich/rich-14.3.3.tar.gz"\n'

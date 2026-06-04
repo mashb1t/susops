@@ -23,15 +23,15 @@ The current TUI requires unnecessary navigation:
 Replace the current two-pane dashboard (sidebar + tabbed detail) with a **three-panel layout**:
 
 ```
-┌─ Connections ──────┬──── Stats / Bandwidth ─────────────────┬─ [context] ─────────┐
-│  All               │                                        │ Domain / IP / CIDR   │
+┌─ Connections ───────┬──── Stats / Bandwidth ─────────────────┬─ [context] ──────────┐
+│  All                │                                        │ Domain / IP / CIDR   │
 │ ● pi3    64726 ↓0B/s│                                        │ ...                  │
 │ ● mash   63731 ↓0B/s│                                        ├─ Forwards ───────────┤
-│                    │                                        │ ...                  │
-│                    │                                        ├─ Shares ─────────────┤
-│                    │                                        │ ...                  │
-└────────────────────┴────────────────────────────────────────┴──────────────────────┘
-  s Start  x Stop  r Restart  a Add  d Delete  ...                             v3.0.0
+│                     │                                        │ ...                  │
+│                     │                                        ├─ Shares ─────────────┤
+│                     │                                        │ ...                  │
+└─────────────────────┴────────────────────────────────────────┴──────────────────────┘
+  s Start  x Stop  r Restart  a Add  d Delete  ...                          v3.0.0-rc2
 ```
 
 **Left panel (~20 cols):** Connection list with live status dots and current bandwidth rate.
@@ -54,7 +54,7 @@ No action hints inside panels. All commands live exclusively in the footer bar.
 
 ---
 
-### Centre Panel — Stats
+### Center Panel — Stats
 
 **When `All` is selected:**
 

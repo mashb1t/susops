@@ -20,70 +20,141 @@ SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC (Proxy Auto-Config) fil
 
 ### Architecture
 
+SusOps is split into a **services daemon** (`susops-services`) that owns the long-lived async functionality, and **thin frontends** (CLI, TUI, tray apps) that talk to it over a local JSON-over-HTTP RPC channel plus a Server-Sent Events stream. There is one daemon per workspace. If it isn't running when a frontend starts, the frontend auto-spawns it. When the last frontend disconnects and no SSH tunnels / shares / PAC are active, the daemon exits cleanly.
+
 ```
 susops/
   src/susops/
-    core/          # Business logic (no UI)
-      config.py    # Pydantic v2 models + ruamel.yaml I/O
-      ssh.py       # SSH ControlMaster/slave subprocess + PID tracking + socket helpers
-      socat.py     # UDP port forwarding via socat over SSH ControlMaster
-      pac.py       # PAC generation + aiohttp HTTP server (shared async loop)
-      share.py     # AES-256-CTR encrypted file sharing + client fetch (shared async loop)
-      status.py    # SSE StatusServer — broadcasts state/share/forward events via aiohttp
-      process.py   # ProcessManager: PID files, start/stop/status, zombie detection
-      ports.py     # Free port allocation, CIDR helpers
-      types.py     # Enums and result dataclasses (ShareInfo with three-state status)
-    facade.py      # SusOpsManager — single API for all frontends
-    tui/           # Textual TUI + argparse CLI
-    tray/          # GTK3 (Linux) and rumps (macOS) tray apps
+    core/                # Business logic (no UI)
+      services_daemon.py # Daemon main: PID claim, signal handlers, idle-shutdown
+      rpc_server.py      # aiohttp /rpc — JSON-over-HTTP, allowlist-gated dispatch
+      rpc_protocol.py    # InvocationRequest/Response, type-tagged JSON encoder
+      status.py          # SSE /events server — state · share · forward · bandwidth
+      config.py          # Pydantic v2 models + ruamel.yaml I/O (atomic save)
+      ssh.py             # SSH ControlMaster + live -O forward / -O cancel
+      socat.py           # UDP port forwarding via socat over SSH ControlMaster
+      pac.py             # PAC generation + aiohttp HTTP server (shared async loop)
+      share.py           # AES-256-CTR encrypted file sharing + client fetch
+      process.py         # ProcessManager: PID files, start/stop/status, zombie detection
+      ports.py           # Free port allocation, CIDR helpers
+      log_style.py       # Shared log-line styler (tag/ok/warn/err colours)
+      types.py           # Enums and result dataclasses
+    facade.py            # SusOpsManager — in-process API used INSIDE the daemon
+    client.py            # SusOpsClient — RPC proxy used by every frontend
+    tui/                 # Textual TUI + argparse CLI
+    tray/                # GTK3 (Linux) and rumps (macOS) tray apps
 ```
+
+#### Daemon ↔ Frontend protocol
+
+There are two channels between each frontend and the daemon, both bound to `127.0.0.1`:
+
+| Channel | Endpoint              | Direction        | Use                                                                                                       |
+|---------|-----------------------|------------------|-----------------------------------------------------------------------------------------------------------|
+| RPC     | `POST /rpc`           | frontend → daemon | One method invocation per request. Allowlisted methods from `_ALLOWED_METHODS` in `rpc_server.py` — anything else is rejected. Synchronous, request/response. |
+| SSE     | `GET /events`         | daemon → frontend | Long-lived Server-Sent-Events stream. Pushes `state`, `share`, `forward`, and `bandwidth` events so frontends update instantly without polling. |
+
+Ports are auto-allocated and written to `~/.susops/pids/susops-services.port` so frontends know where to dial. The PID file (`susops-services.pid`) is claimed atomically with `O_CREAT | O_EXCL` — two daemons racing each other can't both win, the loser exits with a clear "another daemon is running" message.
+
+The frontend's `SusOpsClient` exposes the same API surface as `SusOpsManager` via `__getattr__` magic, so frontend code reads `mgr.start(tag="work")` the same whether it's running in-process (inside the daemon) or remoting over HTTP (everywhere else). Connection refused mid-call triggers exactly one retry through `ensure_daemon_running`, which transparently respawns the daemon if it died.
+
+**Idle shutdown.** The daemon exits as soon as (a) the last SSE client disconnects AND (b) it has nothing tracked: no SSH masters, no shares, PAC down, reconnect monitor watching nothing. A 5 s safety-net check catches the "CLI fired one RPC and exited" case where no SSE connection ever opened. Startup gets a 3 s grace so a freshly-spawned daemon doesn't exit before its first SSE listener lands.
+
+#### OpenAPI schema
+
+The full RPC surface (every allowlisted method, its kwargs schema, its return type, plus the SSE event payloads) is documented as OpenAPI 3.1 at [`docs/openapi.yaml`](docs/openapi.yaml). The spec is auto-generated from `SusOpsManager` + `_ALLOWED_METHODS` via `tools/gen_openapi.py`:
+
+```bash
+python tools/gen_openapi.py             # regenerate docs/openapi.yaml
+python tools/gen_openapi.py --check     # CI: fail if stale
+```
+
+A pytest case (`tests/test_openapi.py`) runs `--check` on every PR, so the committed spec can never drift from the source. Every tagged release also re-runs the generator and attaches the resulting `openapi.yaml` as a release asset, so the schema published alongside each version is always exact.
+
+Plug the spec into Swagger UI / Redoc / Stoplight for browsable docs, or feed it into a client generator (`openapi-generator`, `oapi-codegen`, etc.) to build alternative frontends.
+
+#### Access & authentication
+
+The daemon is built for **single-user local-only access** — there is no authentication, no shared secret, and no per-method permission model. The protections in place are:
+
+| Layer            | Mechanism                                                                                                                                       | What it prevents                                                                                                                                                  |
+|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Bind address     | Both `/rpc` and `/events` listen on `127.0.0.1` only                                                                                            | Remote hosts on the LAN/internet cannot reach the daemon.                                                                                                         |
+| Method allowlist | `_ALLOWED_METHODS` in `rpc_server.py` — any method not in the set returns `404 method not allowed`                                              | Private helpers (`mgr._whatever`) can't be invoked. Defence against *accidental* exposure, not malicious callers.                                                 |
+| Port discovery   | Port + PID are written to `~/.susops/pids/susops-services.{port,pid}`                                                                           | Filesystem perms (default `0644`) gate read access. A process running as a different local user that can't read your home directory can't find the port.         |
+
+**What this means in practice:**
+
+- **Single-user laptop / desktop:** safe. Only your own processes can reach loopback and read the port file.
+- **Multi-user host / shared dev box:** any other local user **whose UID can read `~/.susops/pids/susops-services.port`** can call any allowlisted method on your daemon. That means starting/stopping tunnels, reading config, listing shares, fetching files. The kernel doesn't help here — you'd need filesystem ACLs.
+- **Untrusted local processes** (browser extensions with loopback access, sandboxed apps, etc.): same caveat. Loopback is treated as a security boundary, not a single trust zone.
+
+**Hardening options** if you need stricter control:
+
+- **Tighten the port file** — `chmod 600 ~/.susops/pids/susops-services.port` keeps it readable only by your UID. Not currently the default, but a one-line change to `services_daemon.py:_port_path` would make it permanent.
+- **Unix domain socket instead of TCP** — bind aiohttp to `~/.susops/pids/susops-services.sock` with `0600` and kernel-enforced perms become the access control. Cleaner, no token rotation needed.
+- **Per-daemon bearer token** — generate a random secret on startup, write it to `~/.susops/pids/susops-services.token` with `0600`, require it as an `Authorization: Bearer ...` header. `SusOpsClient` reads the file on each call.
+
+None of these are implemented today; the daemon assumes a single-user trust zone. If your threat model includes co-resident users or hostile loopback-reachable software, the cheapest fix is the port-file `chmod 600`.
 
 #### Component relations
 
 ```mermaid
 flowchart TD
-    TUI["Textual TUI\n(dashboard, share, etc.)"]
-    CLI["argparse CLI"]
-    Tray["GTK3 / rumps Tray App\n(AbstractTrayApp + platform subclass)"]
+    subgraph Frontends["Frontends"]
+        direction LR
+        MacOSApp["MacOS App"]
+        LinuxApp["Linux App"]
+        TUI["Textual TUI"]
+        CLI["CLI"]
+    end
 
-    Facade["SusOpsManager — facade.py\nconfig I/O · PID mgmt · bandwidth sampling\nserver lifecycle"]
+    Client["SusOpsClient — client.py\nensure_daemon_running\nRPC proxy + retry"]
 
-    SSH["ssh.py\nControlMaster + forward slaves"]
-    Socat["socat.py\nUDP forwards via socat"]
-    PAC["pac.py\nPAC server (aiohttp)"]
-    Share["share.py\nShareServer(s) (aiohttp)"]
+    MacOSApp --> Client
+    LinuxApp --> Client
+    TUI --> Client
+    CLI --> Client
 
-    Loop["Shared async event loop\ndaemon thread — pac · share · status\nall schedule coroutines here"]
+    Client -->|POST /rpc\nJSON-over-HTTP| RPC
+    Client -.->|GET /events\nServer-Sent Events stream — events pushed back| SSE
 
-    Status["status.py — StatusServer\nSSE /events endpoint\nbroadcasts: state · share · forward"]
+    subgraph Daemon["susops-services daemon"]
+        RPC["rpc_server.py\n/rpc (POST)\nAllowlist-gated dispatch"]
+        Facade["facade.py — SusOpsManager\nconfig I/O · PID mgmt · bandwidth sampling\nis_idle() drives daemon shutdown"]
+        SSE["status.py — StatusServer\n/events (SSE)\nstate · share · forward · bandwidth"]
+        Reconnect["_ReconnectMonitor\nwatches ControlMaster sockets\nre-registers forwards on reconnect"]
+        BW["_BandwidthSampler\nreads /proc/<pid>/io every 2s"]
 
-    Dashboard["dashboard screen\nSSE listener thread\n(reconnects on 2 s timeout)"]
-    ShareScreen["share screen\nset_interval 2 s poll"]
+        SSH["ssh.py\nControlMaster + -O forward"]
+        Socat["socat.py\nUDP forwards via socat"]
+        PAC["pac.py\nPAC server (aiohttp)"]
+        Share["share.py\nShareServer(s) (aiohttp)"]
 
-    Master["susops-ssh-&lt;tag&gt;\nSSH ControlMaster\n(-M -N -D socks_port)"]
-    Slave["susops-fwd-&lt;tag&gt;-&lt;fw&gt;\nSSH forward slave\n(-O forward -L/-R)"]
-    PacProc["susops-pac\nPAC HTTP server"]
-    UDPLocal["susops-udp-&lt;tag&gt;-&lt;fw&gt;-lsocat\nLocal socat\n(EXEC → SSH → remote socat)"]
-    UDPRemote["susops-udp-&lt;tag&gt;-&lt;fw&gt;-ssh/rsocat/lsocat\nRemote UDP bridge\n(SSH -R + remote socat + local socat)"]
+        Loop["Shared async event loop\n(daemon thread — pac · share · status)"]
+    end
 
-    TUI --> Facade
-    CLI --> Facade
-    Tray --> Facade
-
+    RPC --> Facade
+    Facade --> SSE
+    Facade --> Reconnect
+    Facade --> BW
     Facade --> SSH
     Facade --> Socat
     Facade --> PAC
     Facade --> Share
 
-    PAC --> Loop
     Share --> Loop
-    Loop --> Status
+    PAC --> Loop
+    Loop --> SSE
+    
+    subgraph Processes["Managed processes"]
+        Master["susops-ssh-&lt;tag&gt;\nSSH ControlMaster\n(-M -N -D socks_port)"]
+        PacProc["susops-pac\nPAC HTTP server"]
+        UDPLocal["susops-udp-&lt;tag&gt;-&lt;fw&gt;-lsocat\nLocal UDP socat\n(EXEC → SSH → remote socat)"]
+        UDPRemote["susops-udp-&lt;tag&gt;-&lt;fw&gt;-ssh/rsocat/lsocat\nRemote UDP bridge\n(SSH -R + remote/local socat)"]
+    end
 
-    Status -->|Server-Sent Events| Dashboard
-    Status -->|Server-Sent Events| ShareScreen
-
-    SSH -->|spawns| Master
-    Master -->|multiplexes| Slave
+    SSH ---->|spawns| Master
     PAC -->|spawns| PacProc
     Socat -->|local direction| UDPLocal
     Socat -->|remote direction| UDPRemote
@@ -102,7 +173,7 @@ flowchart TD
 | PAC server        | `aiohttp >= 3.9` (shared async loop)                                  |
 | TUI               | `textual >= 8.2`, `textual-plotext >= 1.0` (optional extra)           |
 | File sharing      | `cryptography >= 42`, `aiohttp >= 3.9` (optional extra)               |
-| UDP forwarding    | `socat` (system package — see [UDP Port Forwarding](#udp-port-forwarding)) |
+| UDP forwarding    | `socat` (system package, see [UDP Port Forwarding](#udp-port-forwarding)) |
 | Linux tray        | `python-gobject`, `gtk3`, `libayatana-appindicator` (system packages) |
 | macOS tray        | `rumps >= 0.4`                                                        |
 
@@ -129,7 +200,7 @@ pip install "susops[tui,share,tray-linux]"
 pip install "susops[tui,share,tray-mac]"
 ```
 
-UDP port forwarding has no Python dependencies — install `socat` via your system package manager:
+UDP port forwarding has no Python dependencies, install `socat` via your system package manager:
 
 ```bash
 # macOS
@@ -190,7 +261,9 @@ susops ps   # shows PAC port, e.g. http://localhost:51234/susops.pac
 
 ## Services Daemon
 
-SusOps' background services (PAC HTTP server, status SSE endpoint, reconnect monitor, bandwidth sampler) run in a single long-lived process: `susops-services`. The CLI, TUI, and tray are thin clients that talk to it over JSON-over-HTTP RPC. If the daemon isn't running when you invoke a frontend, it's auto-spawned. To have it always running, install one of the supervisor units below.
+SusOps' background services (PAC HTTP server, status SSE endpoint, reconnect monitor, bandwidth sampler) run in a single long-lived process: `susops-services`. The CLI, TUI, and tray are thin clients that talk to it over **JSON-over-HTTP RPC** (`POST /rpc`) and consume live state updates from a **Server-Sent-Events stream** (`GET /events`). If the daemon isn't running when you invoke a frontend, it's auto-spawned; the PID + RPC port are recorded in `~/.susops/pids/susops-services.{pid,port}`.
+
+By default the daemon **exits when idle**, last SSE client disconnected AND no SSH tunnels / shares / PAC running / connections being watched. Respawning takes well under a second, so frontends don't notice. If you want it always running anyway (faster cold-start, immediate reconnect of dropped connections without any frontend open), install one of the supervisor units below.
 
 ### macOS (launchd)
 
@@ -210,7 +283,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now susops-services
 ```
 
-The unit uses `%h/.local/bin/susops-services` — adjust if your install path differs.
+The unit uses `%h/.local/bin/susops-services`, adjust if your install path differs.
 
 ---
 
@@ -221,62 +294,6 @@ Run `susops` (or `so`) with no arguments in a terminal to launch the interactive
 ```
 susops
 ```
-
-### Keybindings
-
-#### Dashboard — selected connection
-
-| Key | Action                          |
-|-----|---------------------------------|
-| `s` | Start selected connection       |
-| `x` | Stop selected connection        |
-| `r` | Restart selected connection     |
-
-#### Dashboard — all connections
-
-| Key | Action               |
-|-----|----------------------|
-| `S` | Start all tunnels    |
-| `X` | Stop all tunnels     |
-| `R` | Restart all tunnels  |
-
-#### Global
-
-| Key      | Action               |
-|----------|----------------------|
-| `c`      | Connection editor    |
-| `f`      | File share screen    |
-| `e`      | Config editor (YAML) |
-| `Ctrl+P` | Command palette      |
-| `q`      | Quit                 |
-
-#### Connection editor
-
-| Key | Action                                                      |
-|-----|-------------------------------------------------------------|
-| `a` | Add item (connection, PAC host, forward)                    |
-| `d` | Delete selected item                                        |
-| `t` | Toggle enabled/disabled for selected connection, domain, or forward |
-| `e` | Test selected item (SSH ping, SOCKS curl, or port liveness) |
-| `s` | Start selected connection or forward                        |
-| `x` | Stop selected connection or forward                         |
-| `r` | Restart selected connection                                 |
-
-#### Share screen
-
-| Key | Action                           |
-|-----|----------------------------------|
-| `a` | Share a new file                 |
-| `f` | Fetch a remote shared file       |
-| `d` | Stop selected share              |
-| `s` | Restart a stopped share          |
-| `x` | Delete selected share            |
-
-#### Global per-screen
-
-| Key      | Action            |
-|----------|-------------------|
-| `Escape` | Back to dashboard |
 
 ### Screens
 
@@ -426,7 +443,7 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running/partial/stopped). State is polled every 5 seconds. Both tray implementations support the same feature set via native dialogs:
+The tray icon reflects the current state (running/partial/stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. Both tray implementations support the same feature set via native dialogs:
 
 - **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
 - **Start / Stop / Restart All** — bulk lifecycle operations across all connections
