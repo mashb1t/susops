@@ -121,9 +121,21 @@ class ProcessManager:
         except (ValueError, OSError):
             return None
 
+    # Process names that kill_all() must NEVER touch — these belong to the
+    # services daemon itself (which is the process *calling* kill_all). Killing
+    # them would make the daemon SIGTERM itself, taking down PAC + RPC and
+    # making subsequent ensure_daemon_running calls race with the dying
+    # daemon's PID file.
+    _KILL_ALL_BLACKLIST = frozenset({"susops-services"})
+
     def kill_all(self) -> None:
-        """Send SIGTERM to every tracked process and remove PID files. Non-blocking."""
+        """Send SIGTERM to every tracked process and remove PID files. Non-blocking.
+
+        Skips the services daemon's own pid file — see _KILL_ALL_BLACKLIST.
+        """
         for pid_file in list(self._pids_dir.glob("*.pid")):
+            if pid_file.stem in self._KILL_ALL_BLACKLIST:
+                continue
             try:
                 pid = int(pid_file.read_text().strip())
                 os.kill(pid, signal.SIGTERM)
