@@ -20,6 +20,14 @@ pytest tests/test_pac.py::test_pac_server_reload -v
 # Run tests with coverage
 pytest --cov=susops --cov-report=term-missing
 
+# Regenerate the OpenAPI spec — REQUIRED after any change to:
+#   - SusOpsManager methods (signature, return type, docstring)
+#   - _ALLOWED_METHODS in src/susops/core/rpc_server.py
+#   - SSE event payload shapes in src/susops/core/status.py
+# tests/test_openapi.py will fail in CI until you regenerate + commit.
+python tools/gen_openapi.py
+python tools/gen_openapi.py --check  # CI freshness check
+
 # Launch the TUI
 susops        # or: python -m susops.tui
 

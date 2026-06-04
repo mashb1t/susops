@@ -1,0 +1,2176 @@
+openapi: 3.1.0
+info:
+  title: SusOps Services Daemon RPC
+  version: 3.0.0-rc2
+  description: "Internal HTTP API exposed by the `susops-services` daemon. Frontends (CLI, TUI, tray)
+    call into it via the `SusOpsClient` proxy — there is no expectation that this API be consumed by anything
+    else, but documenting it makes the contract explicit and lets you build alternative clients.\n\n**Bind
+    address:** `127.0.0.1` — loopback only.\n\n**Authentication:** none. Any local process that can reach
+    loopback and read `~/.susops/pids/susops-services.port` can invoke any allowlisted method. See the
+    README's [Access & Authentication](https://github.com/mashb1t/susops#access--authentication) section."
+  x-generated-at: '2026-06-04'
+  x-generator: tools/gen_openapi.py
+servers:
+- url: http://127.0.0.1:{port}
+  description: Local daemon. `port` is allocated at startup and written to 
+    `~/.susops/pids/susops-services.port`.
+  variables:
+    port:
+      default: '0'
+      description: Daemon RPC port.
+paths:
+  /rpc:
+    post:
+      summary: Invoke a SusOpsManager method
+      description: "Single endpoint dispatch. The request body's `method` field selects which `SusOpsManager.<method>(*args,
+        **kwargs)` is invoked.\n\n**Allowlisted methods:**\n\n- `add_connection`\n- `add_local_forward`\n\
+        - `add_pac_host`\n- `add_remote_forward`\n- `delete_share` — Stop and permanently remove a share
+        from config.\n- `fetch` — Download and decrypt a shared file via a transient local forward slave.\n\
+        - `get_bandwidth`\n- `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last
+        start. Resets on stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n\
+        - `get_uptime` — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
+        — Return True if the UDP socat process for this forward is alive.\n- `list_config`\n- `list_shares`
+        — Return info for all shares: running (in-memory) and stopped (config-only).\n- `process_info`
+        — Return subprocess info grouped by connection for ``susops ps`` display.\n- `reconnect_monitor_info`
+        — Return display info about the current reconnect monitor state.\n- `remove_connection`\n- `remove_local_forward`\n\
+        - `remove_pac_host`\n- `remove_remote_forward`\n- `reset`\n- `restart`\n- `set_connection_enabled`\n\
+        - `set_forward_enabled` — Set the enabled flag on a forward and start/stop the live process accordingly.\n\
+        - `set_pac_host_enabled`\n- `share` — Start serving an encrypted file share and persist it to
+        config.\n- `share_is_running`\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking
+        stop for TUI quit: signal all external processes immediately.\n- `stop_share` — Stop share server(s)
+        without removing from config (entry shows as stopped).\n- `test`\n- `test_all`\n- `test_connection`
+        — Test SSH reachability for a specific connection.\n- `test_domain` — Test domain reachability
+        via the specified connection's SOCKS proxy.\n- `test_forward` — Check if a port forward is active.\n\
+        - `test_ssh`\n- `toggle_forward_enabled` — Toggle enabled on a forward. Returns the new enabled
+        state.\n- `update_app_config`\n- `update_config` — Update top-level SusOpsConfig fields (e.g.
+        pac_server_port)."
+      operationId: invoke
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvocationRequest'
+      responses:
+        '200':
+          description: Method invoked successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvocationResponseSuccess'
+        '400':
+          description: Malformed request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvocationResponseError'
+        '404':
+          description: Method not on the allowlist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvocationResponseError'
+        '500':
+          description: Method raised an exception.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvocationResponseError'
+  /events:
+    get:
+      summary: Subscribe to live status events (SSE)
+      description: "Long-lived Server-Sent Events stream. The daemon pushes events of type `state`, `share`,
+        `forward`, and `bandwidth` whenever the underlying facade emits them. Frontends use this to update
+        icons / dashboards without polling.\n\nEvent format follows the standard SSE wire format:\n\n\
+        ```\nevent: state\ndata: {\"tag\":\"work\",\"running\":true,\"pid\":1234}\n\n```\n\nClosing the
+        stream is the canonical \"I'm leaving\" signal — when the last SSE client disconnects and the
+        daemon has no in-flight work, it shuts down."
+      operationId: events
+      responses:
+        '200':
+          description: Streaming SSE response.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/StatusEvent'
+components:
+  schemas:
+    InvokeAddConnection:
+      type: object
+      description: Invoke `add_connection` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: add_connection
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+            ssh_host:
+              type: string
+            socks_port:
+              type: integer
+              default: 0
+          required:
+          - tag
+          - ssh_host
+          additionalProperties: false
+    AddConnectionResult:
+      $defs:
+        FileShare:
+          description: A persisted file share associated with a connection.
+          properties:
+            file_path:
+              title: File Path
+              type: string
+            password:
+              title: Password
+              type: string
+            port:
+              default: 0
+              title: Port
+              type: integer
+            stopped:
+              default: false
+              title: Stopped
+              type: boolean
+          required:
+          - file_path
+          - password
+          title: FileShare
+          type: object
+        Forwards:
+          properties:
+            local:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Local
+              type: array
+            remote:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Remote
+              type: array
+          title: Forwards
+          type: object
+        PortForward:
+          properties:
+            tag:
+              default: ''
+              title: Tag
+              type: string
+            src_addr:
+              default: localhost
+              title: Src Addr
+              type: string
+            src_port:
+              title: Src Port
+              type: integer
+            dst_addr:
+              default: localhost
+              title: Dst Addr
+              type: string
+            dst_port:
+              title: Dst Port
+              type: integer
+            tcp:
+              default: true
+              title: Tcp
+              type: boolean
+            udp:
+              default: false
+              title: Udp
+              type: boolean
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - src_port
+          - dst_port
+          title: PortForward
+          type: object
+      properties:
+        tag:
+          title: Tag
+          type: string
+        ssh_host:
+          title: Ssh Host
+          type: string
+        socks_proxy_port:
+          default: 0
+          title: Socks Proxy Port
+          type: integer
+        enabled:
+          default: true
+          title: Enabled
+          type: boolean
+        forwards:
+          $ref: '#/components/schemas/Forwards'
+          default:
+            local: []
+            remote: []
+        pac_hosts:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts
+          type: array
+        pac_hosts_disabled:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts Disabled
+          type: array
+        file_shares:
+          default: []
+          items:
+            $ref: '#/components/schemas/FileShare'
+          title: File Shares
+          type: array
+      required:
+      - tag
+      - ssh_host
+      title: Connection
+      type: object
+    InvokeAddLocalForward:
+      type: object
+      description: Invoke `add_local_forward` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: add_local_forward
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            fw:
+              properties:
+                tag:
+                  default: ''
+                  title: Tag
+                  type: string
+                src_addr:
+                  default: localhost
+                  title: Src Addr
+                  type: string
+                src_port:
+                  title: Src Port
+                  type: integer
+                dst_addr:
+                  default: localhost
+                  title: Dst Addr
+                  type: string
+                dst_port:
+                  title: Dst Port
+                  type: integer
+                tcp:
+                  default: true
+                  title: Tcp
+                  type: boolean
+                udp:
+                  default: false
+                  title: Udp
+                  type: boolean
+                enabled:
+                  default: true
+                  title: Enabled
+                  type: boolean
+              required:
+              - src_port
+              - dst_port
+              title: PortForward
+              type: object
+          required:
+          - conn_tag
+          - fw
+          additionalProperties: false
+    AddLocalForwardResult:
+      type: 'null'
+    InvokeAddPacHost:
+      type: object
+      description: Invoke `add_pac_host` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: add_pac_host
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            host:
+              type: string
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          required:
+          - host
+          additionalProperties: false
+    AddPacHostResult:
+      type: 'null'
+    InvokeAddRemoteForward:
+      type: object
+      description: Invoke `add_remote_forward` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: add_remote_forward
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            fw:
+              properties:
+                tag:
+                  default: ''
+                  title: Tag
+                  type: string
+                src_addr:
+                  default: localhost
+                  title: Src Addr
+                  type: string
+                src_port:
+                  title: Src Port
+                  type: integer
+                dst_addr:
+                  default: localhost
+                  title: Dst Addr
+                  type: string
+                dst_port:
+                  title: Dst Port
+                  type: integer
+                tcp:
+                  default: true
+                  title: Tcp
+                  type: boolean
+                udp:
+                  default: false
+                  title: Udp
+                  type: boolean
+                enabled:
+                  default: true
+                  title: Enabled
+                  type: boolean
+              required:
+              - src_port
+              - dst_port
+              title: PortForward
+              type: object
+          required:
+          - conn_tag
+          - fw
+          additionalProperties: false
+    AddRemoteForwardResult:
+      type: 'null'
+    InvokeDeleteShare:
+      type: object
+      description: Stop and permanently remove a share from config.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: delete_share
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            port:
+              type: integer
+          required:
+          - port
+          additionalProperties: false
+    DeleteShareResult:
+      type: 'null'
+    InvokeFetch:
+      type: object
+      description: Download and decrypt a shared file via a transient local forward slave.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: fetch
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            port:
+              type: integer
+            password:
+              type: string
+            conn_tag:
+              type: string
+            outfile:
+              anyOf:
+              - format: path
+                type: string
+              - type: 'null'
+              default:
+          required:
+          - port
+          - password
+          - conn_tag
+          additionalProperties: false
+    FetchResult:
+      type: string
+      format: path
+    InvokeGetBandwidth:
+      type: object
+      description: Invoke `get_bandwidth` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_bandwidth
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetBandwidthResult:
+      maxItems: 2
+      minItems: 2
+      prefixItems:
+      - type: number
+      - type: number
+      type: array
+    InvokeGetBandwidthTotals:
+      type: object
+      description: Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_bandwidth_totals
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetBandwidthTotalsResult:
+      maxItems: 2
+      minItems: 2
+      prefixItems:
+      - type: number
+      - type: number
+      type: array
+    InvokeGetLogs:
+      type: object
+      description: Invoke `get_logs` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_logs
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            n:
+              type: integer
+              default: 100
+          additionalProperties: false
+    GetLogsResult:
+      items:
+        type: string
+      type: array
+    InvokeGetPacUrl:
+      type: object
+      description: Invoke `get_pac_url` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_pac_url
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    GetPacUrlResult:
+      type: string
+    InvokeGetProcessInfo:
+      type: object
+      description: Invoke `get_process_info` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_process_info
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetProcessInfoResult:
+      additionalProperties: true
+      type: object
+    InvokeGetStatusUrl:
+      type: object
+      description: Invoke `get_status_url` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_status_url
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    GetStatusUrlResult:
+      type: string
+    InvokeGetUptime:
+      type: object
+      description: Return seconds since connection started, or None if not recorded.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_uptime
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetUptimeResult:
+      anyOf:
+      - type: number
+      - type: 'null'
+    InvokeIsUdpForwardRunning:
+      type: object
+      description: Return True if the UDP socat process for this forward is alive.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: is_udp_forward_running
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            src_port:
+              type: integer
+            direction:
+              type: string
+          required:
+          - conn_tag
+          - src_port
+          - direction
+          additionalProperties: false
+    IsUdpForwardRunningResult:
+      type: boolean
+    InvokeListConfig:
+      type: object
+      description: Invoke `list_config` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: list_config
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ListConfigResult:
+      $defs:
+        AppConfig:
+          properties:
+            stop_on_quit:
+              default: true
+              title: Stop On Quit
+              type: boolean
+            ephemeral_ports:
+              default: false
+              title: Ephemeral Ports
+              type: boolean
+            logo_style:
+              $ref: '#/components/schemas/LogoStyle'
+              default: COLORED_GLASSES
+            restore_shares_on_start:
+              default: true
+              title: Restore Shares On Start
+              type: boolean
+            status_server_port:
+              default: 0
+              title: Status Server Port
+              type: integer
+          title: AppConfig
+          type: object
+        Connection:
+          properties:
+            tag:
+              title: Tag
+              type: string
+            ssh_host:
+              title: Ssh Host
+              type: string
+            socks_proxy_port:
+              default: 0
+              title: Socks Proxy Port
+              type: integer
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+            forwards:
+              $ref: '#/components/schemas/Forwards'
+              default:
+                local: []
+                remote: []
+            pac_hosts:
+              default: []
+              items:
+                type: string
+              title: Pac Hosts
+              type: array
+            pac_hosts_disabled:
+              default: []
+              items:
+                type: string
+              title: Pac Hosts Disabled
+              type: array
+            file_shares:
+              default: []
+              items:
+                $ref: '#/components/schemas/FileShare'
+              title: File Shares
+              type: array
+          required:
+          - tag
+          - ssh_host
+          title: Connection
+          type: object
+        FileShare:
+          description: A persisted file share associated with a connection.
+          properties:
+            file_path:
+              title: File Path
+              type: string
+            password:
+              title: Password
+              type: string
+            port:
+              default: 0
+              title: Port
+              type: integer
+            stopped:
+              default: false
+              title: Stopped
+              type: boolean
+          required:
+          - file_path
+          - password
+          title: FileShare
+          type: object
+        Forwards:
+          properties:
+            local:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Local
+              type: array
+            remote:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Remote
+              type: array
+          title: Forwards
+          type: object
+        LogoStyle:
+          description: Enumeration of logo style options for UI display.
+          enum:
+          - COLORED_GLASSES
+          - COLORED_S
+          - GEAR
+          title: LogoStyle
+          type: string
+        PortForward:
+          properties:
+            tag:
+              default: ''
+              title: Tag
+              type: string
+            src_addr:
+              default: localhost
+              title: Src Addr
+              type: string
+            src_port:
+              title: Src Port
+              type: integer
+            dst_addr:
+              default: localhost
+              title: Dst Addr
+              type: string
+            dst_port:
+              title: Dst Port
+              type: integer
+            tcp:
+              default: true
+              title: Tcp
+              type: boolean
+            udp:
+              default: false
+              title: Udp
+              type: boolean
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - src_port
+          - dst_port
+          title: PortForward
+          type: object
+      properties:
+        pac_server_port:
+          default: 0
+          title: Pac Server Port
+          type: integer
+        connections:
+          default: []
+          items:
+            $ref: '#/components/schemas/Connection'
+          title: Connections
+          type: array
+        susops_app:
+          $ref: '#/components/schemas/AppConfig'
+          default:
+            stop_on_quit: true
+            ephemeral_ports: false
+            logo_style: COLORED_GLASSES
+            restore_shares_on_start: true
+            status_server_port: 0
+      title: SusOpsConfig
+      type: object
+    InvokeListShares:
+      type: object
+      description: 'Return info for all shares: running (in-memory) and stopped (config-only).'
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: list_shares
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ListSharesResult:
+      $defs:
+        ShareInfo:
+          description: "Information about an active file share session.\n\nAttributes:\n    file_path:
+            Absolute path to the file being shared\n    port: Port number on which the file server is
+            listening\n    password: Authentication password for accessing the share\n    url: Full HTTP
+            URL for accessing the share (e.g., 'http://localhost:8080')\n    conn_tag: Connection tag
+            used for port forwarding, or None for local-only share\n    running: Whether the share server
+            is currently active"
+          properties:
+            file_path:
+              title: File Path
+              type: string
+            port:
+              title: Port
+              type: integer
+            password:
+              title: Password
+              type: string
+            url:
+              title: Url
+              type: string
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+              title: Conn Tag
+            running:
+              default: true
+              title: Running
+              type: boolean
+            stopped:
+              default: false
+              title: Stopped
+              type: boolean
+            access_count:
+              default: 0
+              title: Access Count
+              type: integer
+            failed_count:
+              default: 0
+              title: Failed Count
+              type: integer
+          required:
+          - file_path
+          - port
+          - password
+          - url
+          title: ShareInfo
+          type: object
+      items:
+        $ref: '#/components/schemas/ShareInfo'
+      type: array
+    InvokeProcessInfo:
+      type: object
+      description: Return subprocess info grouped by connection for ``susops ps`` display.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: process_info
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ProcessInfoResult:
+      additionalProperties: true
+      type: object
+    InvokeReconnectMonitorInfo:
+      type: object
+      description: Return display info about the current reconnect monitor state.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: reconnect_monitor_info
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ReconnectMonitorInfoResult:
+      additionalProperties: true
+      type: object
+    InvokeRemoveConnection:
+      type: object
+      description: Invoke `remove_connection` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: remove_connection
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    RemoveConnectionResult:
+      type: 'null'
+    InvokeRemoveLocalForward:
+      type: object
+      description: Invoke `remove_local_forward` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: remove_local_forward
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            src_port:
+              type: integer
+          required:
+          - src_port
+          additionalProperties: false
+    RemoveLocalForwardResult:
+      type: 'null'
+    InvokeRemovePacHost:
+      type: object
+      description: Invoke `remove_pac_host` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: remove_pac_host
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            host:
+              type: string
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          required:
+          - host
+          additionalProperties: false
+    RemovePacHostResult:
+      type: 'null'
+    InvokeRemoveRemoteForward:
+      type: object
+      description: Invoke `remove_remote_forward` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: remove_remote_forward
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            src_port:
+              type: integer
+          required:
+          - src_port
+          additionalProperties: false
+    RemoveRemoteForwardResult:
+      type: 'null'
+    InvokeReset:
+      type: object
+      description: Invoke `reset` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: reset
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ResetResult:
+      type: 'null'
+    InvokeRestart:
+      type: object
+      description: Invoke `restart` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: restart
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          additionalProperties: false
+    RestartResult:
+      $defs:
+        ConnectionStatus:
+          description: "Status information for a single SSH connection.\n\nAttributes:\n    tag: Unique
+            identifier for the connection (e.g., 'proxy1', 'vpn')\n    running: Whether the connection
+            is currently active\n    pid: Process ID of the ssh process, or None if not running\n    socks_port:
+            Port number on which the SOCKS proxy is listening (0 if not running)"
+          properties:
+            tag:
+              title: Tag
+              type: string
+            running:
+              title: Running
+              type: boolean
+            pid:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+              title: Pid
+            socks_port:
+              default: 0
+              title: Socks Port
+              type: integer
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - tag
+          - running
+          title: ConnectionStatus
+          type: object
+      description: "Result of attempting to start connections and/or PAC service.\n\nAttributes:\n   \
+        \ success: Whether the operation succeeded\n    message: Human-readable status message\n    connection_statuses:
+        Tuple of ConnectionStatus objects for each connection"
+      properties:
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+        connection_statuses:
+          default: []
+          items:
+            $ref: '#/components/schemas/ConnectionStatus'
+          title: Connection Statuses
+          type: array
+      required:
+      - success
+      - message
+      title: StartResult
+      type: object
+    InvokeSetConnectionEnabled:
+      type: object
+      description: Invoke `set_connection_enabled` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: set_connection_enabled
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+            enabled:
+              type: boolean
+          required:
+          - tag
+          - enabled
+          additionalProperties: false
+    SetConnectionEnabledResult:
+      type: 'null'
+    InvokeSetForwardEnabled:
+      type: object
+      description: Set the enabled flag on a forward and start/stop the live process accordingly.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: set_forward_enabled
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            src_port:
+              type: integer
+            direction:
+              type: string
+            enabled:
+              type: boolean
+          required:
+          - conn_tag
+          - src_port
+          - direction
+          - enabled
+          additionalProperties: false
+    SetForwardEnabledResult:
+      type: 'null'
+    InvokeSetPacHostEnabled:
+      type: object
+      description: Invoke `set_pac_host_enabled` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: set_pac_host_enabled
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            host:
+              type: string
+            enabled:
+              type: boolean
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          required:
+          - host
+          - enabled
+          additionalProperties: false
+    SetPacHostEnabledResult:
+      type: 'null'
+    InvokeShare:
+      type: object
+      description: Start serving an encrypted file share and persist it to config.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: share
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            file:
+              type: string
+              format: path
+            conn_tag:
+              type: string
+            password:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+            port:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+          required:
+          - file
+          - conn_tag
+          additionalProperties: false
+    ShareResult:
+      description: "Information about an active file share session.\n\nAttributes:\n    file_path: Absolute
+        path to the file being shared\n    port: Port number on which the file server is listening\n \
+        \   password: Authentication password for accessing the share\n    url: Full HTTP URL for accessing
+        the share (e.g., 'http://localhost:8080')\n    conn_tag: Connection tag used for port forwarding,
+        or None for local-only share\n    running: Whether the share server is currently active"
+      properties:
+        file_path:
+          title: File Path
+          type: string
+        port:
+          title: Port
+          type: integer
+        password:
+          title: Password
+          type: string
+        url:
+          title: Url
+          type: string
+        conn_tag:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default:
+          title: Conn Tag
+        running:
+          default: true
+          title: Running
+          type: boolean
+        stopped:
+          default: false
+          title: Stopped
+          type: boolean
+        access_count:
+          default: 0
+          title: Access Count
+          type: integer
+        failed_count:
+          default: 0
+          title: Failed Count
+          type: integer
+      required:
+      - file_path
+      - port
+      - password
+      - url
+      title: ShareInfo
+      type: object
+    InvokeShareIsRunning:
+      type: object
+      description: Invoke `share_is_running` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: share_is_running
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    ShareIsRunningResult:
+      type: boolean
+    InvokeStart:
+      type: object
+      description: Invoke `start` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: start
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          additionalProperties: false
+    StartResult:
+      $defs:
+        ConnectionStatus:
+          description: "Status information for a single SSH connection.\n\nAttributes:\n    tag: Unique
+            identifier for the connection (e.g., 'proxy1', 'vpn')\n    running: Whether the connection
+            is currently active\n    pid: Process ID of the ssh process, or None if not running\n    socks_port:
+            Port number on which the SOCKS proxy is listening (0 if not running)"
+          properties:
+            tag:
+              title: Tag
+              type: string
+            running:
+              title: Running
+              type: boolean
+            pid:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+              title: Pid
+            socks_port:
+              default: 0
+              title: Socks Port
+              type: integer
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - tag
+          - running
+          title: ConnectionStatus
+          type: object
+      description: "Result of attempting to start connections and/or PAC service.\n\nAttributes:\n   \
+        \ success: Whether the operation succeeded\n    message: Human-readable status message\n    connection_statuses:
+        Tuple of ConnectionStatus objects for each connection"
+      properties:
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+        connection_statuses:
+          default: []
+          items:
+            $ref: '#/components/schemas/ConnectionStatus'
+          title: Connection Statuses
+          type: array
+      required:
+      - success
+      - message
+      title: StartResult
+      type: object
+    InvokeStatus:
+      type: object
+      description: Invoke `status` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: status
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    StatusResult:
+      $defs:
+        ConnectionStatus:
+          description: "Status information for a single SSH connection.\n\nAttributes:\n    tag: Unique
+            identifier for the connection (e.g., 'proxy1', 'vpn')\n    running: Whether the connection
+            is currently active\n    pid: Process ID of the ssh process, or None if not running\n    socks_port:
+            Port number on which the SOCKS proxy is listening (0 if not running)"
+          properties:
+            tag:
+              title: Tag
+              type: string
+            running:
+              title: Running
+              type: boolean
+            pid:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+              title: Pid
+            socks_port:
+              default: 0
+              title: Socks Port
+              type: integer
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - tag
+          - running
+          title: ConnectionStatus
+          type: object
+        ProcessState:
+          description: Enumeration of possible process states for SSH and PAC services.
+          enum:
+          - initial
+          - running
+          - stopped_partially
+          - stopped
+          - error
+          title: ProcessState
+          type: string
+      description: "Result of querying overall status of connections and services.\n\nAttributes:\n  \
+        \  state: The overall ProcessState\n    connection_statuses: Tuple of ConnectionStatus objects
+        for each connection\n    pac_running: Whether the PAC (Proxy Auto-Config) service is running\n\
+        \    pac_port: Port number on which PAC HTTP server is listening\n    message: Optional human-readable
+        status message"
+      properties:
+        state:
+          $ref: '#/components/schemas/ProcessState'
+        connection_statuses:
+          items:
+            $ref: '#/components/schemas/ConnectionStatus'
+          title: Connection Statuses
+          type: array
+        pac_running:
+          title: Pac Running
+          type: boolean
+        pac_port:
+          title: Pac Port
+          type: integer
+        message:
+          default: ''
+          title: Message
+          type: string
+      required:
+      - state
+      - connection_statuses
+      - pac_running
+      - pac_port
+      title: StatusResult
+      type: object
+    InvokeStop:
+      type: object
+      description: Invoke `stop` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: stop
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            keep_ports:
+              type: boolean
+              default: false
+            tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+          additionalProperties: false
+    StopResult:
+      description: "Result of attempting to stop connections and/or PAC service.\n\nAttributes:\n    success:
+        Whether the operation succeeded\n    message: Human-readable status message"
+      properties:
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+      required:
+      - success
+      - message
+      title: StopResult
+      type: object
+    InvokeStopQuick:
+      type: object
+      description: 'Non-blocking stop for TUI quit: signal all external processes immediately.'
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: stop_quick
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    StopQuickResult:
+      type: 'null'
+    InvokeStopShare:
+      type: object
+      description: Stop share server(s) without removing from config (entry shows as stopped).
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: stop_share
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            port:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+          additionalProperties: false
+    StopShareResult:
+      type: 'null'
+    InvokeTest:
+      type: object
+      description: Invoke `test` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            target:
+              type: string
+          required:
+          - target
+          additionalProperties: false
+    TestResult:
+      description: "Result of testing connectivity through a connection.\n\nAttributes:\n    target: Description
+        of the target that was tested (e.g., hostname, URL)\n    success: Whether the test succeeded\n\
+        \    message: Human-readable result or error message\n    latency_ms: Measured round-trip latency
+        in milliseconds, or None if test failed"
+      properties:
+        target:
+          title: Target
+          type: string
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+        latency_ms:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default:
+          title: Latency Ms
+      required:
+      - target
+      - success
+      - message
+      title: TestResult
+      type: object
+    InvokeTestAll:
+      type: object
+      description: Invoke `test_all` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test_all
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    TestAllResult:
+      $defs:
+        TestResult:
+          description: "Result of testing connectivity through a connection.\n\nAttributes:\n    target:
+            Description of the target that was tested (e.g., hostname, URL)\n    success: Whether the
+            test succeeded\n    message: Human-readable result or error message\n    latency_ms: Measured
+            round-trip latency in milliseconds, or None if test failed"
+          properties:
+            target:
+              title: Target
+              type: string
+            success:
+              title: Success
+              type: boolean
+            message:
+              title: Message
+              type: string
+            latency_ms:
+              anyOf:
+              - type: number
+              - type: 'null'
+              default:
+              title: Latency Ms
+          required:
+          - target
+          - success
+          - message
+          title: TestResult
+          type: object
+      items:
+        $ref: '#/components/schemas/TestResult'
+      type: array
+    InvokeTestConnection:
+      type: object
+      description: Test SSH reachability for a specific connection.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test_connection
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+          required:
+          - conn_tag
+          additionalProperties: false
+    TestConnectionResult:
+      description: "Result of testing connectivity through a connection.\n\nAttributes:\n    target: Description
+        of the target that was tested (e.g., hostname, URL)\n    success: Whether the test succeeded\n\
+        \    message: Human-readable result or error message\n    latency_ms: Measured round-trip latency
+        in milliseconds, or None if test failed"
+      properties:
+        target:
+          title: Target
+          type: string
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+        latency_ms:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default:
+          title: Latency Ms
+      required:
+      - target
+      - success
+      - message
+      title: TestResult
+      type: object
+    InvokeTestDomain:
+      type: object
+      description: Test domain reachability via the specified connection's SOCKS proxy.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test_domain
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            host:
+              type: string
+            conn_tag:
+              type: string
+          required:
+          - host
+          - conn_tag
+          additionalProperties: false
+    TestDomainResult:
+      description: "Result of testing connectivity through a connection.\n\nAttributes:\n    target: Description
+        of the target that was tested (e.g., hostname, URL)\n    success: Whether the test succeeded\n\
+        \    message: Human-readable result or error message\n    latency_ms: Measured round-trip latency
+        in milliseconds, or None if test failed"
+      properties:
+        target:
+          title: Target
+          type: string
+        success:
+          title: Success
+          type: boolean
+        message:
+          title: Message
+          type: string
+        latency_ms:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default:
+          title: Latency Ms
+      required:
+      - target
+      - success
+      - message
+      title: TestResult
+      type: object
+    InvokeTestForward:
+      type: object
+      description: Check if a port forward is active.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test_forward
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            src_port:
+              type: integer
+            direction:
+              type: string
+          required:
+          - conn_tag
+          - src_port
+          - direction
+          additionalProperties: false
+    TestForwardResult:
+      additionalProperties:
+        type: boolean
+      type: object
+    InvokeTestSsh:
+      type: object
+      description: Invoke `test_ssh` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: test_ssh
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            ssh_host:
+              type: string
+          required:
+          - ssh_host
+          additionalProperties: false
+    TestSshResult:
+      type: boolean
+    InvokeToggleForwardEnabled:
+      type: object
+      description: Toggle enabled on a forward. Returns the new enabled state.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: toggle_forward_enabled
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+            src_port:
+              type: integer
+            direction:
+              type: string
+          required:
+          - conn_tag
+          - src_port
+          - direction
+          additionalProperties: false
+    ToggleForwardEnabledResult:
+      type: boolean
+    InvokeUpdateAppConfig:
+      type: object
+      description: Invoke `update_app_config` on SusOpsManager.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: update_app_config
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: true
+          description: accepts arbitrary keyword args via **kwargs
+    UpdateAppConfigResult:
+      type: 'null'
+    InvokeUpdateConfig:
+      type: object
+      description: Update top-level SusOpsConfig fields (e.g. pac_server_port).
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: update_config
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: true
+          description: accepts arbitrary keyword args via **kwargs
+    UpdateConfigResult:
+      type: 'null'
+    InvocationRequest:
+      type: object
+      oneOf:
+      - $ref: '#/components/schemas/InvokeAddConnection'
+      - $ref: '#/components/schemas/InvokeAddLocalForward'
+      - $ref: '#/components/schemas/InvokeAddPacHost'
+      - $ref: '#/components/schemas/InvokeAddRemoteForward'
+      - $ref: '#/components/schemas/InvokeDeleteShare'
+      - $ref: '#/components/schemas/InvokeFetch'
+      - $ref: '#/components/schemas/InvokeGetBandwidth'
+      - $ref: '#/components/schemas/InvokeGetBandwidthTotals'
+      - $ref: '#/components/schemas/InvokeGetLogs'
+      - $ref: '#/components/schemas/InvokeGetPacUrl'
+      - $ref: '#/components/schemas/InvokeGetProcessInfo'
+      - $ref: '#/components/schemas/InvokeGetStatusUrl'
+      - $ref: '#/components/schemas/InvokeGetUptime'
+      - $ref: '#/components/schemas/InvokeIsUdpForwardRunning'
+      - $ref: '#/components/schemas/InvokeListConfig'
+      - $ref: '#/components/schemas/InvokeListShares'
+      - $ref: '#/components/schemas/InvokeProcessInfo'
+      - $ref: '#/components/schemas/InvokeReconnectMonitorInfo'
+      - $ref: '#/components/schemas/InvokeRemoveConnection'
+      - $ref: '#/components/schemas/InvokeRemoveLocalForward'
+      - $ref: '#/components/schemas/InvokeRemovePacHost'
+      - $ref: '#/components/schemas/InvokeRemoveRemoteForward'
+      - $ref: '#/components/schemas/InvokeReset'
+      - $ref: '#/components/schemas/InvokeRestart'
+      - $ref: '#/components/schemas/InvokeSetConnectionEnabled'
+      - $ref: '#/components/schemas/InvokeSetForwardEnabled'
+      - $ref: '#/components/schemas/InvokeSetPacHostEnabled'
+      - $ref: '#/components/schemas/InvokeShare'
+      - $ref: '#/components/schemas/InvokeShareIsRunning'
+      - $ref: '#/components/schemas/InvokeStart'
+      - $ref: '#/components/schemas/InvokeStatus'
+      - $ref: '#/components/schemas/InvokeStop'
+      - $ref: '#/components/schemas/InvokeStopQuick'
+      - $ref: '#/components/schemas/InvokeStopShare'
+      - $ref: '#/components/schemas/InvokeTest'
+      - $ref: '#/components/schemas/InvokeTestAll'
+      - $ref: '#/components/schemas/InvokeTestConnection'
+      - $ref: '#/components/schemas/InvokeTestDomain'
+      - $ref: '#/components/schemas/InvokeTestForward'
+      - $ref: '#/components/schemas/InvokeTestSsh'
+      - $ref: '#/components/schemas/InvokeToggleForwardEnabled'
+      - $ref: '#/components/schemas/InvokeUpdateAppConfig'
+      - $ref: '#/components/schemas/InvokeUpdateConfig'
+      discriminator:
+        propertyName: method
+    InvocationResponseSuccess:
+      type: object
+      required:
+      - ok
+      properties:
+        ok:
+          type: boolean
+          const: true
+        result:
+          description: Method return value. Type-tagged via rpc_protocol.py — Pydantic models, 
+            dataclasses, enums, sets, and Paths are all serialised as JSON-friendly forms with a 
+            `__type__` discriminator. See the per-method `XxxResult` schemas.
+    InvocationResponseError:
+      type: object
+      required:
+      - ok
+      - error
+      - error_type
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: string
+          description: Error message.
+        error_type:
+          type: string
+          description: Python exception class name. Clients map known names (ValueError, 
+            RuntimeError, FileNotFoundError, PermissionError, KeyError, AttributeError) back to the 
+            matching exception; everything else falls back to RuntimeError.
+    StatusEvent:
+      oneOf:
+      - $ref: '#/components/schemas/StateEvent'
+      - $ref: '#/components/schemas/ShareEvent'
+      - $ref: '#/components/schemas/ForwardEvent'
+      - $ref: '#/components/schemas/BandwidthEvent'
+    StateEvent:
+      type: object
+      description: Connection state change.
+      required:
+      - tag
+      - running
+      properties:
+        tag:
+          type: string
+        running:
+          type: boolean
+        pid:
+          type:
+          - integer
+          - 'null'
+        reconnecting:
+          type: boolean
+    ShareEvent:
+      type: object
+      description: Share lifecycle change.
+      required:
+      - port
+      properties:
+        port:
+          type: integer
+        file:
+          type: string
+        running:
+          type: boolean
+        conn_tag:
+          type: string
+    ForwardEvent:
+      type: object
+      description: Port-forward registration / cancellation.
+      required:
+      - tag
+      properties:
+        tag:
+          type: string
+        fw_tag:
+          type: string
+        direction:
+          type: string
+          enum:
+          - local
+          - remote
+        running:
+          type: boolean
+    BandwidthEvent:
+      type: object
+      description: Periodic bandwidth sample.
+      required:
+      - tag
+      - rx_bps
+      - tx_bps
+      properties:
+        tag:
+          type: string
+        rx_bps:
+          type: number
+        tx_bps:
+          type: number
