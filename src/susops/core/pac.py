@@ -105,6 +105,20 @@ class _PacHandler(BaseHTTPRequestHandler):
         pass  # suppress default access log
 
 
+class _ReusableHTTPServer(HTTPServer):
+    """HTTPServer with SO_REUSEADDR enabled.
+
+    Python's default `HTTPServer.allow_reuse_address` is False, which means
+    re-binding to a just-released port can fail with EADDRINUSE during the
+    TCP TIME_WAIT window (~30 s on macOS/Linux). Without SO_REUSEADDR, when
+    the in-process server stops the port enters TIME_WAIT and the next bind
+    to the same port can silently fail — leaving the port file pointing at a
+    dead listener and subsequent starts unable to bind the port either.
+    """
+
+    allow_reuse_address = True
+
+
 class PacServer:
     """Python HTTP server that serves the PAC file.
 
@@ -128,7 +142,7 @@ class PacServer:
         self._pac_path = pac_path
 
         # Create HTTPServer and attach pac_path so handler can access it
-        server = HTTPServer(("127.0.0.1", port), _PacHandler)
+        server = _ReusableHTTPServer(("127.0.0.1", port), _PacHandler)
         server.pac_path = pac_path  # type: ignore[attr-defined]
 
         self._server = server
@@ -171,21 +185,3 @@ class PacServer:
         self._pac_path = pac_path
 
 
-if __name__ == "__main__":
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="SusOps PAC server (background)")
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--pac-file", type=Path, required=True)
-    args = parser.parse_args()
-
-    _server = HTTPServer(("127.0.0.1", args.port), _PacHandler)
-    _server.pac_path = args.pac_file  # type: ignore[attr-defined]
-    try:
-        _server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        _server.server_close()
-    sys.exit(0)

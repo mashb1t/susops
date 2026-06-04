@@ -1042,17 +1042,6 @@ def test_process_info_udp_forward_running(tmp_path):
     assert children[0]["pid"] == our_pid
 
 
-def test_process_info_reconnect_daemon_running(tmp_path):
-    import os
-    mgr = SusOpsManager(workspace=tmp_path)
-    # Write after init so it isn't cleared by __init__'s stop() call
-    our_pid = os.getpid()
-    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(our_pid))
-    info = mgr.process_info()
-    assert info["reconnect"]["daemon_running"] is True
-    assert info["reconnect"]["pid"] == our_pid
-
-
 def test_process_info_tcp_and_udp_forward(tmp_path):
     """A dual-protocol forward produces two children: one fwd and one udp."""
     mgr = SusOpsManager(workspace=tmp_path)
@@ -1066,41 +1055,3 @@ def test_process_info_tcp_and_udp_forward(tmp_path):
     assert any("udp local" in d for d in displays)
 
 
-# ------------------------------------------------------------------ #
-# detach_reconnect_monitor
-# ------------------------------------------------------------------ #
-
-def test_detach_reconnect_monitor_noop_if_running(tmp_path):
-    """force=False must not spawn a new process if the daemon is already running."""
-    import os
-    mgr = SusOpsManager(workspace=tmp_path)
-    # Fake running daemon (write after init so not cleared by __init__)
-    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(os.getpid()))
-
-    started = []
-    mgr._process_mgr.start = lambda name, cmd, **kw: started.append(name)
-    mgr.detach_reconnect_monitor(force=False)
-    assert started == []
-
-
-def test_detach_reconnect_monitor_force_kills_and_respawns(tmp_path):
-    """force=True must stop the old daemon and start a fresh one."""
-    import os
-    mgr = SusOpsManager(workspace=tmp_path)
-    (tmp_path / "pids" / "susops-reconnect.pid").write_text(str(os.getpid()))
-
-    stopped = []
-    started = []
-
-    def mock_stop(name, **kw):
-        stopped.append(name)
-        pid_file = tmp_path / "pids" / f"{name}.pid"
-        pid_file.unlink(missing_ok=True)
-        return True
-
-    mgr._process_mgr.stop = mock_stop
-    mgr._process_mgr.start = lambda name, cmd, **kw: started.append(name)
-    mgr.detach_reconnect_monitor(force=True)
-
-    assert "susops-reconnect" in stopped
-    assert "susops-reconnect" in started

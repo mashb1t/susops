@@ -62,7 +62,6 @@ from susops.core.types import (
 __all__ = ["SusOpsManager"]
 
 _WORKSPACE_DEFAULT = Path.home() / ".susops"
-_RECONNECT_DAEMON_NAME = "susops-reconnect"
 
 
 class _BandwidthSampler:
@@ -255,16 +254,39 @@ class _ReconnectMonitor:
         self._intended: set[str] = set()
         self._socket_was_alive: dict[str, bool] = {}
         self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="susops-reconnect"
-        )
+        self._stop_event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        """Start (or restart) the monitor thread. Idempotent.
+
+        Race-safe across stop()/start() cycles: each thread receives its own
+        Event reference (passed as an argument) so a freshly-stopped thread on
+        its way out can't be confused with a running one — and the new thread
+        gets a fresh Event, not a cleared-after-set one.
+        """
+        # If a thread is actually running (event exists and not set), keep it.
+        if (
+            self._thread is not None
+            and self._thread.is_alive()
+            and self._stop_event is not None
+            and not self._stop_event.is_set()
+        ):
+            return
+        # Spin up a fresh thread with its own fresh stop event. Any prior
+        # thread is still draining its own (already-set) event and will exit
+        # naturally — it can't be confused with this new one.
+        new_event = threading.Event()
+        self._stop_event = new_event
+        self._thread = threading.Thread(
+            target=self._run, args=(new_event,), daemon=True, name="susops-reconnect"
+        )
         self._thread.start()
 
     def stop(self) -> None:
-        self._stop_event.set()
+        """Signal the monitor thread to exit on its next poll."""
+        if self._stop_event is not None:
+            self._stop_event.set()
 
     def mark_running(self, tag: str) -> None:
         with self._lock:
@@ -276,8 +298,10 @@ class _ReconnectMonitor:
             self._intended.discard(tag)
             self._socket_was_alive.pop(tag, None)
 
-    def _run(self) -> None:
-        while not self._stop_event.wait(timeout=self.INTERVAL):
+    def _run(self, stop_event: threading.Event) -> None:
+        # Bound to *this* thread's event so a subsequent rebind on the
+        # manager doesn't accidentally keep us alive after stop().
+        while not stop_event.wait(timeout=self.INTERVAL):
             with self._lock:
                 tags = list(self._intended)
             for tag in tags:
@@ -297,16 +321,60 @@ class _ReconnectMonitor:
                 # Socket came back (reconnect succeeded on a previous poll).
                 self._mgr._log(f"[{tag}] Connection restored — re-registering forwards...")
                 self._mgr._reregister_forwards(tag)
-        else:
-            if was_alive:
-                self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
-                self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
-                self._mgr._notify(f"{self._mgr._process_name} [{tag}]", "Connection lost — reconnecting...")
-            # Attempt to restart the master on every poll while the socket is down.
-            if self._mgr._try_reconnect(tag):
-                with self._lock:
-                    self._socket_was_alive[tag] = True
-                self._mgr._reregister_forwards(tag)
+            return
+
+        # Socket is down. If a stopped-marker file exists, the user
+        # intentionally stopped this tag from THIS or ANOTHER process — do
+        # not reconnect. The marker is shared across processes so a TUI stop
+        # is honoured by the tray's monitor (and vice versa).
+        if _stopped_marker_path(self._mgr.workspace, tag).exists():
+            # Treat the tag as stopped for our local intended set so we stop
+            # emitting reconnect notifications on every poll.
+            with self._lock:
+                self._intended.discard(tag)
+                self._socket_was_alive.pop(tag, None)
+            return
+
+        if was_alive:
+            self._mgr._log(f"[{tag}] Connection lost — reconnecting...")
+            self._mgr._emit("state", {"tag": tag, "running": False, "pid": None, "reconnecting": True})
+            self._mgr._notify(f"{self._mgr._process_name} [{tag}]", "Connection lost — reconnecting...")
+        # Attempt to restart the master on every poll while the socket is down.
+        if self._mgr._try_reconnect(tag):
+            with self._lock:
+                self._socket_was_alive[tag] = True
+            self._mgr._reregister_forwards(tag)
+
+
+def _stopped_marker_path(workspace: Path, tag: str) -> Path:
+    """File whose existence means a tag was *intentionally* stopped.
+
+    Written by any process that calls stop() for a tag; checked by every
+    in-process _ReconnectMonitor before
+    attempting a reconnect. Cleared by start().
+
+    Without this, a tray and a TUI running side-by-side each have their own
+    in-process monitor with its own _intended set — when the user stops a
+    tag in one, the other's monitor sees a dead socket and silently brings
+    the tunnel back up.
+    """
+    return workspace / "pids" / f"susops-stopped-{tag}.marker"
+
+
+def _write_stopped_marker(workspace: Path, tag: str) -> None:
+    p = _stopped_marker_path(workspace, tag)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+    except Exception:
+        pass
+
+
+def _clear_stopped_marker(workspace: Path, tag: str) -> None:
+    try:
+        _stopped_marker_path(workspace, tag).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 class SusOpsManager:
@@ -337,8 +405,6 @@ class SusOpsManager:
         self._start_times: dict[str, float] = {}  # tag -> time.monotonic() when started
         self._reconnect_monitor = _ReconnectMonitor(self)
         if _enable_background_threads:
-            # Take over from any background reconnect daemon left by a previous session.
-            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
             self._reconnect_monitor.start()
 
         self.on_state_change: Callable[[ProcessState], None] | None = None
@@ -740,11 +806,8 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def start(self, tag: str | None = None) -> StartResult:
-        # Kill any running background reconnect daemon. In TUI/tray mode the
-        # in-process monitor (started in __init__) takes over; in CLI mode the
-        # caller should call detach_reconnect_monitor() after start() to spawn
-        # a fresh daemon that includes the newly started connection(s).
-        self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
+        # Re-spin the in-process monitor in case a prior stop() halted it.
+        self._reconnect_monitor.start()
         self._reload_config()
         connections = (
             [get_connection(self.config, tag)] if tag
@@ -759,6 +822,10 @@ class SusOpsManager:
         errors = []
 
         for conn in connections:
+            # User asked to start this — clear any "intentionally stopped"
+            # marker so reconnect monitors (this process and any other) will
+            # watch it again.
+            _clear_stopped_marker(self.workspace, conn.tag)
             if not conn.enabled:
                 self._log(f"[{conn.tag}] Disabled — skipping")
                 statuses.append(self._connection_status(conn))
@@ -917,68 +984,21 @@ class SusOpsManager:
             except Exception:
                 pass
 
-    def detach_pac(self) -> None:
-        """Hand the PAC server off to a background process so it survives TUI quit.
-
-        Stops the in-process daemon thread and spawns an identical standalone
-        process on the same port.  The port file is left intact so other processes
-        (tray, next TUI session) can find and stop the server via POST /stop.
-        """
-        if not self._pac_server.is_running():
-            return
-        port = self._pac_server.get_port()
-        pac_path = self._pac_server.get_pac_path()
-        if not pac_path:
-            return
-        self._pac_server.stop()
-        subprocess.Popen(
-            [sys.executable, "-m", "susops.core.pac", "--port", str(port), "--pac-file", str(pac_path)],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self._write_pac_port_file(port)
-        self._log(f"PAC server detached to background process on port {port}")
-
-    def detach_reconnect_monitor(self, force: bool = False) -> None:
-        """Spawn a background reconnect daemon that survives TUI/tray quit.
-
-        The daemon monitors all currently live SSH connections and restarts
-        them on dropout — same behaviour as _ReconnectMonitor but persists
-        after this process exits.  The in-process monitor is stopped first
-        to avoid both competing on the same sockets.
-
-        Args:
-            force: Kill any existing daemon first and always spawn a fresh one.
-                   Use this after CLI ``stop -c TAG`` so the daemon no longer
-                   tries to reconnect the explicitly stopped connection.
-        """
-        if not force and self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
-            return
-        if self._process_mgr.is_running(_RECONNECT_DAEMON_NAME):
-            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
-        self._reconnect_monitor.stop()
-        self._process_mgr.start(
-            _RECONNECT_DAEMON_NAME,
-            [sys.executable, "-m", "susops.core.reconnect_daemon", "--workspace", str(self.workspace)],
-        )
-        self._log("Reconnect daemon detached to background process")
-
     def reconnect_monitor_info(self) -> dict:
         """Return display info about the current reconnect monitor state.
 
         Returns a dict with:
           thread_alive   – in-process _ReconnectMonitor thread is running
-          daemon_running – background susops-reconnect process is tracked
+          daemon_running – always False (background reconnect daemon removed)
           watching       – set of connection tags currently being monitored
         """
-        thread_alive = self._reconnect_monitor._thread.is_alive()
-        daemon_running = self._process_mgr.is_running(_RECONNECT_DAEMON_NAME)
+        t = self._reconnect_monitor._thread
+        thread_alive = t is not None and t.is_alive()
         with self._reconnect_monitor._lock:
             watching = set(self._reconnect_monitor._intended)
         return {
             "thread_alive": thread_alive,
-            "daemon_running": daemon_running,
+            "daemon_running": False,
             "watching": watching,
         }
 
@@ -1040,15 +1060,14 @@ class SusOpsManager:
             if children:
                 conn_children[conn.tag] = children
 
-        reconnect_pid = self._process_mgr.get_pid(_RECONNECT_DAEMON_NAME)
         reconnect_info = self.reconnect_monitor_info()
         return {
             "conn_children": conn_children,
             "reconnect": {
-                "pid": reconnect_pid,
-                "running": reconnect_info["daemon_running"],
+                "pid": None,
+                "running": False,
                 "thread_alive": reconnect_info["thread_alive"],
-                "daemon_running": reconnect_info["daemon_running"],
+                "daemon_running": False,
             },
         }
 
@@ -1164,12 +1183,23 @@ class SusOpsManager:
         connections = [c for c in connections if c is not None]
         for conn in connections:
             try:
+                # Write the stopped marker BEFORE killing the tunnel — that
+                # way a parallel process's monitor (e.g. tray watching while
+                # TUI is stopping) sees the marker the moment the socket dies
+                # and won't try to reconnect.
+                _write_stopped_marker(self.workspace, conn.tag)
+                # Always tell the reconnect monitor we don't want this tag
+                # watched anymore — even if stop_tunnel returns False because
+                # the socket was already down (e.g. the monitor was
+                # mid-reconnect-attempt when the user clicked Stop). Without
+                # this, _intended still contains the tag and the monitor
+                # keeps reviving the connection after stop.
+                self._reconnect_monitor.mark_stopped(conn.tag)
                 if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
                     self._log(f"[{conn.tag}] Stopped")
                     self._bw_sampler.reset_totals(conn.tag)
                     self._start_times.pop(conn.tag, None)
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
-                    self._reconnect_monitor.mark_stopped(conn.tag)
                 stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     self._replace_connection(conn.model_copy(update={"socks_proxy_port": 0}))
@@ -1206,9 +1236,9 @@ class SusOpsManager:
             else:
                 self._update_pac()
 
-        # Kill any background reconnect daemon on a full stop
+        # On a full stop, halt the in-process monitor so nothing is left "watching".
         if tag is None:
-            self._process_mgr.stop(_RECONNECT_DAEMON_NAME)
+            self._reconnect_monitor.stop()
 
         self._save()
         self._emit_state(self._compute_state())
@@ -1252,6 +1282,9 @@ class SusOpsManager:
             update={"connections": list(self.config.connections) + [conn]}
         )
         self._save()
+        # Clear any leftover stopped-marker from a previous connection with
+        # the same tag — otherwise the new connection would never reconnect.
+        _clear_stopped_marker(self.workspace, tag)
         self._log(f"Added connection '{tag}' → {ssh_host}")
         return conn
 
@@ -1260,8 +1293,13 @@ class SusOpsManager:
         conn = get_connection(self.config, tag)
         if conn is None:
             raise ValueError(f"Connection '{tag}' not found")
+        # Write the stopped marker before killing the tunnel so any other
+        # process's reconnect monitor doesn't bring it back up while we're
+        # mid-remove.
+        _write_stopped_marker(self.workspace, tag)
         stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
         stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+        self._reconnect_monitor.mark_stopped(tag)
         self.config = self.config.model_copy(
             update={"connections": [c for c in self.config.connections if c.tag != tag]}
         )
@@ -1276,7 +1314,15 @@ class SusOpsManager:
         self._replace_connection(conn.model_copy(update={"enabled": enabled}))
         self._save()
         self._log(f"[{tag}] {'enabled' if enabled else 'disabled'}")
-        if not enabled and (is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace)):
+        if enabled:
+            # Re-enabling clears any leftover "stopped" marker so reconnect
+            # monitors will watch this tag again.
+            _clear_stopped_marker(self.workspace, tag)
+            return
+        # Disabling = intentional stop. Write the marker BEFORE killing the
+        # tunnel so a parallel process's monitor doesn't try to revive it.
+        _write_stopped_marker(self.workspace, tag)
+        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
             stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
             stop_all_udp_forwards_for_connection(tag, self._process_mgr)
             self._bw_sampler.reset_totals(tag)
