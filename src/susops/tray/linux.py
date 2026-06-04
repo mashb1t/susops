@@ -5,7 +5,6 @@ Requires: python-gobject, gtk3, libayatana-appindicator (system packages).
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -464,19 +463,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
         Gtk = self._Gtk
         browser_sub = Gtk.Menu()
 
-        _BROWSER_DEFS = [
-            ("Chrome", ["google-chrome", "google-chrome-stable"], True),
-            ("Chromium", ["chromium", "chromium-browser"], True),
-            ("Brave", ["brave-browser", "brave", "brave-browser-stable"], True),
-            ("Vivaldi", ["vivaldi", "vivaldi-stable"], True),
-            ("Edge", ["microsoft-edge", "microsoft-edge-stable"], True),
-            ("Firefox", ["firefox", "firefox-bin"], False),
-        ]
-        found = []
-        for name, exes, chromium in _BROWSER_DEFS:
-            exe = next((shutil.which(e) for e in exes if shutil.which(e)), None)
-            if exe:
-                found.append((name, exe, chromium))
+        # Detection delegated to susops.core.browsers — same table used by
+        # the macOS tray and the TUI so a new browser only needs registering
+        # in one place.
+        from susops.core.browsers import detect_browsers
+        found = [(b.name, b.launch_cmd[0], b.is_chromium) for b in detect_browsers()]
 
         if not found:
             ni = Gtk.MenuItem(label="No browsers found")
@@ -503,6 +494,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._browser_item.set_submenu(browser_sub)
 
     def _make_chromium_launch(self, exe: str):
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
@@ -512,60 +505,32 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 )
                 return
             try:
-                subprocess.Popen([exe, f"--proxy-pac-url={pac_url}"])
+                launch_with_pac(browser, pac_url)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
         return handler
 
     def _make_chromium_settings(self, exe: str):
+        from susops.core.browsers import Browser, open_proxy_settings
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
         def handler(_item):
             try:
-                subprocess.Popen([exe])
-            except Exception:
-                pass
-            url = "chrome://net-internals/#proxy"
-            def _show():
-                dlg = self._Gtk.Dialog(title="Open Proxy Settings",
-                                       transient_for=self._root, modal=True)
-                dlg.add_button("_OK", self._Gtk.ResponseType.OK)
-                dlg.set_default_response(self._Gtk.ResponseType.OK)
-                box = dlg.get_content_area()
-                box.set_spacing(8)
-                box.set_margin_start(16)
-                box.set_margin_end(16)
-                box.set_margin_top(12)
-                box.set_margin_bottom(8)
-                box.add(self._Gtk.Label(label="Paste this URL into the address bar:", xalign=0.0))
-                tv = self._Gtk.TextView()
-                tv.get_buffer().set_text(url)
-                tv.set_monospace(True)
-                tv.set_hexpand(True)
-                box.add(tv)
-                dlg.show_all()
-                buf = tv.get_buffer()
-                buf.select_range(buf.get_start_iter(), buf.get_end_iter())
-                tv.grab_focus()
-                dlg.run()
-                dlg.destroy()
-                return False
-            self._GLib.idle_add(_show)
+                open_proxy_settings(browser)
+            except Exception as exc:
+                self.show_alert("Launch Failed", str(exc))
         return handler
 
     def _make_firefox_launch(self, exe: str):
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=False)
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
                 self.show_alert("Proxy Not Running", "Start the proxy first.")
                 return
             profile_dir = self.manager.workspace / "firefox_profile"
-            profile_dir.mkdir(exist_ok=True)
-            (profile_dir / "user.js").write_text(
-                f'user_pref("network.proxy.type", 2);\n'
-                f'user_pref("network.proxy.autoconfig_url", "{pac_url}");\n'
-                f'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
-            )
             try:
-                subprocess.Popen([exe, "-profile", str(profile_dir), "-no-remote"])
+                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
         return handler

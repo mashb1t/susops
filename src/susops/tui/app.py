@@ -25,6 +25,8 @@ class _SusOpsCommands(Provider):
             ("Dashboard", lambda: app.push_screen("dashboard"), "Go to dashboard"),
             ("Connections", lambda: app.push_screen("connections"), "Manage connections"),
             ("Shares", lambda: app.push_screen("shares"), "Share/fetch files"),
+            ("Launch Browser", app.action_launch_browser, "Open a browser with the daemon's PAC URL"),
+            ("Open Proxy Settings", app.action_launch_browser, "chrome://net-internals/#proxy in a chosen browser"),
             ("Config", lambda: app.action_show_config(), "View config.yaml"),
             ("PAC file", lambda: app.action_show_pac(), "View PAC proxy config"),
             ("Quit", app.action_quit, "Quit SusOps"),
@@ -84,6 +86,7 @@ class SusOpsTuiApp(App):
     BINDINGS = [
         Binding("c", "push_screen('connections')", "Connections", show=False),
         Binding("f", "push_screen('shares')", "Shares", show=False),
+        Binding("b", "launch_browser", "Browser", show=False),
         Binding("s", "start_all", "Start", show=False),
         Binding("x", "stop_all", "Stop", show=False),
         Binding("r", "restart_all", "Restart", show=False),
@@ -147,6 +150,12 @@ class SusOpsTuiApp(App):
         from susops.tui.screens.dashboard import DashboardScreen
         screen = self.query_one(DashboardScreen)
         screen.action_show_tab("tab-pac")
+
+    def action_launch_browser(self) -> None:
+        """Open the modal browser picker. Works from any screen via global `b`
+        binding or the Ctrl+P command palette."""
+        from susops.tui.screens.dashboard import BrowserScreen
+        self.push_screen(BrowserScreen())
 
     def _bg_start(self) -> None:
         self.run_worker(self._do_start, thread=True)

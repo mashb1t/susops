@@ -71,27 +71,15 @@ def _get_status_icon_path(state: ProcessState) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-_MAC_BROWSERS: list[tuple[str, str, bool]] = [
-    # (app bundle name, display name, is_chromium)
-    ("Google Chrome", "Chrome", True),
-    ("Chromium", "Chromium", True),
-    ("Brave Browser", "Brave", True),
-    ("Vivaldi", "Vivaldi", True),
-    ("Microsoft Edge", "Edge", True),
-    ("Arc", "Arc", True),
-    ("Firefox", "Firefox", False),
-]
-
-
 def _find_installed_browsers() -> list[tuple[str, str, bool]]:
-    """Return list of (app_bundle, display_name, is_chromium) found on disk."""
-    found: list[tuple[str, str, bool]] = []
-    for bundle, name, chromium in _MAC_BROWSERS:
-        for base in (Path("/Applications"), Path.home() / "Applications"):
-            if (base / f"{bundle}.app").exists():
-                found.append((bundle, name, chromium))
-                break
-    return found
+    """Return list of (app_bundle, display_name, is_chromium) for installed browsers.
+
+    Thin adapter over susops.core.browsers.detect_browsers() — the menu
+    construction code below was written before the shared module existed
+    and expects this 3-tuple shape. Kept stable for that reason.
+    """
+    from susops.core.browsers import detect_browsers
+    return [(b.bundle, b.name, b.is_chromium) for b in detect_browsers() if b.bundle]
 
 
 # ---------------------------------------------------------------------------
@@ -1984,31 +1972,35 @@ class SusOpsMacTray(AbstractTrayApp):
         if not pac_url:
             self.show_alert("Proxy Not Running", "Start the proxy first so the PAC port is known.")
             return
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=True,
+            bundle=bundle_name,
+        )
         # Spawn in a background thread — `open -na` can block briefly on macOS
         # while LaunchServices coordinates with the new app instance, and we
         # don't want to freeze the menu bar app while that happens.
         def _spawn():
             try:
-                subprocess.Popen(
-                    ["open", "-na", bundle_name, "--args", f"--proxy-pac-url={pac_url}"]
-                )
+                launch_with_pac(browser, pac_url)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
     def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
-        """Open Chrome/Edge/Brave/... directly on chrome://net-internals/#proxy.
-
-        `open -a <bundle> <url>` hands the URL to the launched app as an
-        argument; Chromium-family browsers interpret chrome://-scheme URLs
-        as internal pages, so this navigates straight to the proxy debug
-        view with no copy-paste step.
-        """
+        """Open Chrome/Edge/Brave/... directly on chrome://net-internals/#proxy."""
+        from susops.core.browsers import Browser, open_proxy_settings
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=True,
+            bundle=bundle_name,
+        )
         def _spawn():
             try:
-                subprocess.Popen([
-                    "open", "-a", bundle_name, "chrome://net-internals/#proxy",
-                ])
+                open_proxy_settings(browser)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
@@ -2018,18 +2010,17 @@ class SusOpsMacTray(AbstractTrayApp):
         if not pac_url:
             self.show_alert("Proxy Not Running", "Start the proxy first.")
             return
-        profile_dir = self.manager.workspace / "firefox_profile"
-        profile_dir.mkdir(exist_ok=True)
-        (profile_dir / "user.js").write_text(
-            f'user_pref("network.proxy.type", 2);\n'
-            f'user_pref("network.proxy.autoconfig_url", "{pac_url}");\n'
-            f'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=False,
+            bundle=bundle_name,
         )
+        profile_dir = self.manager.workspace / "firefox_profile"
         def _spawn():
             try:
-                subprocess.Popen(
-                    ["open", "-na", bundle_name, "--args", "-profile", str(profile_dir), "-no-remote"]
-                )
+                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()

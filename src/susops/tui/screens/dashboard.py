@@ -12,7 +12,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Footer,
     Label,
@@ -143,6 +143,7 @@ class DashboardScreen(Screen):
 
         Binding("c", "push_screen('connections')", "Connections"),
         Binding("f", "push_screen('share')", "Shares"),
+        Binding("b", "launch_browser", "Browser"),
         Binding("e", "edit_config", "Edit config"),
     ]
 
@@ -789,6 +790,10 @@ class DashboardScreen(Screen):
         self.app.call_from_thread(self.refresh_status)
 
 
+    def action_launch_browser(self) -> None:
+        """Open the modal browser picker — see BrowserScreen for the rest."""
+        self.app.push_screen(BrowserScreen())
+
     def action_open_share(self, file_path: str) -> None:
         open_in_explorer(file_path)
 
@@ -797,3 +802,117 @@ class DashboardScreen(Screen):
             active = self.query_one("#detail-tabs", TabbedContent).active
             return active == "tab-config"
         return True
+
+
+class BrowserScreen(ModalScreen):
+    """Modal: pick a detected browser to launch with the daemon's PAC URL.
+
+    Enter on a row launches that browser with `--proxy-pac-url=…` (Chromium)
+    or a workspace-owned Firefox profile (Firefox). `s` opens
+    chrome://net-internals/#proxy on the selected Chromium browser.
+    Esc / q closes the modal.
+
+    Detection lives in susops.core.browsers — same table the macOS + Linux
+    tray menus use, so adding a browser only happens in one place.
+    """
+
+    BINDINGS = [
+        Binding("enter", "launch", "Launch", show=True),
+        Binding("s", "settings", "Proxy Settings", show=True),
+        Binding("escape", "close", "Close", show=True),
+        Binding("q", "close", "Close", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    BrowserScreen { align: center middle; }
+    #browser-dialog {
+        width: 60; height: auto;
+        background: $surface; border: round $primary;
+        padding: 1 2;
+    }
+    #browser-list { height: auto; max-height: 14; margin: 1 0; }
+    #browser-hint { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._browsers: list = []
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+        with Vertical(id="browser-dialog"):
+            yield Static("[bold]Launch Browser[/bold]", markup=True)
+            yield ListView(id="browser-list")
+            yield Static(
+                "[dim]Enter = launch with PAC\n"
+                "s = open open chrome://net-internals/#proxy\n"
+                "Esc = close[/dim]",
+                id="browser-hint",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        from susops.core.browsers import detect_browsers
+        self._browsers = detect_browsers()
+        lv = self.query_one("#browser-list", ListView)
+        if not self._browsers:
+            lv.append(ListItem(Label("[dim]No browsers found[/dim]")))
+            return
+        for b in self._browsers:
+            tag = "Chromium" if b.is_chromium else "Firefox"
+            lv.append(ListItem(Label(f"  {b.name}  [dim]({tag})[/dim]")))
+        lv.index = 0
+        lv.focus()
+
+    def _selected(self):
+        lv = self.query_one("#browser-list", ListView)
+        idx = lv.index
+        if idx is None or not (0 <= idx < len(self._browsers)):
+            return None
+        return self._browsers[idx]
+
+    def action_launch(self) -> None:
+        browser = self._selected()
+        if browser is None:
+            return
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        pac_url = ""
+        try:
+            pac_url = mgr.get_pac_url() or ""
+        except Exception:
+            pass
+        if not pac_url:
+            self.app.notify(
+                "Proxy not running — start it first so the PAC URL is known.",
+                severity="warning",
+            )
+            return
+        from susops.core.browsers import launch_with_pac
+        profile_dir = mgr.workspace / "firefox_profile"
+        try:
+            launch_with_pac(browser, pac_url, profile_dir=profile_dir)
+            self.app.notify(f"Launched {browser.name} with PAC", timeout=3)
+        except Exception as exc:
+            self.app.notify(f"Launch failed: {exc}", severity="error")
+        self.dismiss()
+
+    def action_settings(self) -> None:
+        browser = self._selected()
+        if browser is None:
+            return
+        if not browser.is_chromium:
+            self.app.notify(
+                "Proxy settings shortcut works for Chromium-family browsers only.",
+                severity="warning",
+            )
+            return
+        from susops.core.browsers import open_proxy_settings
+        try:
+            open_proxy_settings(browser)
+            self.app.notify(f"Opened proxy settings in {browser.name}", timeout=3)
+        except Exception as exc:
+            self.app.notify(f"Open failed: {exc}", severity="error")
+        self.dismiss()
+
+    def action_close(self) -> None:
+        self.dismiss()
