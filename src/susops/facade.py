@@ -184,9 +184,16 @@ class _BandwidthSampler:
             return False
 
         try:
+            # `-t external` excludes loopback traffic. Without it nettop
+            # counts every proxied byte twice — once on the Chrome ↔ ssh
+            # loopback leg and once on the ssh ↔ remote external socket —
+            # producing artificially symmetric bytes_in/bytes_out (e.g. a
+            # 40 MB YouTube stream shows as 40 MB in + 40 MB out instead
+            # of 40 MB in + ~150 KB out). External-only matches the real
+            # SSH-to-remote throughput.
             result = subprocess.run(
                 ["nettop", "-P", "-l", "1", "-s", "1", "-x",
-                 "-J", "bytes_in,bytes_out"],
+                 "-t", "external", "-J", "bytes_in,bytes_out"],
                 capture_output=True, text=True, timeout=5,
             )
         except (FileNotFoundError, OSError):
