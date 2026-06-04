@@ -58,20 +58,25 @@ def test_tui_survives_daemon_kill(tui_workspace):
     asyncio.run(_run())
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "refresh_status worker does not catch YAML/RPC errors — WorkerFailed "
+        "escapes from run_test(). Fix: catch errors in worker and surface as "
+        "notifications instead of crashing. When fixed, this xfail becomes xpass."
+    ),
+)
 def test_tui_config_error_shows_modal(tui_workspace):
-    """Corrupt config.yaml causes a YAML parse error in the daemon's refresh_status.
+    """Corrupt config.yaml should surface as a notification, not crash the worker.
 
-    In the client-daemon architecture the TUI starts successfully (it connects to
-    the running daemon), but the first refresh_status() call fails with a YAML
-    parse error from the daemon. This escapes as a WorkerFailed exception from
-    Textual's @work decorator.
+    With correct error handling the TUI should stay on DashboardScreen and show
+    a notification about the config error.  Currently the refresh_status @work
+    worker lets YAML parse errors propagate as WorkerFailed, which escapes from
+    run_test() and crashes the test.  Marked xfail until the worker is fixed.
 
-    NOTE: this is a known production bug — refresh_status should catch YAML/RPC
-    errors and surface them as notifications rather than crashing the worker and
-    raising WorkerFailed. See TODO in the error handling for DashboardScreen.
-
-    We mark the test as xfail: it documents the bug, will start passing once the
-    worker error handling is improved.
+    TODO: fix the refresh_status worker to catch YAML/RPC errors instead of
+    propagating WorkerFailed. Until then, this test documents the expected
+    correct behaviour and is expected to fail.
     """
     config_file = tui_workspace / "config.yaml"
     config_file.write_text("not: valid: yaml: {{{broken")
@@ -81,16 +86,13 @@ def test_tui_config_error_shows_modal(tui_workspace):
         async with app.run_test(headless=True, size=(140, 50)) as pilot:
             await pilot.pause(1.0)
             screen_name = type(app.screen).__name__
-            # With proper error handling the screen would be DashboardScreen and
-            # the error would appear as a notification, not crash the worker.
+            # With proper error handling the screen should be DashboardScreen and
+            # the error should appear as a notification, not crash the worker.
             assert screen_name == "DashboardScreen", (
                 f"Expected DashboardScreen after config error, got {screen_name}"
             )
 
-    # TODO: fix the refresh_status worker to catch YAML parse errors instead of
-    # propagating WorkerFailed. Until then, this test is expected to fail.
-    with pytest.raises(Exception, match="WorkerFailed|mapping values are not allowed"):
-        asyncio.run(_run())
+    asyncio.run(_run())
 
 
 def test_tui_no_connections_shows_empty_dashboard(tui_workspace):

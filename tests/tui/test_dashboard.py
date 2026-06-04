@@ -95,8 +95,8 @@ def test_dashboard_logs_tab_shows_entries(tui_workspace):
             tc.active = "tab-logs"
             await pilot.pause(0.3)
             log_widget = app.screen.query_one("#detail-logs", RichLog)
-            # The log widget should have lines (at minimum the "daemon ready" entries)
-            assert len(log_widget.lines) >= 0  # non-empty is the goal; 0 is still valid initially
+            # The log widget should have at least one line (the daemon startup entry)
+            assert len(log_widget.lines) > 0
 
     asyncio.run(_run())
 
