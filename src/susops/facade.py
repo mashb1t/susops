@@ -2125,6 +2125,16 @@ class SusOpsManager:
     def get_logs(self, n: int = 100) -> list[str]:
         return list(self._log_buffer)[-n:]
 
+    def log_message(self, msg: str) -> None:
+        """Push an arbitrary line into the daemon's in-memory log buffer.
+
+        Exposed over RPC so frontends (TUI, tray) can route their own
+        operational notes (e.g. browser launches) to the same place the
+        daemon's own logs land — visible in the TUI Logs tab and the
+        tray Logs window.
+        """
+        self._log(msg)
+
     def get_bandwidth(self, tag: str) -> tuple[float, float]:
         return self._bw_sampler.get_rate(tag)
 

@@ -1985,7 +1985,19 @@ class SusOpsMacTray(AbstractTrayApp):
         def _spawn():
             try:
                 launch_with_pac(browser, pac_url)
+                try:
+                    self.manager.log_message(
+                        f"Browser launch: {bundle_name} with PAC {pac_url}"
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
+                try:
+                    self.manager.log_message(
+                        f"Browser launch failed: {bundle_name}: {exc}"
+                    )
+                except Exception:
+                    pass
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
@@ -2001,7 +2013,17 @@ class SusOpsMacTray(AbstractTrayApp):
         def _spawn():
             try:
                 open_proxy_settings(browser)
+                try:
+                    self.manager.log_message(f"Opened proxy settings in {bundle_name}")
+                except Exception:
+                    pass
             except Exception as exc:
+                try:
+                    self.manager.log_message(
+                        f"Open proxy settings failed: {bundle_name}: {exc}"
+                    )
+                except Exception:
+                    pass
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
 
@@ -2021,7 +2043,19 @@ class SusOpsMacTray(AbstractTrayApp):
         def _spawn():
             try:
                 launch_with_pac(browser, pac_url, profile_dir=profile_dir)
+                try:
+                    self.manager.log_message(
+                        f"Browser launch: {bundle_name} with PAC {pac_url}"
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
+                try:
+                    self.manager.log_message(
+                        f"Browser launch failed: {bundle_name}: {exc}"
+                    )
+                except Exception:
+                    pass
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
 

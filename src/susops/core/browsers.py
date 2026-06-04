@@ -17,28 +17,10 @@ Public API:
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-
-def _debug_log(line: str) -> None:
-    """Append a launch-diagnostic line to ~/.susops/logs/browser-launch.log.
-
-    Temporary — added to diagnose "browser doesn't open from TUI" cases
-    where it's not obvious whether the subprocess was even spawned with
-    the right argv. Remove once the launch path is confirmed reliable.
-    """
-    try:
-        log_dir = Path.home() / ".susops" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_dir / "browser-launch.log", "a") as f:
-            f.write(f"{ts} {line}\n")
-    except Exception:
-        pass
 
 
 @dataclasses.dataclass(frozen=True)
@@ -311,13 +293,7 @@ def launch_with_pac(browser: Browser, pac_url: str,
             cmd = ["open", "-na", browser.bundle, "--args", f"--proxy-pac-url={pac_url}"]
         else:
             cmd = browser.launch_cmd + [f"--proxy-pac-url={pac_url}"]
-        _debug_log(f"launch_with_pac (chromium) [{browser.name}]: {cmd}")
-        try:
-            proc = subprocess.Popen(cmd)
-            _debug_log(f"  → spawned pid {proc.pid}")
-        except Exception as exc:
-            _debug_log(f"  → Popen raised: {exc!r}")
-            raise
+        subprocess.Popen(cmd)
         return
 
     # Firefox path
@@ -337,13 +313,7 @@ def launch_with_pac(browser: Browser, pac_url: str,
                "-profile", str(profile_dir), "-no-remote"]
     else:
         cmd = browser.launch_cmd + ["-profile", str(profile_dir), "-no-remote"]
-    _debug_log(f"launch_with_pac (firefox) [{browser.name}]: {cmd}")
-    try:
-        proc = subprocess.Popen(cmd)
-        _debug_log(f"  → spawned pid {proc.pid}")
-    except Exception as exc:
-        _debug_log(f"  → Popen raised: {exc!r}")
-        raise
+    subprocess.Popen(cmd)
 
 
 def open_proxy_settings(browser: Browser) -> None:
@@ -362,10 +332,4 @@ def open_proxy_settings(browser: Browser) -> None:
         cmd = ["open", "-a", browser.bundle, _PROXY_SETTINGS_URL]
     else:
         cmd = browser.launch_cmd + [_PROXY_SETTINGS_URL]
-    _debug_log(f"open_proxy_settings [{browser.name}]: {cmd}")
-    try:
-        proc = subprocess.Popen(cmd)
-        _debug_log(f"  → spawned pid {proc.pid}")
-    except Exception as exc:
-        _debug_log(f"  → Popen raised: {exc!r}")
-        raise
+    subprocess.Popen(cmd)

@@ -51,6 +51,7 @@ _ALLOWED_METHODS: set[str] = {
     "get_process_info",      # per-tag — used by TUI dashboard
     "get_uptime",            # per-tag — used by TUI dashboard / connections panel
     "get_logs",              # used by TUI logs panel
+    "log_message",           # frontends push operational notes into the daemon log buffer
 }
 
 

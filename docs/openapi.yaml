@@ -8,7 +8,7 @@ info:
     address:** `127.0.0.1` — loopback only.\n\n**Authentication:** none. Any local process that can reach
     loopback and read `~/.susops/pids/susops-services.port` can invoke any allowlisted method. See the
     README's [Access & Authentication](https://github.com/mashb1t/susops#access--authentication) section."
-  x-generated-at: '2026-06-04'
+  x-generated-at: '2026-06-05'
   x-generator: tools/gen_openapi.py
 servers:
 - url: http://127.0.0.1:{port}
@@ -30,9 +30,10 @@ paths:
         start. Resets on stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n\
         - `get_uptime` — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
         — Return True if the UDP socat process for this forward is alive.\n- `list_config`\n- `list_shares`
-        — Return info for all shares: running (in-memory) and stopped (config-only).\n- `process_info`
-        — Return subprocess info grouped by connection for ``susops ps`` display.\n- `reconnect_monitor_info`
-        — Return display info about the current reconnect monitor state.\n- `remove_connection`\n- `remove_local_forward`\n\
+        — Return info for all shares: running (in-memory) and stopped (config-only).\n- `log_message`
+        — Push an arbitrary line into the daemon's in-memory log buffer.\n- `process_info` — Return subprocess
+        info grouped by connection for ``susops ps`` display.\n- `reconnect_monitor_info` — Return display
+        info about the current reconnect monitor state.\n- `remove_connection`\n- `remove_local_forward`\n\
         - `remove_pac_host`\n- `remove_remote_forward`\n- `reset`\n- `restart`\n- `set_connection_enabled`\n\
         - `set_forward_enabled` — Set the enabled flag on a forward and start/stop the live process accordingly.\n\
         - `set_pac_host_enabled`\n- `share` — Start serving an encrypted file share and persist it to
@@ -959,6 +960,32 @@ components:
       items:
         $ref: '#/components/schemas/ShareInfo'
       type: array
+    InvokeLogMessage:
+      type: object
+      description: Push an arbitrary line into the daemon's in-memory log buffer.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: log_message
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            msg:
+              type: string
+          required:
+          - msg
+          additionalProperties: false
+    LogMessageResult:
+      type: 'null'
     InvokeProcessInfo:
       type: object
       description: Return subprocess info grouped by connection for ``susops ps`` display.
@@ -2050,6 +2077,7 @@ components:
       - $ref: '#/components/schemas/InvokeIsUdpForwardRunning'
       - $ref: '#/components/schemas/InvokeListConfig'
       - $ref: '#/components/schemas/InvokeListShares'
+      - $ref: '#/components/schemas/InvokeLogMessage'
       - $ref: '#/components/schemas/InvokeProcessInfo'
       - $ref: '#/components/schemas/InvokeReconnectMonitorInfo'
       - $ref: '#/components/schemas/InvokeRemoveConnection'
