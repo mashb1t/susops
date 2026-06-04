@@ -204,18 +204,103 @@ class SusOpsLinuxTray(AbstractTrayApp):
             return False
         self._GLib.idle_add(_show)
 
+    def show_live_logs(self, get_text, *, title: str = "Logs",
+                       interval_ms: int = 1000) -> None:
+        """Non-modal, auto-refreshing log window that tails get_text().
+
+        Polls get_text() every interval_ms; if the text changed, replaces the
+        buffer and scrolls to the bottom. The user can keep using the tray
+        menu while it's open. Each line is colored via the shared log_style
+        rules to match the TUI's Logs tab.
+        """
+        Gtk = self._Gtk
+        GLib = self._GLib
+        from susops.core.log_style import style_log_line
+
+        def _show():
+            dlg = Gtk.Dialog(title=title, transient_for=self._root, modal=False)
+            dlg.set_default_size(850, 450)
+
+            # Scroll view fills the dialog edge-to-edge; dismissal is via the
+            # titlebar close (X) only — no explicit Close button.
+            sw = Gtk.ScrolledWindow(vexpand=True)
+            tv = Gtk.TextView(
+                editable=False,
+                monospace=True,
+                wrap_mode=Gtk.WrapMode.NONE,
+                left_margin=0,
+            )
+            buf = tv.get_buffer()
+
+            # Register color tags. GTK named foreground colors look reasonable
+            # against both light and dark themes.
+            tag_table = {
+                "tag":  {"foreground": "#3DB6C9", "weight": 700},
+                "ok":   {"foreground": "#2EA043"},
+                "warn": {"foreground": "#D29922"},
+                "err":  {"foreground": "#F85149", "weight": 700},
+                "dim":  {"foreground": "#7D8590"},
+                "info": {"foreground": "#58A6FF"},
+            }
+            tags: dict[str, object] = {}
+            for label, props in tag_table.items():
+                tags[label] = buf.create_tag(label, **props)
+
+            sw.add(tv)
+            dlg.get_content_area().add(sw)
+
+            state = {"closed": False, "last": None}
+
+            def _autoscroll():
+                end_iter = buf.get_end_iter()
+                tv.scroll_to_iter(end_iter, 0.0, False, 0.0, 1.0)
+
+            def _apply_colored(text: str) -> None:
+                buf.set_text("")
+                end = buf.get_end_iter()
+                for i, line in enumerate(text.split("\n")):
+                    for chunk, label in style_log_line(line):
+                        if not chunk:
+                            continue
+                        tag = tags.get(label) if label else None
+                        if tag is None:
+                            buf.insert(end, chunk)
+                        else:
+                            buf.insert_with_tags(end, chunk, tag)
+                    if i < len(text.split("\n")) - 1:
+                        buf.insert(end, "\n")
+
+            def _refresh():
+                if state["closed"]:
+                    return False
+                try:
+                    text = get_text()
+                except Exception as exc:
+                    text = f"(log fetch failed: {exc})"
+                if text != state["last"]:
+                    state["last"] = text
+                    _apply_colored(text)
+                    GLib.idle_add(_autoscroll)
+                return True  # keep ticking
+
+            def _on_response(d, _r):
+                state["closed"] = True
+                d.destroy()
+
+            dlg.connect("response", _on_response)
+            dlg.show_all()
+            _refresh()  # initial fill
+            GLib.timeout_add(interval_ms, _refresh)
+            return False
+
+        GLib.idle_add(_show)
+
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
         def _worker():
             result = fn()
             if callback is not None:
                 self._GLib.idle_add(callback, result)
         threading.Thread(target=_worker, daemon=True).start()
-
-    def schedule_poll(self, interval_seconds: int) -> None:
-        def _poll():
-            self.do_poll()
-            return True  # keep repeating
-        self._GLib.timeout_add_seconds(interval_seconds, _poll)
 
     # ------------------------------------------------------------------ #
     # Menu building
@@ -330,6 +415,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
         # ── Show status ───────────────────────────────────────────────────
         i = Gtk.MenuItem(label="Show Status")
         i.connect("activate", lambda _: self.do_status())
+        self._menu.append(i)
+
+        # ── Show logs ─────────────────────────────────────────────────────
+        i = Gtk.MenuItem(label="Show Logs")
+        i.connect("activate", lambda _: self.do_logs())
         self._menu.append(i)
 
         # ── Launch Browser ────────────────────────────────────────────────
@@ -1356,17 +1446,38 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._GLib.idle_add(_ask)
 
     def _on_about(self) -> None:
+        """About dialog. Original layout (name / version / description / link
+        buttons / copyright). Non-modal so the tray menu stays usable, and
+        keep-above so the window stays in the foreground."""
+        from pathlib import Path
+
         def _show():
             Gtk = self._Gtk
-            dlg = Gtk.Dialog(title="About SusOps", transient_for=self._root, modal=True)
+            dlg = Gtk.Dialog(title="About SusOps", transient_for=self._root, modal=False)
             dlg.add_button("_Close", Gtk.ResponseType.CLOSE)
             dlg.set_default_size(280, -1)
+            try:
+                dlg.set_keep_above(True)
+            except Exception:
+                pass
             box = dlg.get_content_area()
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                            margin_start=20, margin_end=20,
                            margin_top=16, margin_bottom=12,
                            halign=Gtk.Align.CENTER)
             box.add(vbox)
+
+            # Static logo at the top, if available.
+            icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+            if icon_path.exists():
+                try:
+                    from gi.repository import GdkPixbuf  # type: ignore[import]
+                    pix = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 64, 64)
+                    img = Gtk.Image.new_from_pixbuf(pix)
+                    vbox.pack_start(img, False, False, 4)
+                except Exception:
+                    pass
+
             import susops
             name_lbl = Gtk.Label()
             name_lbl.set_markup("<b><big>SusOps</big></b>")
@@ -1387,9 +1498,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             copy_lbl.get_style_context().add_class("dim-label")
             vbox.pack_start(copy_lbl, False, False, 4)
             _polish_dialog(Gtk, dlg)
+            dlg.connect("response", lambda d, _r: d.destroy())
             dlg.show_all()
-            dlg.run()
-            dlg.destroy()
             return False
         self._GLib.idle_add(_show)
 
@@ -1413,8 +1523,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
                     time.sleep(2.0)
                     continue
                 try:
+                    import os
                     import urllib.request
-                    req = urllib.request.Request(status_url)
+                    import susops as _susops_pkg
+                    req = urllib.request.Request(status_url, headers={
+                        "X-Susops-Client": "tray-linux",
+                        "X-Susops-Client-Version": _susops_pkg.__version__,
+                        "X-Susops-Pid": str(os.getpid()),
+                        # Tray only reacts to state + share events; skip the
+                        # high-frequency `bandwidth` broadcasts.
+                        "X-Susops-Events": "state,share",
+                    })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
                         buf = ""
@@ -1429,7 +1548,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
                                 buf = ""
                 except Exception:
                     time.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
+                    # Cap at 5s — short enough that the user never sees more
+                    # than 5s of staleness, even when the daemon is bouncing.
+                    backoff = min(backoff * 2, 5.0)
 
         threading.Thread(target=_listen, daemon=True, name="susops-sse-linux").start()
 
@@ -1439,8 +1560,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def run(self) -> None:
         """Start the GTK main loop."""
+        # Initial state pull on startup; SSE listener drives every refresh
+        # after that. No periodic polling fallback — SSE reconnects within
+        # 5 s on its own.
         self.do_poll()
-        self.schedule_poll(5)
         self._start_sse_listener()
         self._Gtk.main()
 

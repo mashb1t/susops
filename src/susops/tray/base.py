@@ -75,7 +75,6 @@ class AbstractTrayApp(ABC):
       - show_alert(title, msg)
       - show_output_dialog(title, output)
       - run_in_background(fn, callback)
-      - schedule_poll(interval_seconds)
     """
 
     def __init__(self) -> None:
@@ -102,8 +101,17 @@ class AbstractTrayApp(ABC):
     @abstractmethod
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None: ...
 
-    @abstractmethod
-    def schedule_poll(self, interval_seconds: int) -> None: ...
+    def show_live_logs(self, get_text: Callable[[], str], *, title: str = "Logs",
+                       interval_ms: int = 1000) -> None:
+        """Show a non-modal, auto-refreshing log window.
+
+        Default implementation falls back to a one-shot snapshot via
+        show_output_dialog so AbstractTrayApp keeps working on platforms that
+        haven't built a streaming window yet. Real implementations override
+        this with a non-modal window that polls `get_text()` every
+        ``interval_ms`` and auto-scrolls to the bottom.
+        """
+        self.show_output_dialog(title, get_text())
 
     # ------------------------------------------------------------------ #
     # State management
@@ -182,18 +190,101 @@ class AbstractTrayApp(ABC):
     def do_status(self) -> None:
         def _run():
             result = self.manager.status()
-            lines = []
-            for cs in result.connection_statuses:
-                dot = "●" if cs.running else "○"
-                port = f" ({cs.socks_port})" if cs.socks_port else ""
-                pid = f" pid={cs.pid}" if cs.pid else ""
-                lines.append(f"  {dot} [{cs.tag}]{port}{pid}")
-            pac = "●" if result.pac_running else "○"
-            pac_port = f" ({result.pac_port})" if result.pac_port else ""
-            lines.append(f"  {pac} PAC server{pac_port}")
-            lines.append(f"State: {result.state.value}")
+            statuses = list(result.connection_statuses)
+            enabled = [s for s in statuses if s.enabled]
+            running_n = sum(1 for s in enabled if s.running)
+            disabled_n = sum(1 for s in statuses if not s.enabled)
+
+            state_dot = {
+                ProcessState.RUNNING: "●",
+                ProcessState.STOPPED_PARTIALLY: "◐",
+                ProcessState.STOPPED: "○",
+                ProcessState.ERROR: "✕",
+                ProcessState.INITIAL: "○",
+            }.get(result.state, "○")
+
+            summary = f"{running_n} of {len(enabled)} running"
+            if disabled_n:
+                summary += f"  ·  {disabled_n} disabled"
+
+            tag_w = max((len(s.tag) for s in statuses), default=8)
+            tag_w = max(tag_w, 8)
+
+            lines = [
+                f"{state_dot}  SusOps {result.state.value}",
+                f"   {summary}",
+                "",
+                "CONNECTIONS",
+            ]
+            if not statuses:
+                lines.append("   (no connections configured)")
+            else:
+                for cs in statuses:
+                    if not cs.enabled:
+                        dot = "─"
+                        detail = "disabled"
+                    elif cs.running:
+                        dot = "●"
+                        bits = []
+                        if cs.socks_port:
+                            bits.append(f"SOCKS {cs.socks_port}")
+                        if cs.pid:
+                            bits.append(f"pid {cs.pid}")
+                        detail = "   ".join(bits) if bits else "running"
+                    else:
+                        dot = "○"
+                        detail = "stopped"
+                    lines.append(f"  {dot}  {cs.tag:<{tag_w}}   {detail}")
+
+            lines.append("")
+            lines.append("PAC SERVER")
+            if result.pac_running and result.pac_port:
+                lines.append(f"  ●  http://localhost:{result.pac_port}/susops.pac")
+            else:
+                lines.append("  ○  stopped")
+
+            # Daemon metadata — RPC port, PID, SSE port, workspace.
+            # These come from the local port/pid files written by
+            # services_daemon.py, not from the facade (the facade doesn't
+            # know which port its own RPC server is bound to).
+            lines.append("")
+            lines.append("DAEMON")
+            workspace = self.manager.workspace
+            try:
+                rpc_port = int((workspace / "pids" / "susops-services.port")
+                               .read_text().strip())
+                lines.append(f"  ●  RPC      http://localhost:{rpc_port}/rpc")
+            except (OSError, ValueError):
+                lines.append("  ○  RPC      (port file unavailable)")
+            try:
+                pid = int((workspace / "pids" / "susops-services.pid")
+                          .read_text().strip())
+                lines.append(f"     PID      {pid}")
+            except (OSError, ValueError):
+                pass
+            # Parse the SSE URL the facade exposes — same daemon process,
+            # different port (status_server_port from config).
+            try:
+                sse_url = self.manager.get_status_url() or ""
+            except Exception:
+                sse_url = ""
+            if sse_url:
+                lines.append(f"     SSE      {sse_url}")
+            lines.append(f"     Workspace {workspace}")
             return "\n".join(lines)
         self.run_in_background(_run, lambda msg: self.show_output_dialog("Status", msg))
+
+    def do_logs(self, n: int = 500) -> None:
+        """Show the in-memory log buffer (same source as the TUI 'Logs' tab).
+
+        Opens as a non-modal, live-updating window so the user can keep
+        interacting with the tray (and the logs scroll automatically as new
+        entries arrive).
+        """
+        def _get_text() -> str:
+            lines = self.manager.get_logs(n)
+            return "\n".join(lines) if lines else "(no log entries yet)"
+        self.show_live_logs(_get_text, title="Logs")
 
     def do_add_connection(self, tag: str, host: str, port: int = 0) -> None:
         try:
