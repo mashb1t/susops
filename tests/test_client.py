@@ -171,3 +171,31 @@ def test_client_recovers_when_daemon_restarts_between_calls(running_daemon, ws):
             time.sleep(0.1)
         except OSError:
             break
+
+
+def test_ensure_daemon_running_surfaces_preflight_error(ws):
+    """When the daemon spawn fails preflight (PAC port squatted), the
+    user should see the daemon's actual error message, not a generic
+    'didn't come up within timeout'.
+    """
+    import socket as _socket
+    from susops.core.config import SusOpsConfig, save_config
+
+    # Pre-write a config pointing at a squatted port.
+    ws.mkdir(parents=True, exist_ok=True)
+    squat = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    squat.bind(("127.0.0.1", 0))
+    squat.listen(1)
+    squat_port = squat.getsockname()[1]
+    try:
+        cfg = SusOpsConfig().model_copy(update={"pac_server_port": squat_port})
+        save_config(cfg, ws)
+
+        with pytest.raises(DaemonUnavailableError) as excinfo:
+            ensure_daemon_running(ws)
+        # The surfaced error should mention the actual cause.
+        assert "bound by another process" in str(excinfo.value), (
+            f"expected preflight error message, got: {excinfo.value}"
+        )
+    finally:
+        squat.close()

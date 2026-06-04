@@ -60,18 +60,22 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
     """Make sure the susops-services daemon is up; spawn it if not.
 
     Returns the RPC port. Raises DaemonUnavailableError on timeout.
+
+    Captures the spawned daemon's stderr so a preflight failure
+    (PAC port squatted, peer daemon alive, …) is surfaced to the caller
+    instead of getting buried under a generic "didn't come up" message.
     """
     if _is_daemon_alive(workspace):
         port = _read_port(workspace)
         if port:
             return port
 
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "susops.core.services_daemon",
          "--workspace", str(workspace)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         start_new_session=True,
     )
 
@@ -81,7 +85,27 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
             port = _read_port(workspace)
             if port:
                 return port
+        # If the daemon exited (e.g. preflight rejected it), don't keep
+        # polling — surface the reason and bail out immediately.
+        rc = proc.poll()
+        if rc is not None:
+            try:
+                _, err = proc.communicate(timeout=0.5)
+                stderr = err.decode(errors="replace").strip() if err else ""
+            except Exception:
+                stderr = ""
+            msg = (
+                f"Daemon exited during startup (rc={rc})"
+                + (f":\n{stderr}" if stderr else "")
+            )
+            raise DaemonUnavailableError(msg)
         time.sleep(0.1)
+
+    # Spawn is still alive but never wrote its PID/port file in time.
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     raise DaemonUnavailableError("Daemon did not come up within timeout")
 
 
