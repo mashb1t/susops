@@ -1,8 +1,13 @@
 """Cross-platform browser detection + PAC-aware launch.
 
 Single source of truth for browser metadata and launch logic so every
-frontend (TUI, macOS tray, Linux tray) shares one detection table and
-one set of platform-specific launch incantations.
+frontend (TUI, macOS tray, Linux tray) shares one detection pipeline.
+
+Detection is **auto-discovery** — we scan platform-native registries for
+HTTP-scheme handlers and classify chromium-vs-firefox via well-known
+bundle-id / executable-name patterns. The result is that out-of-the-box
+forks (Chrome Beta/Canary, LibreWolf, Waterfox, Tor Browser, Arc, etc.)
+appear in the list without us maintaining a hardcoded table.
 
 Public API:
     detect_browsers()           → list[Browser]
@@ -23,61 +28,248 @@ class Browser:
     """A detected browser installation."""
     name: str               # display name, e.g. "Chrome"
     launch_cmd: list[str]   # base command — e.g. ["open", "-a", "Google Chrome"] or ["/usr/bin/google-chrome"]
-    is_chromium: bool       # True for Chrome/Brave/Edge/Vivaldi/Chromium/Arc; False for Firefox
+    is_chromium: bool       # True for Chrome/Brave/Edge/Vivaldi/Chromium/Arc; False for Firefox-family
     bundle: str | None = None  # macOS app-bundle name (None on Linux)
 
 
-# Browser metadata — extend here when a new browser is added.
-#   (name, macOS bundle, Linux executables, is_chromium)
-_BROWSER_DEFS: list[tuple[str, str, list[str], bool]] = [
-    ("Chrome",   "Google Chrome",   ["google-chrome", "google-chrome-stable"],          True),
-    ("Chromium", "Chromium",        ["chromium", "chromium-browser"],                   True),
-    ("Brave",    "Brave Browser",   ["brave-browser", "brave", "brave-browser-stable"], True),
-    ("Vivaldi",  "Vivaldi",         ["vivaldi", "vivaldi-stable"],                      True),
-    ("Edge",     "Microsoft Edge",  ["microsoft-edge", "microsoft-edge-stable"],        True),
-    ("Arc",      "Arc",             [],                                                 True),  # macOS-only
-    ("Firefox",  "Firefox",         ["firefox", "firefox-bin"],                         False),
-]
-
 _PROXY_SETTINGS_URL = "chrome://net-internals/#proxy"
+
+
+# Bundle-id substrings that mark a browser as chromium-family on macOS.
+# Match is case-insensitive `in` substring (so "google.chrome.beta" matches).
+_MAC_CHROMIUM_BUNDLE_IDS = (
+    "com.google.chrome",
+    "com.brave.browser",
+    "org.chromium",
+    "com.microsoft.edgemac",
+    "com.vivaldi",
+    "com.thebrowser.browser",      # Arc
+    "company.thebrowser.browser",
+    "com.operasoftware.opera",
+)
+
+# Same for Firefox-family. Anything matching neither is dropped (e.g. Safari
+# can't be steered via `--proxy-pac-url` or chrome://-style URLs, so we
+# don't surface it).
+_MAC_FIREFOX_BUNDLE_IDS = (
+    "org.mozilla.firefox",
+    "org.mozilla.nightly",
+    "io.gitlab.librewolf",
+    "net.waterfox",
+    "org.torproject.torbrowser",
+)
+
+
+# Linux: executable basename substrings (case-insensitive).
+_LINUX_CHROMIUM_EXES = (
+    "google-chrome", "chrome", "chromium",
+    "brave", "vivaldi", "microsoft-edge", "edge", "opera",
+    "arc",  # speculative — Arc on Linux is in beta as of writing
+)
+_LINUX_FIREFOX_EXES = (
+    "firefox", "librewolf", "waterfox", "torbrowser", "tor-browser",
+)
 
 
 def detect_browsers() -> list[Browser]:
     """Return browsers detected on the current platform.
 
-    Order follows _BROWSER_DEFS — Chromium-family first, Firefox last.
+    Result is ordered: chromium-family first (alphabetised by display name),
+    Firefox-family last. Order matters for UX — chromium-style PAC support
+    is more reliable, so it goes first in pickers.
     """
     if sys.platform == "darwin":
-        return _detect_macos()
-    return _detect_linux()
+        browsers = _detect_macos()
+    else:
+        browsers = _detect_linux()
+    return sorted(browsers, key=lambda b: (not b.is_chromium, b.name.lower()))
+
+
+# ---------------------------------------------------------------------------
+# macOS — scan .app bundles for HTTP-scheme handlers via Info.plist
+# ---------------------------------------------------------------------------
 
 
 def _detect_macos() -> list[Browser]:
+    import plistlib
+
     found: list[Browser] = []
-    for name, bundle, _exes, chromium in _BROWSER_DEFS:
-        for base in (Path("/Applications"), Path.home() / "Applications"):
-            if (base / f"{bundle}.app").exists():
-                found.append(Browser(
-                    name=name,
-                    launch_cmd=["open", "-a", bundle],
-                    is_chromium=chromium,
-                    bundle=bundle,
-                ))
-                break
+    seen_bundles: set[str] = set()
+    candidate_dirs = [Path("/Applications"), Path.home() / "Applications"]
+    for d in candidate_dirs:
+        if not d.is_dir():
+            continue
+        for app_dir in d.glob("*.app"):
+            bundle_name = app_dir.stem  # e.g. "Google Chrome"
+            if bundle_name in seen_bundles:
+                continue
+            plist_path = app_dir / "Contents" / "Info.plist"
+            if not plist_path.is_file():
+                continue
+            try:
+                with open(plist_path, "rb") as f:
+                    info = plistlib.load(f)
+            except Exception:
+                continue
+            if not _macos_handles_http(info):
+                continue
+            bundle_id = (info.get("CFBundleIdentifier") or "").lower()
+            is_chromium = any(p in bundle_id for p in _MAC_CHROMIUM_BUNDLE_IDS)
+            is_firefox = any(p in bundle_id for p in _MAC_FIREFOX_BUNDLE_IDS)
+            if not (is_chromium or is_firefox):
+                # Surfacing Safari et al. would be pointless — they can't
+                # accept a PAC URL via the command line. Skip.
+                continue
+            seen_bundles.add(bundle_name)
+            display_name = (
+                info.get("CFBundleDisplayName")
+                or info.get("CFBundleName")
+                or bundle_name
+            )
+            found.append(Browser(
+                name=str(display_name),
+                launch_cmd=["open", "-a", bundle_name],
+                is_chromium=is_chromium,
+                bundle=bundle_name,
+            ))
     return found
+
+
+def _macos_handles_http(info: dict) -> bool:
+    """Return True if the Info.plist declares an http/https URL handler."""
+    for url_type in info.get("CFBundleURLTypes", []) or []:
+        for scheme in url_type.get("CFBundleURLSchemes", []) or []:
+            if str(scheme).lower() in ("http", "https"):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Linux — scan .desktop files in standard XDG application directories
+# ---------------------------------------------------------------------------
 
 
 def _detect_linux() -> list[Browser]:
+    import os
+
+    desktop_dirs: list[Path] = []
+    xdg_data_dirs = os.environ.get(
+        "XDG_DATA_DIRS", "/usr/local/share:/usr/share"
+    ).split(":")
+    xdg_data_home = os.environ.get(
+        "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
+    )
+    for base in [xdg_data_home, *xdg_data_dirs]:
+        p = Path(base) / "applications"
+        if p.is_dir():
+            desktop_dirs.append(p)
+    # Flatpak / Snap exports often land here too.
+    for extra in (
+        Path("/var/lib/flatpak/exports/share/applications"),
+        Path.home() / ".local" / "share" / "flatpak" / "exports" / "share" / "applications",
+        Path("/var/lib/snapd/desktop/applications"),
+    ):
+        if extra.is_dir():
+            desktop_dirs.append(extra)
+
     found: list[Browser] = []
-    for name, _bundle, exes, chromium in _BROWSER_DEFS:
-        exe = next((shutil.which(e) for e in exes if shutil.which(e)), None)
-        if exe:
+    seen_exes: set[str] = set()
+    for d in desktop_dirs:
+        for path in d.glob("*.desktop"):
+            entry = _parse_desktop_entry(path)
+            if entry is None:
+                continue
+            if not _linux_handles_http(entry):
+                continue
+            exec_cmd = _linux_resolve_exec(entry.get("Exec", ""))
+            if not exec_cmd:
+                continue
+            exe_path = exec_cmd[0]
+            exe_basename = Path(exe_path).name.lower()
+            if exe_basename in seen_exes:
+                continue
+            is_chromium = any(p in exe_basename for p in _LINUX_CHROMIUM_EXES)
+            is_firefox = any(p in exe_basename for p in _LINUX_FIREFOX_EXES)
+            if not (is_chromium or is_firefox):
+                continue
+            seen_exes.add(exe_basename)
+            display_name = entry.get("Name", exe_basename)
             found.append(Browser(
-                name=name,
-                launch_cmd=[exe],
-                is_chromium=chromium,
+                name=display_name,
+                launch_cmd=[exe_path],
+                is_chromium=is_chromium,
             ))
     return found
+
+
+def _parse_desktop_entry(path: Path) -> dict | None:
+    """Parse the [Desktop Entry] section of a .desktop file into a dict.
+
+    Returns None if the file isn't a valid desktop entry (NoDisplay=true,
+    Type != Application, etc.).
+    """
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    entry: dict = {}
+    in_section = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[Desktop Entry]"):
+            in_section = True
+            continue
+        if line.startswith("[") and in_section:
+            break
+        if not in_section or "=" not in line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        # Skip locale-specific variants (Name[de], etc.) — we want the
+        # default. Lookup is first-occurrence-wins.
+        if "[" in key:
+            continue
+        entry.setdefault(key.strip(), value.strip())
+    if entry.get("Type", "Application") != "Application":
+        return None
+    if entry.get("NoDisplay", "false").lower() == "true":
+        return None
+    if entry.get("Hidden", "false").lower() == "true":
+        return None
+    return entry
+
+
+def _linux_handles_http(entry: dict) -> bool:
+    mime = entry.get("MimeType", "")
+    return ("x-scheme-handler/http" in mime) or ("x-scheme-handler/https" in mime)
+
+
+def _linux_resolve_exec(exec_field: str) -> list[str]:
+    """Resolve the Exec= field to an absolute command list.
+
+    `Exec=` may contain field codes (%u, %U, %f, %F) — we strip them.
+    The first token is the executable; we resolve it via shutil.which if
+    it's not already an absolute path. Returns [] if the executable can't
+    be found on PATH (skip it).
+    """
+    if not exec_field:
+        return []
+    # Strip %X field codes — they're placeholders for URL/file args we
+    # don't pass.
+    tokens = [t for t in exec_field.split() if not (t.startswith("%") and len(t) == 2)]
+    if not tokens:
+        return []
+    exe = tokens[0]
+    if not exe.startswith("/"):
+        resolved = shutil.which(exe)
+        if resolved is None:
+            return []
+        exe = resolved
+    return [exe, *tokens[1:]]
+
+
+# ---------------------------------------------------------------------------
+# Launch
+# ---------------------------------------------------------------------------
 
 
 def launch_with_pac(browser: Browser, pac_url: str,
