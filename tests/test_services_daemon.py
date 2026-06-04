@@ -3,9 +3,12 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
+
+from susops.core.rpc_protocol import InvocationRequest, InvocationResponse
 
 
 @pytest.fixture
@@ -54,3 +57,28 @@ def test_daemon_removes_pid_file_on_sigterm(ws):
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_daemon_serves_rpc_endpoint(ws):
+    proc = _spawn_daemon(ws)
+    try:
+        port_file = ws / "pids" / "susops-services.port"
+        for _ in range(50):
+            if port_file.exists():
+                break
+            time.sleep(0.1)
+        assert port_file.exists()
+        port = int(port_file.read_text().strip())
+
+        req = InvocationRequest(method="list_config")
+        http = urllib.request.Request(
+            f"http://127.0.0.1:{port}/rpc",
+            data=req.to_json().encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(http, timeout=3) as r:
+            body = InvocationResponse.from_json(r.read().decode())
+        assert body.ok is True
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)

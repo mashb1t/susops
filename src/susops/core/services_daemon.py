@@ -58,7 +58,16 @@ def main() -> int:
                         format="%(asctime)s [services] %(message)s")
     log = logging.getLogger("susops.services")
 
+    from susops.core.rpc_server import serve
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
+    runner, actual_port = serve(mgr, port=args.port)
+
     _write_pid_file(workspace)
+    _port_path(workspace).write_text(str(actual_port))
+    log.info("RPC listening on 127.0.0.1:%d", actual_port)
+
     stop_event = threading.Event()
 
     def _shutdown(signum, _frame) -> None:
@@ -70,9 +79,19 @@ def main() -> int:
 
     try:
         log.info("Daemon started, pid=%d, workspace=%s", os.getpid(), workspace)
-        # Phase 3+ will start the RPC server + SusOpsManager here.
         stop_event.wait()
     finally:
+        # Stop the manager first so its background threads see shutdown
+        # before we tear down the RPC server they might be calling back into.
+        try:
+            mgr.stop_quick()
+        except Exception:
+            log.exception("Error during manager stop")
+        try:
+            import asyncio
+            asyncio.run(runner.cleanup())
+        except Exception:
+            log.exception("Error during RPC cleanup")
         _remove_pid_file(workspace)
         _remove_port_file(workspace)
         log.info("Daemon stopped")
