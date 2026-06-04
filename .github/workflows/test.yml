@@ -29,7 +29,8 @@ jobs:
         run: uv sync --extra dev --extra share
 
       - name: Run tests
-        run: uv run pytest --cov=susops --cov-report=xml -v
+        # Exclude the macOS-only GUI smoke marker on the Linux matrix runner.
+        run: uv run pytest --cov=susops --cov-report=xml -v -m "not gui"
 
       - name: Upload coverage report
         uses: codecov/codecov-action@v4
@@ -37,3 +38,25 @@ jobs:
         with:
           files: coverage.xml
           fail_ci_if_error: false
+
+  gui-smoke:
+    # macOS-only GUI smoke for the rumps tray. Manually triggered to avoid
+    # blocking PR merges on flaky GUI runs.
+    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (includes tray-mac)
+        run: uv sync --extra dev --extra share --extra tray-mac
+
+      - name: Run GUI smoke
+        run: uv run pytest -m gui -v
