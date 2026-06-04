@@ -26,7 +26,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra share
+        run: uv sync --extra dev --extra share --extra tui
 
       - name: Run tests
         # Exclude the macOS-only GUI smoke marker on the Linux matrix runner.
@@ -56,7 +56,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies (includes tray-mac)
-        run: uv sync --extra dev --extra share --extra tray-mac
+        run: uv sync --extra dev --extra share --extra tui --extra tray-mac
 
       - name: Run GUI smoke
         run: uv run pytest -m gui -v
