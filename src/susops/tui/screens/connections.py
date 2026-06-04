@@ -361,10 +361,24 @@ class ConnectionsScreen(Screen):
         pac_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
             conn_running = status_map.get(conn.tag, False)
-            for host in conn.pac_hosts:
-                pac_rows.append(((status_dot(conn_running), host, conn.tag), f"{conn.tag}:{host}:on"))
-            for host in conn.pac_hosts_disabled:
-                pac_rows.append((("─", host, conn.tag), f"{conn.tag}:{host}:off"))
+            # Merge enabled + disabled hosts and sort alphabetically per
+            # connection — without this, toggling a host's enabled flag
+            # moves it across the enabled/disabled boundary in the table.
+            # Alphabetical sort keeps each host in a stable position
+            # regardless of state.
+            enabled_set = set(conn.pac_hosts)
+            all_hosts = sorted(enabled_set | set(conn.pac_hosts_disabled))
+            for host in all_hosts:
+                if host in enabled_set:
+                    pac_rows.append((
+                        (status_dot(conn_running), host, conn.tag),
+                        f"{conn.tag}:{host}",
+                    ))
+                else:
+                    pac_rows.append((
+                        ("─", host, conn.tag),
+                        f"{conn.tag}:{host}",
+                    ))
         self._reload_table(self.query_one("#tbl-pac", DataTable), pac_rows)
 
         local_rows: list[tuple[tuple, str | None]] = []
