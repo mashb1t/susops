@@ -170,6 +170,16 @@ class Susops < Formula
 
   def install
     virtualenv_install_with_resources
+    # The tray entry point is shipped as a standalone .app via the Cask
+    # (`brew install --cask susops`); the Formula stays CLI/TUI-only.
+    (bin/"susops-tray").unlink if (bin/"susops-tray").exist?
+  end
+
+  def caveats
+    <<~EOS
+      The macOS tray app is distributed separately as a Cask:
+        brew install --cask susops
+    EOS
   end
 
   test do
