@@ -32,6 +32,26 @@ def _write_pid_file(workspace: Path) -> None:
     p.write_text(str(os.getpid()))
 
 
+def _claim_pid_file(workspace: Path) -> bool:
+    """Atomically create the PID file with this process's PID.
+
+    Uses O_CREAT | O_EXCL so two daemons racing each other can't both
+    succeed — at most one will create the file, the other gets
+    FileExistsError. Returns True if we claimed it, False otherwise.
+    """
+    p = _pid_path(workspace)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
+    return True
+
+
 def _remove_pid_file(workspace: Path) -> None:
     try:
         _pid_path(workspace).unlink(missing_ok=True)
@@ -53,20 +73,36 @@ _EXIT_PAC_PORT_SQUATTED = 3
 def _preflight(workspace: Path, log: "logging.Logger") -> None:
     """Refuse to start if another daemon is alive or PAC port is squatted.
 
-    Converts the silent-failure modes that bit us during development
-    (orphan accumulation → "PAC server failed: Address already in use"
-    buried in the facade's log buffer) into loud, actionable exits.
+    Atomic via O_EXCL on the PID file — two daemons racing each other
+    can't both pass this check. Converts the silent-failure modes that
+    bit us during development (orphan accumulation, double-spawn races)
+    into loud, actionable exits.
+
+    On success the PID file is written with our pid (which means the
+    daemon's shutdown finally block MUST clean it up).
     """
-    # 1. Another services daemon already alive?
-    pid_file = _pid_path(workspace)
-    if pid_file.exists():
+    # Try to claim the PID file atomically.
+    if _claim_pid_file(workspace):
+        # Won the race uncontested.
+        pass
+    else:
+        # File exists. Is the holder alive?
+        pid_file = _pid_path(workspace)
         try:
             existing_pid = int(pid_file.read_text().strip())
-            os.kill(existing_pid, 0)  # signal 0 = liveness probe
+            os.kill(existing_pid, 0)  # liveness probe
         except (OSError, ValueError):
-            # Stale PID file; clean it up and proceed.
+            # Stale PID file. Remove + retry the atomic claim once.
             pid_file.unlink(missing_ok=True)
             _port_path(workspace).unlink(missing_ok=True)
+            if not _claim_pid_file(workspace):
+                # Some other daemon claimed it between our cleanup and retry.
+                log.error(
+                    "another susops-services daemon raced us to start. "
+                    "Try again — or run "
+                    "`pgrep -lf susops-services` to inspect."
+                )
+                sys.exit(_EXIT_ANOTHER_DAEMON_ALIVE)
         else:
             log.error(
                 "another susops-services daemon is already running (pid=%d). "
@@ -101,6 +137,9 @@ def _preflight(workspace: Path, log: "logging.Logger") -> None:
             "Then start this daemon again.",
             pac_port, exc, workspace,
         )
+        # We claimed the PID file above; clean it up so the next attempt
+        # isn't blocked by us.
+        _remove_pid_file(workspace)
         sys.exit(_EXIT_PAC_PORT_SQUATTED)
     finally:
         probe.close()
@@ -118,18 +157,14 @@ def main() -> int:
                         format="%(asctime)s [services] %(message)s")
     log = logging.getLogger("susops.services")
 
+    # Atomically claim the PID file. Past this point we own it.
     _preflight(workspace, log)
 
-    from susops.core.rpc_server import serve
-    from susops.facade import SusOpsManager
-
-    mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
-    runner, actual_port = serve(mgr, port=args.port)
-
-    _write_pid_file(workspace)
-    _port_path(workspace).write_text(str(actual_port))
-    log.info("RPC listening on 127.0.0.1:%d", actual_port)
-
+    # Install signal handlers IMMEDIATELY after claiming the PID file so
+    # a SIGTERM arriving during the (relatively slow) SusOpsManager init
+    # routes through our finally block and cleans up the PID file. The
+    # default SIGTERM handler in Python terminates the process without
+    # running finally.
     stop_event = threading.Event()
 
     def _shutdown(signum, _frame) -> None:
@@ -139,7 +174,16 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    mgr = None
     try:
+        from susops.core.rpc_server import serve
+        from susops.facade import SusOpsManager
+
+        mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
+        runner, actual_port = serve(mgr, port=args.port)
+        _port_path(workspace).write_text(str(actual_port))
+        log.info("RPC listening on 127.0.0.1:%d", actual_port)
+
         log.info("Daemon started, pid=%d, workspace=%s", os.getpid(), workspace)
         stop_event.wait()
     finally:
@@ -152,18 +196,17 @@ def main() -> int:
         # Stop the manager (kills SSH masters, stops PAC/status threads).
         # Wrapped in a watchdog timer — if a child won't die we still exit.
         def _watchdog():
-            # If we're still alive 5 s after starting cleanup, the OS gets
-            # to reap us with prejudice. Better than zombies.
             import time as _t
             _t.sleep(5.0)
             log.error("Shutdown watchdog tripped, force-exiting")
             os._exit(1)
         threading.Thread(target=_watchdog, daemon=True, name="susops-services-watchdog").start()
 
-        try:
-            mgr.stop_quick()
-        except Exception:
-            log.exception("Error during manager stop")
+        if mgr is not None:
+            try:
+                mgr.stop_quick()
+            except Exception:
+                log.exception("Error during manager stop")
         # NOTE: we intentionally do NOT call `asyncio.run(runner.cleanup())`.
         # The aiohttp runner lives on a separate event loop (see serve() in
         # rpc_server.py) running on a daemon thread. Spawning a fresh loop

@@ -148,3 +148,60 @@ def test_preflight_rejects_when_pac_port_squatted(ws):
         assert b"bound by another process" in err
     finally:
         squat.close()
+
+
+def test_pid_file_claim_is_atomic_under_simultaneous_spawn(ws):
+    """Two daemons spawned simultaneously must NOT both succeed.
+
+    Before atomic claim, both would pass preflight (PID file didn't exist
+    yet) and then both bind PAC — one wins, the other logs the bind
+    failure silently and keeps running, ending up as a zombie daemon
+    holding the PID file write race.
+
+    Now PID-file creation uses O_EXCL so exactly one wins.
+    """
+    # Spawn many in parallel against the same workspace; one should win,
+    # the rest should exit with code 2 ("already running").
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-m", "susops.core.services_daemon",
+             "--workspace", str(ws), "--port", "0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(5)
+    ]
+    try:
+        # Give them all up to 3 s to either win or lose the race.
+        results = []
+        for p in procs:
+            try:
+                _, err = p.communicate(timeout=3)
+                results.append((p.returncode, err.decode()))
+            except subprocess.TimeoutExpired:
+                # This one won — it's running the main loop. Don't include
+                # in results yet; we'll terminate it below.
+                results.append(("running", ""))
+
+        winners = [r for r in results if r[0] == "running"]
+        losers = [r for r in results if r[0] != "running"]
+
+        # Exactly one daemon should be alive.
+        assert len(winners) == 1, (
+            f"expected exactly 1 winner, got {len(winners)}; "
+            f"all results: {results}"
+        )
+        # The rest must have exited with the "another daemon" code.
+        for rc, err in losers:
+            assert rc == 2, (
+                f"loser daemon should exit 2 (another daemon alive), got {rc}; "
+                f"stderr: {err!r}"
+            )
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    p.kill()
