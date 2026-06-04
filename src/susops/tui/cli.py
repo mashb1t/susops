@@ -59,36 +59,106 @@ def cmd_restart(args, m) -> int:
 
 
 def cmd_ps(args, m) -> int:
+    """Print the same status information as the tray's 'Show Status' dialog.
+
+    Sections:
+        SusOps <state>  ·  N of M running [· K disabled]
+        CONNECTIONS
+        PAC SERVER
+        SERVICES (Daemon RPC + Reconnect monitor + SSE)
+    """
     result = m.status()
     info = m.process_info()
 
-    for cs in result.connection_statuses:
-        icon = "●" if cs.running else "○"
-        port = f" (socks:{cs.socks_port})" if cs.socks_port else ""
-        pid = f" pid={cs.pid}" if cs.pid else ""
-        disabled = " [disabled]" if not cs.enabled else ""
-        print(f"  {icon} SSH [{cs.tag}]{port}{pid}{disabled}")
-        children = info["conn_children"].get(cs.tag, [])
-        for i, child in enumerate(children):
-            branch = "└" if i == len(children) - 1 else "├"
-            child_icon = "●" if child["running"] else "○"
-            child_pid = f" pid={child['pid']}" if child["pid"] else ""
-            print(f"    {branch} {child_icon} {child['display']}{child_pid}")
+    # ── Header ────────────────────────────────────────────────────────
+    state_glyph = {
+        "running": "●",
+        "stopped_partially": "◐",
+        "stopped": "○",
+        "error": "✕",
+        "initial": "○",
+    }.get(result.state.value, "○")
+    enabled = [c for c in result.connection_statuses if c.enabled]
+    running_n = sum(1 for c in enabled if c.running)
+    disabled_n = sum(1 for c in result.connection_statuses if not c.enabled)
+    summary = f"{running_n} of {len(enabled)} running"
+    if disabled_n:
+        summary += f"  ·  {disabled_n} disabled"
+    print(f"{state_glyph}  SusOps {result.state.value}")
+    print(f"   {summary}")
 
-    pac_icon = "●" if result.pac_running else "○"
-    pac_port = f" (port:{result.pac_port})" if result.pac_port else ""
-    print(f"  {pac_icon} PAC server{pac_port}")
+    # ── CONNECTIONS ───────────────────────────────────────────────────
+    print()
+    print("CONNECTIONS")
+    if not result.connection_statuses:
+        print("   (no connections configured)")
+    else:
+        tag_w = max(max(len(c.tag) for c in result.connection_statuses), 8)
+        for cs in result.connection_statuses:
+            if not cs.enabled:
+                dot, detail = "─", "disabled"
+            elif cs.running:
+                dot = "●"
+                bits = []
+                if cs.socks_port:
+                    bits.append(f"SOCKS {cs.socks_port}")
+                if cs.pid:
+                    bits.append(f"pid {cs.pid}")
+                detail = "   ".join(bits) if bits else "running"
+            else:
+                dot, detail = "○", "stopped"
+            print(f"  {dot}  {cs.tag:<{tag_w}}   {detail}")
+            # Tracked child processes (forward slaves, UDP socats) — keeps
+            # parity with the legacy `susops ps` tree view.
+            children = info["conn_children"].get(cs.tag, [])
+            for i, child in enumerate(children):
+                branch = "└" if i == len(children) - 1 else "├"
+                ch_icon = "●" if child["running"] else "○"
+                ch_pid = f" pid={child['pid']}" if child["pid"] else ""
+                print(f"      {branch} {ch_icon} {child['display']}{ch_pid}")
+
+    # ── PAC SERVER ────────────────────────────────────────────────────
+    print()
+    print("PAC SERVER")
+    if result.pac_running and result.pac_port:
+        print(f"  ●  http://localhost:{result.pac_port}/susops.pac")
+    else:
+        print("  ○  stopped")
+
+    # ── SERVICES (Daemon RPC + Reconnect + SSE) ───────────────────────
+    print()
+    print("SERVICES")
+    workspace = m.workspace
+    try:
+        rpc_port = int((workspace / "pids" / "susops-services.port")
+                       .read_text().strip())
+        print(f"  ●  Daemon     RPC  http://localhost:{rpc_port}/rpc")
+    except (OSError, ValueError):
+        print("  ○  Daemon     RPC  (port file unavailable)")
+    try:
+        pid = int((workspace / "pids" / "susops-services.pid")
+                  .read_text().strip())
+        print(f"     Daemon     PID  {pid}")
+    except (OSError, ValueError):
+        pass
+    try:
+        sse_url = m.get_status_url() or ""
+    except Exception:
+        sse_url = ""
+    if sse_url:
+        print(f"     Daemon     SSE  {sse_url}")
+    print(f"     Workspace       {workspace}")
 
     rec = info["reconnect"]
-    if rec["daemon_running"]:
-        rec_pid = f" pid={rec['pid']}" if rec["pid"] else ""
-        print(f"  ● Reconnect daemon{rec_pid}")
-    elif rec["thread_alive"]:
-        print(f"  ● Reconnect (in-process)")
+    if rec.get("daemon_running"):
+        rec_pid = f" pid={rec['pid']}" if rec.get("pid") else ""
+        print(f"  ●  Reconnect  daemon{rec_pid}")
+    elif rec.get("thread_alive") and rec.get("watching"):
+        n = len(rec["watching"])
+        print(f"  ●  Reconnect  watching {n} connection{'s' if n != 1 else ''}")
     else:
-        print(f"  ○ Reconnect")
+        print("  ○  Reconnect  stopped")
 
-    print(f"State: {result.state.value}")
     return _state_exit_code(result.state)
 
 
