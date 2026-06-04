@@ -62,8 +62,8 @@ def get_ssh_hosts() -> list[str]:
                     hosts.append(h)
     return hosts
 
+from susops.client import SusOpsClient
 from susops.core.config import PortForward
-from susops.facade import SusOpsManager
 
 
 class AbstractTrayApp(ABC):
@@ -79,8 +79,8 @@ class AbstractTrayApp(ABC):
     """
 
     def __init__(self) -> None:
-        self.manager = SusOpsManager(process_name="susops-tray")
-        self.manager.on_state_change = self._on_state_change_safe
+        workspace = Path.home() / ".susops"
+        self.manager = SusOpsClient(workspace=workspace, process_name="susops-tray")
         self.state = ProcessState.INITIAL
 
     # ------------------------------------------------------------------ #
@@ -116,7 +116,7 @@ class AbstractTrayApp(ABC):
         self.update_menu_sensitivity(state)
 
     def do_poll(self) -> None:
-        """Poll SusOpsManager status and update UI. Called on a timer."""
+        """Poll SusOpsClient status and update UI. Called on a timer."""
         result = self.manager.status()
         self._on_state_change_safe(result.state)
 
@@ -198,18 +198,35 @@ class AbstractTrayApp(ABC):
     def do_add_connection(self, tag: str, host: str, port: int = 0) -> None:
         try:
             conn = self.manager.add_connection(tag, host, port)
-            if self._should_restart_after_change():
-                self.do_restart()
-            else:
-                self.show_alert("Added", f"Connection '{conn.tag}' → {conn.ssh_host}")
         except ValueError as e:
             self.show_alert("Error", str(e))
+            return
+
+        # If the proxy is up, bring just the new connection online — don't
+        # restart everything (that would tear down every other working
+        # tunnel and reconnect them needlessly).
+        if self.state == ProcessState.RUNNING:
+            def _run():
+                result = self.manager.start(tag=conn.tag)
+                return result.message, result.success
+
+            def _done(result):
+                msg, ok = result
+                if not ok:
+                    self.show_alert("Start failed", msg)
+                else:
+                    self.show_alert("Added", f"Connection '{conn.tag}' → {conn.ssh_host}")
+
+            self.run_in_background(_run, _done)
+        else:
+            self.show_alert("Added", f"Connection '{conn.tag}' → {conn.ssh_host}")
 
     def do_remove_connection(self, tag: str) -> None:
+        # facade.remove_connection() already stops the tunnel for this tag
+        # and regenerates the PAC; no global restart is needed (and the
+        # restart would tear down every other working tunnel).
         try:
             self.manager.remove_connection(tag)
-            if self._should_restart_after_change():
-                self.do_restart()
         except ValueError as e:
             self.show_alert("Error", str(e))
 
@@ -472,8 +489,9 @@ class AbstractTrayApp(ABC):
     def do_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
             self.manager.stop()
-        else:
-            self.manager.detach_reconnect_monitor()
+        # else: the daemon is a separate process — it keeps running with
+        # PAC server, status SSE, and reconnect monitor independent of the
+        # tray's lifetime. No detach calls needed.
 
     def _should_restart_after_change(self) -> bool:
         return self.state == ProcessState.RUNNING
