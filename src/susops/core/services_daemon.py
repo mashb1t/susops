@@ -157,14 +157,9 @@ def main() -> int:
                         format="%(asctime)s [services] %(message)s")
     log = logging.getLogger("susops.services")
 
-    # Atomically claim the PID file. Past this point we own it.
-    _preflight(workspace, log)
-
-    # Install signal handlers IMMEDIATELY after claiming the PID file so
-    # a SIGTERM arriving during the (relatively slow) SusOpsManager init
-    # routes through our finally block and cleans up the PID file. The
-    # default SIGTERM handler in Python terminates the process without
-    # running finally.
+    # Install signal handlers BEFORE preflight: SIGTERM arriving in the
+    # window between claiming the PID file and entering the try block
+    # otherwise triggers Python's default handler, bypassing cleanup.
     stop_event = threading.Event()
 
     def _shutdown(signum, _frame) -> None:
@@ -173,6 +168,8 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+
+    _preflight(workspace, log)
 
     mgr = None
     try:
