@@ -66,7 +66,7 @@ app = BUNDLE(
     icon="assets/susops.icns",
     bundle_identifier="net.odt.susops",
     info_plist={
-        "CFBundleShortVersionString": "3.0.0",
+        "CFBundleShortVersionString": "3.0.0-rc2",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },
