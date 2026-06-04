@@ -166,6 +166,7 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
     `@work(thread=True)` makes this a real (and reported) race on rapid Stop
     clicks.
     """
+    import os
     path = get_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml = YAML()
@@ -175,11 +176,38 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
     data = config.model_dump(mode='python')
     # Convert enums to their values for serialization
     data['susops_app']['logo_style'] = config.susops_app.logo_style.value
+    # Compute the target mode BEFORE writing: preserve any user-set restrictive
+    # permissions (e.g. chmod 600 on a hardened install) since Path.replace()
+    # would otherwise clobber them with the temp file's umask-derived mode.
+    # New configs default to 0o600 — the file holds share passwords.
+    try:
+        target_mode = path.stat().st_mode & 0o777
+    except OSError:
+        target_mode = 0o600
     # Temp file in the same directory so the rename stays on one filesystem.
+    # Open with O_EXCL so we never overwrite a leftover temp file from a
+    # crashed earlier save (would otherwise inherit its mode).
     tmp_path = path.with_name(path.name + ".tmp")
     try:
-        with open(tmp_path, 'w') as f:
-            yaml.dump(data, f)
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            target_mode,
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                yaml.dump(data, f)
+        except Exception:
+            # fdopen owns fd on success; on failure we may need to close it
+            # if fdopen never took ownership. Best-effort.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        # umask may have stripped bits from O_CREAT's mode argument — set
+        # explicitly so the result matches target_mode exactly.
+        os.chmod(tmp_path, target_mode)
         tmp_path.replace(path)  # atomic on POSIX + Windows ≥ 3.3
     except Exception:
         # Best-effort cleanup of the temp file if the write failed.
