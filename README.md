@@ -188,6 +188,32 @@ susops ps   # shows PAC port, e.g. http://localhost:51234/susops.pac
 
 ---
 
+## Services Daemon
+
+SusOps' background services (PAC HTTP server, status SSE endpoint, reconnect monitor, bandwidth sampler) run in a single long-lived process: `susops-services`. The CLI, TUI, and tray are thin clients that talk to it over JSON-over-HTTP RPC. If the daemon isn't running when you invoke a frontend, it's auto-spawned. To have it always running, install one of the supervisor units below.
+
+### macOS (launchd)
+
+```bash
+cp packaging/macos/org.susops.services.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/org.susops.services.plist
+```
+
+Adjust the `ProgramArguments` path in the plist if `susops-services` isn't at `/usr/local/bin/susops-services` (run `which susops-services` to find yours).
+
+### Linux (systemd-user)
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp packaging/linux/susops-services.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now susops-services
+```
+
+The unit uses `%h/.local/bin/susops-services` — adjust if your install path differs.
+
+---
+
 ## TUI
 
 Run `susops` (or `so`) with no arguments in a terminal to launch the interactive TUI:

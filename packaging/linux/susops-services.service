@@ -1,0 +1,12 @@
+[Unit]
+Description=SusOps services daemon (PAC, status SSE, reconnect monitor, bandwidth sampler)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/susops-services
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
