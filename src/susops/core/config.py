@@ -112,7 +112,6 @@ class AppConfig(BaseModel):
     ephemeral_ports: bool = False
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
-    status_server_port: int = 0
 
     @field_validator("stop_on_quit", "ephemeral_ports", "restore_shares_on_start", mode="before")
     @classmethod
@@ -131,9 +130,35 @@ class AppConfig(BaseModel):
 
 
 class SusOpsConfig(BaseModel):
+    # Server ports are at the top of the config so they're the first thing
+    # users see when they open the file. All three default to 0 (auto-allocate
+    # at startup and write back).
+    rpc_server_port: int = 0
+    status_server_port: int = 0
     pac_server_port: int = 0
     connections: list[Connection] = []
     susops_app: AppConfig = AppConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_status_server_port(cls, data: Any) -> Any:
+        """Pull legacy susops_app.status_server_port up to the top level.
+
+        Older configs nested the SSE port under `susops_app` alongside user
+        preferences. It's a server port, not a preference — moved to the
+        top with the other ports. This migration runs on every load so old
+        files keep working; the new schema is written back on the next save.
+        """
+        if not isinstance(data, dict):
+            return data
+        app = data.get("susops_app")
+        if isinstance(app, dict) and "status_server_port" in app:
+            legacy = app.pop("status_server_port")
+            # Only adopt the legacy value when the new field isn't already set
+            # to something non-default — explicit top-level config wins.
+            if not data.get("status_server_port"):
+                data["status_server_port"] = legacy
+        return data
 
 
 def get_config_path(workspace: Path = WORKSPACE_DEFAULT) -> Path:

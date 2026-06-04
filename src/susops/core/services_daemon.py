@@ -181,7 +181,16 @@ def main() -> int:
         from susops.facade import SusOpsManager
 
         mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
-        runner, actual_port = serve(mgr, port=args.port)
+        # CLI `--port` wins; fall back to the configured `rpc_server_port`,
+        # then 0 (auto-allocate). When we auto-allocate, persist the bound
+        # port back to config so subsequent spawns reuse it.
+        requested_port = args.port or mgr.config.rpc_server_port or 0
+        runner, actual_port = serve(mgr, port=requested_port)
+        if requested_port == 0 and actual_port != mgr.config.rpc_server_port:
+            mgr.config = mgr.config.model_copy(
+                update={"rpc_server_port": actual_port}
+            )
+            mgr._save()
         _port_path(workspace).write_text(str(actual_port))
         log.info("RPC listening on 127.0.0.1:%d", actual_port)
 

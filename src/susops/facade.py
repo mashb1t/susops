@@ -997,15 +997,11 @@ class SusOpsManager:
         if self._status_server.is_running():
             return self._status_server.get_port()
         try:
-            status_port = self.config.susops_app.status_server_port
+            status_port = self.config.status_server_port
             actual_port = self._status_server.start(port=status_port)
             if actual_port != status_port and status_port == 0:
                 self.config = self.config.model_copy(
-                    update={
-                        "susops_app": self.config.susops_app.model_copy(
-                            update={"status_server_port": actual_port}
-                        )
-                    }
+                    update={"status_server_port": actual_port}
                 )
                 self._save()
             return actual_port

@@ -728,10 +728,6 @@ components:
               default: true
               title: Restore Shares On Start
               type: boolean
-            status_server_port:
-              default: 0
-              title: Status Server Port
-              type: integer
           title: AppConfig
           type: object
         Connection:
@@ -862,6 +858,14 @@ components:
           title: PortForward
           type: object
       properties:
+        rpc_server_port:
+          default: 0
+          title: Rpc Server Port
+          type: integer
+        status_server_port:
+          default: 0
+          title: Status Server Port
+          type: integer
         pac_server_port:
           default: 0
           title: Pac Server Port
@@ -879,7 +883,6 @@ components:
             ephemeral_ports: false
             logo_style: COLORED_GLASSES
             restore_shares_on_start: true
-            status_server_port: 0
       title: SusOpsConfig
       type: object
     InvokeListShares:
