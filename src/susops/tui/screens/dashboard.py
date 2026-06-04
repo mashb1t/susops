@@ -5,6 +5,9 @@ from collections import deque
 from pathlib import Path
 
 from rich.markup import escape as markup_escape
+from rich.text import Text as RichText
+
+from susops.core.log_style import style_log_line
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -29,6 +32,27 @@ from susops.tui.screens import fmt_bps, fmt_bytes, open_in_explorer, open_path, 
 
 
 _fmt_bps = fmt_bps
+
+
+# Map log_style labels to Rich style strings. None means no styling.
+_LOG_STYLE_RICH: dict[str | None, str | None] = {
+    None: None,
+    "tag": "bold cyan",
+    "ok": "green",
+    "warn": "yellow",
+    "err": "bold red",
+    "dim": "dim",
+    "info": "blue",
+}
+
+
+def _format_log_line(line: str) -> RichText:
+    """Render a raw log line as a colored Rich Text object."""
+    text = RichText(no_wrap=False)
+    for chunk, label in style_log_line(line):
+        style = _LOG_STYLE_RICH.get(label)
+        text.append(chunk, style=style)
+    return text
 
 
 def _scale_data(data: list[float]) -> tuple[list[float], str]:
@@ -72,8 +96,9 @@ def _fmt_bw_line(
     tx_t: float,
     tag_width: int = 25,
     show_dot: bool = True,
+    enabled: bool = True,
 ) -> str:
-    dot = status_dot(running)
+    dot = status_dot(running, enabled)
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
@@ -84,8 +109,7 @@ def _fmt_bw_line(
 
 def _fmt_domain_line(host: str, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
-    return f"{pre}{host}"
-
+    return f"{pre}[link='http://{host}']{host}[/link]"
 
 def _fmt_forward_local(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
@@ -127,8 +151,7 @@ class DashboardScreen(Screen):
     #main-split { height: 1fr; }
     #conn-panel { width: 49; background: $surface-darken-1; border-right: solid $primary-darken-2; }
     #conn-list  { height: 1fr; border: round $primary-darken-1; margin: 1 1 0 1; border-title-align: left; }
-    #pac-info        { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
-    #reconnect-info  { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 0 1 1 1; border-title-align: left; }
+    #services-info  { height: auto; padding: 0 1; border: round $primary-darken-1; margin: 1; border-title-align: left; }
     #detail-panel { width: 1fr; }
     #detail-tabs  { height: 1fr; }
     #stats-content { height: auto; padding: 1 2; }
@@ -159,11 +182,10 @@ class DashboardScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-split"):
-            # Left: connection list + PAC status + reconnect monitor
+            # Left: connection list + unified services panel (Daemon/PAC/Reconnect)
             with Vertical(id="conn-panel"):
                 yield ListView(id="conn-list")
-                yield Static(id="pac-info", markup=True)
-                yield Static(id="reconnect-info", markup=True)
+                yield Static(id="services-info", markup=True)
             # Centre: stats + bandwidth + logs
             with Vertical(id="detail-panel"):
                 with TabbedContent(id="detail-tabs"):
@@ -194,8 +216,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#conn-list", ListView).border_title = "Connections"
-        self.query_one("#pac-info", Static).border_title = "PAC"
-        self.query_one("#reconnect-info", Static).border_title = "Reconnect"
+        self.query_one("#services-info", Static).border_title = "Services"
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
@@ -236,8 +257,14 @@ class DashboardScreen(Screen):
         self.refresh_status()
 
     def _on_new_log(self, msg: str) -> None:
+        # Log buffer stores raw text; render via the shared styler so the
+        # connection-tag prefix, success/warn/error keywords, and PIDs each
+        # get a consistent colour across all frontends.
         try:
-            self.app.call_from_thread(self.query_one("#detail-logs", RichLog).write, msg)
+            self.app.call_from_thread(
+                self.query_one("#detail-logs", RichLog).write,
+                _format_log_line(msg),
+            )
         except Exception:
             pass
 
@@ -376,24 +403,76 @@ class DashboardScreen(Screen):
         else:
             self._selected_tag = self._conn_tags[min(idx - 1, len(self._conn_tags) - 1)]
 
-        # PAC server status
-        if result.pac_running and result.pac_port:
-            pac_text = f"[green]●[/green] http://localhost:{result.pac_port}/susops.pac"
-        else:
-            pac_text = "[dim]○ stopped[/dim]"
-        self.query_one("#pac-info", Static).update(pac_text)
+        # Unified services panel: Daemon (RPC) + PAC + Reconnect, one row each
+        # with a "Label" prefix so the meaning is obvious. Pulls daemon info
+        # from the local port/pid files written by services_daemon.py.
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        workspace = mgr.workspace
+        # Use `localhost:` consistently — matches what users see in PAC URLs
+        # and browser proxy config. (127.0.0.1 is what aiohttp binds to, but
+        # the display is for humans.) Label column padded to 10 chars so
+        # "Daemon RPC" / "Daemon SSE" / "PAC" / "Reconnect" all align.
+        try:
+            rpc_port = int((workspace / "pids" / "susops-services.port").read_text().strip())
+            rpc_line = (
+                f"[green]●[/green] [bold]Daemon RPC[/bold] "
+                f"[link='http://localhost:{rpc_port}/rpc']localhost:{rpc_port}/rpc[/link]"
+            )
+        except (OSError, ValueError):
+            rpc_line = "[dim]○ [bold]Daemon RPC[/bold] not running[/dim]"
 
-        # Reconnect monitor status
+        # SSE port is held by mgr._status_server, exposed via get_status_url().
+        try:
+            sse_url = mgr.get_status_url() or ""
+        except Exception:
+            sse_url = ""
+        if sse_url:
+            # Strip scheme + path for the compact display form, mirroring
+            # the RPC row: "localhost:<port>/events". get_status_url() returns
+            # e.g. "http://127.0.0.1:9999/events".
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(sse_url)
+                sse_display = f"localhost:{parsed.port}{parsed.path}"
+            except Exception:
+                sse_display = sse_url
+            sse_line = (
+                f"[green]●[/green] [bold]Daemon SSE[/bold] "
+                f"[link='{sse_url}']{sse_display}[/link]"
+            )
+        else:
+            sse_line = "[dim]○ [bold]Daemon SSE[/bold] stopped[/dim]"
+
+        if result.pac_running and result.pac_port:
+            # Compact form matching the Daemon rows (host:port). Modern
+            # terminals auto-detect URLs as Cmd-clickable; the single-quoted
+            # `[link='URL']` syntax is required so Textual's markup parser
+            # accepts the `:` in the URL value.
+            pac_line = (
+                f"[green]●[/green] [bold]PAC[/bold]        "
+                f"[link='http://localhost:{result.pac_port}/susops.pac']"
+                f"localhost:{result.pac_port}/susops.pac[/link]"
+            )
+        else:
+            pac_line = "[dim]○ [bold]PAC[/bold]        stopped[/dim]"
+
+        # Reconnect monitor — "watching nothing" is functionally stopped from
+        # the user's POV (no connections to reconnect), so collapse the
+        # "thread alive but idle" state into the stopped one.
         if reconnect["thread_alive"] and reconnect["watching"]:
             n = len(reconnect["watching"])
-            reconnect_text = f"[green]●[/green] watching {n} connection{'s' if n != 1 else ''}"
-        elif reconnect["thread_alive"]:
-            reconnect_text = "[dim]○ idle[/dim]"
-        elif reconnect["daemon_running"]:
-            reconnect_text = "[yellow]●[/yellow] daemon (bg)"
+            reconnect_line = (
+                f"[green]●[/green] [bold]Reconnect[/bold]  "
+                f"watching {n} connection{'s' if n != 1 else ''}"
+            )
+        elif reconnect["daemon_running"] and not reconnect["thread_alive"]:
+            reconnect_line = "[yellow]●[/yellow] [bold]Reconnect[/bold]  daemon (bg)"
         else:
-            reconnect_text = "[dim]○ stopped[/dim]"
-        self.query_one("#reconnect-info", Static).update(reconnect_text)
+            reconnect_line = "[dim]○ [bold]Reconnect[/bold]  stopped[/dim]"
+
+        self.query_one("#services-info", Static).update(
+            "\n".join([rpc_line, sse_line, pac_line, reconnect_line])
+        )
 
         # Refresh detail and context panels for currently selected tag
         self._update_detail_panel(self._selected_tag)
@@ -406,9 +485,13 @@ class DashboardScreen(Screen):
 
     def _render_all_stats(self) -> str:
         """Render aggregate stats for the 'All' view."""
-        running = sum(1 for d in self._conn_data.values() if d["cs"].running)
-        total = len(self._conn_data)
-        if total == 0:
+        # Disabled connections are intentionally out of rotation — exclude them
+        # from the "running / total" count so the total reflects what the user
+        # actually expects to be up.
+        enabled_data = {t: d for t, d in self._conn_data.items() if d["cs"].enabled}
+        running = sum(1 for d in enabled_data.values() if d["cs"].running)
+        total = len(enabled_data)
+        if not self._conn_data:
             return "[dim]No connections configured.[/dim]"
 
         total_cpu = sum(d["proc_info"].get("cpu", 0.0) for d in self._conn_data.values())
@@ -433,7 +516,10 @@ class DashboardScreen(Screen):
             f"  [dim]{'─' * 61}[/dim]",
         ]
         for tag, data in self._conn_data.items():
-            lines.append(_fmt_bw_line(tag, data["cs"].running, *data["bw"], *data["bw_total"]))
+            lines.append(_fmt_bw_line(
+                tag, data["cs"].running, *data["bw"], *data["bw_total"],
+                enabled=data["cs"].enabled,
+            ))
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
@@ -444,7 +530,7 @@ class DashboardScreen(Screen):
         log_widget.clear()
         mgr = self.app.manager  # type: ignore[attr-defined]
         for line in mgr.get_logs(500):
-            log_widget.write(line)
+            log_widget.write(_format_log_line(line))
 
         # All view — aggregate stats + combined bandwidth charts
         if tag is None:
@@ -657,9 +743,18 @@ class DashboardScreen(Screen):
                     time.sleep(0.1)
                 continue
             try:
-                req = urllib.request.Request(status_url)
-                # Short timeout so the thread wakes up and can exit promptly
-                with urllib.request.urlopen(req, timeout=2) as resp:
+                import os
+                req = urllib.request.Request(status_url, headers={
+                    "X-Susops-Client": "tui",
+                    "X-Susops-Client-Version": susops.__version__,
+                    "X-Susops-Pid": str(os.getpid()),
+                })
+                # 60 s read timeout — must exceed the server's 5 s SSE
+                # heartbeat interval, otherwise every quiet stretch between
+                # heartbeats triggers a fake "disconnect" and a reconnect
+                # storm. The `_sse_active` check in the read loop still wakes
+                # within ≤5 s thanks to the heartbeat itself.
+                with urllib.request.urlopen(req, timeout=60) as resp:
                     backoff = 1.0
                     buf = ""
                     for raw in resp:
