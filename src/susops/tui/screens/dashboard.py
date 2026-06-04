@@ -255,21 +255,34 @@ class DashboardScreen(Screen):
     @work(thread=True)
     def refresh_status(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
-        result: StatusResult = mgr.status()
+        try:
+            result: StatusResult = mgr.status()
 
-        extras: dict[str, dict] = {}
-        bw: dict[str, tuple[float, float]] = {}
-        bw_totals: dict[str, tuple[float, float]] = {}
-        uptimes: dict[str, float | None] = {}
-        for cs in result.connection_statuses:
-            extras[cs.tag] = mgr.get_process_info(cs.tag)
-            bw[cs.tag] = mgr.get_bandwidth(cs.tag)
-            bw_totals[cs.tag] = mgr.get_bandwidth_totals(cs.tag)
-            uptimes[cs.tag] = mgr.get_uptime(cs.tag)
+            extras: dict[str, dict] = {}
+            bw: dict[str, tuple[float, float]] = {}
+            bw_totals: dict[str, tuple[float, float]] = {}
+            uptimes: dict[str, float | None] = {}
+            for cs in result.connection_statuses:
+                extras[cs.tag] = mgr.get_process_info(cs.tag)
+                bw[cs.tag] = mgr.get_bandwidth(cs.tag)
+                bw_totals[cs.tag] = mgr.get_bandwidth_totals(cs.tag)
+                uptimes[cs.tag] = mgr.get_uptime(cs.tag)
 
-        shares = mgr.list_shares()
-        config = mgr.list_config()
-        reconnect = mgr.reconnect_monitor_info()
+            shares = mgr.list_shares()
+            config = mgr.list_config()
+            reconnect = mgr.reconnect_monitor_info()
+        except Exception as exc:
+            # Any RPC failure / YAML parse error / unexpected exception
+            # raised here becomes a Textual WorkerFailed that crashes the
+            # TUI. Surface it as a notification toast and stay on the
+            # current screen; the next 2-second tick will retry.
+            self.app.call_from_thread(
+                self.notify,
+                f"Refresh failed: {exc}",
+                severity="error",
+                timeout=6,
+            )
+            return
         self.app.call_from_thread(
             self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config, reconnect
         )

@@ -58,25 +58,12 @@ def test_tui_survives_daemon_kill(tui_workspace):
     asyncio.run(_run())
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "refresh_status worker does not catch YAML/RPC errors — WorkerFailed "
-        "escapes from run_test(). Fix: catch errors in worker and surface as "
-        "notifications instead of crashing. When fixed, this xfail becomes xpass."
-    ),
-)
 def test_tui_config_error_shows_modal(tui_workspace):
-    """Corrupt config.yaml should surface as a notification, not crash the worker.
+    """Corrupt config.yaml surfaces as a notification, not a crash.
 
-    With correct error handling the TUI should stay on DashboardScreen and show
-    a notification about the config error.  Currently the refresh_status @work
-    worker lets YAML parse errors propagate as WorkerFailed, which escapes from
-    run_test() and crashes the test.  Marked xfail until the worker is fixed.
-
-    TODO: fix the refresh_status worker to catch YAML/RPC errors instead of
-    propagating WorkerFailed. Until then, this test documents the expected
-    correct behaviour and is expected to fail.
+    refresh_status is decorated @work(thread=True) and used to let YAML/RPC
+    errors propagate as WorkerFailed — that escaped run_test() and killed
+    the TUI. Now the worker catches and notifies; the dashboard stays up.
     """
     config_file = tui_workspace / "config.yaml"
     config_file.write_text("not: valid: yaml: {{{broken")
@@ -85,12 +72,7 @@ def test_tui_config_error_shows_modal(tui_workspace):
         app = SusOpsTuiApp()
         async with app.run_test(headless=True, size=(140, 50)) as pilot:
             await pilot.pause(1.0)
-            screen_name = type(app.screen).__name__
-            # With proper error handling the screen should be DashboardScreen and
-            # the error should appear as a notification, not crash the worker.
-            assert screen_name == "DashboardScreen", (
-                f"Expected DashboardScreen after config error, got {screen_name}"
-            )
+            assert type(app.screen).__name__ == "DashboardScreen"
 
     asyncio.run(_run())
 
