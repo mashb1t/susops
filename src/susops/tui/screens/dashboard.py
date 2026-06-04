@@ -424,6 +424,15 @@ class DashboardScreen(Screen):
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
+        # Logs are global (not per-connection) — populate before any
+        # per-tag branch returns. Previously this lived in the per-tag
+        # block so the Logs tab was empty on the default "All" view.
+        log_widget = self.query_one("#detail-logs", RichLog)
+        log_widget.clear()
+        mgr = self.app.manager  # type: ignore[attr-defined]
+        for line in mgr.get_logs(500):
+            log_widget.write(line)
+
         # All view — aggregate stats + combined bandwidth charts
         if tag is None:
             self.query_one("#stats-content", Static).update(self._render_all_stats())
@@ -536,13 +545,7 @@ class DashboardScreen(Screen):
         tx_chart.plt.yticks(tx_ticks, tx_labels)
         tx_chart.plt.plot(tx_scaled, color="yellow")
         tx_chart.refresh()
-
-        # Logs
-        log_widget = self.query_one("#detail-logs", RichLog)
-        log_widget.clear()
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        for line in mgr.get_logs(500):
-            log_widget.write(line)
+        # (Logs already populated at the top of _update_detail_panel.)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         index = event.list_view.index
