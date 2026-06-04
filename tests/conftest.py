@@ -69,3 +69,47 @@ def _cleanup_ssh_after_test():
     """Per-test fixture: kill test-spawned ssh processes after each test."""
     yield
     _kill_susops_ssh_processes()
+
+
+import time
+
+
+@pytest.fixture
+def daemon(tmp_path):
+    """Spawn a fresh susops-services daemon in tmp_path; tear it down after the test.
+
+    Yields the workspace path. The daemon writes its PID + port files into
+    ``<workspace>/pids/``. Stderr is captured so a preflight failure shows
+    up if the spawn never completes.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "susops.core.services_daemon",
+         "--workspace", str(tmp_path), "--port", "0"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    port_file = tmp_path / "pids" / "susops-services.port"
+    for _ in range(50):
+        if port_file.exists():
+            break
+        time.sleep(0.1)
+    if not port_file.exists():
+        proc.kill()
+        try:
+            _, err = proc.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            err = b""
+        pytest.fail(
+            f"daemon never came up; stderr: {err.decode(errors='replace')!r}"
+        )
+    try:
+        yield tmp_path
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
