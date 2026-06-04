@@ -86,6 +86,11 @@ def encode_value(v: Any) -> Any:
         return {"__type__": type(v).__name__, "value": encoded}
     if isinstance(v, (list, tuple)):
         return [encode_value(x) for x in v]
+    if isinstance(v, (set, frozenset)):
+        # JSON has no native set type — flatten to a list. Sort for
+        # deterministic output. Callers that need set semantics on the
+        # other end can `set(...)` it themselves.
+        return [encode_value(x) for x in sorted(v, key=repr)]
     if isinstance(v, dict):
         return _encode_dict(v)
     raise TypeError(f"Cannot encode value of type {type(v).__name__}: {v!r}")

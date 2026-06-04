@@ -77,6 +77,18 @@ def test_invocation_response_error():
     assert parsed.error_type == "ValueError"
 
 
+def test_encode_set_to_list():
+    """Sets are not JSON-native; encoder flattens to a sorted list.
+
+    reconnect_monitor_info() returns a dict with a `watching: set[str]`
+    field — without this branch it'd fail with `Cannot encode value of
+    type set` and break the TUI's dashboard.
+    """
+    encoded = encode_value({"a", "b", "c"})
+    assert isinstance(encoded, list)
+    assert sorted(encoded) == ["a", "b", "c"]
+
+
 def test_encode_decode_nested_dataclass_keeps_types():
     """StatusResult contains tuple[ConnectionStatus, ...]; the inner
     ConnectionStatus instances must survive the round-trip as real

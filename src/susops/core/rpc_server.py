@@ -30,7 +30,8 @@ _ALLOWED_METHODS: set[str] = {
     # Forwards
     "add_local_forward", "add_remote_forward",
     "remove_local_forward", "remove_remote_forward",
-    "toggle_forward_enabled",
+    "toggle_forward_enabled", "set_forward_enabled",
+    "is_udp_forward_running",
     # File sharing
     "share", "stop_share", "delete_share", "list_shares",
     "share_is_running", "fetch",
@@ -45,8 +46,11 @@ _ALLOWED_METHODS: set[str] = {
     "get_bandwidth", "get_bandwidth_totals",
     # Reconnect introspection
     "reconnect_monitor_info",
-    # Process introspection (used by `susops ps`)
-    "process_info",
+    # Process introspection
+    "process_info",          # global — used by `susops ps`
+    "get_process_info",      # per-tag — used by TUI dashboard
+    "get_uptime",            # per-tag — used by TUI dashboard / connections panel
+    "get_logs",              # used by TUI logs panel
 }
 
 
