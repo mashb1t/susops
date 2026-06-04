@@ -74,7 +74,16 @@ def encode_value(v: Any) -> Any:
     if isinstance(v, BaseModel):
         return {"__type__": type(v).__name__, "value": v.model_dump(mode="json")}
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return {"__type__": type(v).__name__, "value": _encode_dict(dataclasses.asdict(v))}
+        # Encode field-by-field via encode_value rather than dataclasses.asdict()
+        # — asdict() recursively flattens nested dataclasses (and tuples) into
+        # plain dicts/lists, throwing away the __type__ tags the decoder needs
+        # to reconstruct the original types. Going through encode_value keeps
+        # ConnectionStatus / TestResult / etc. tagged inside their parents.
+        encoded = {
+            f.name: encode_value(getattr(v, f.name))
+            for f in dataclasses.fields(v)
+        }
+        return {"__type__": type(v).__name__, "value": encoded}
     if isinstance(v, (list, tuple)):
         return [encode_value(x) for x in v]
     if isinstance(v, dict):

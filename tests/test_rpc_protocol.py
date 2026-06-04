@@ -75,3 +75,30 @@ def test_invocation_response_error():
     assert parsed.ok is False
     assert parsed.error == "boom"
     assert parsed.error_type == "ValueError"
+
+
+def test_encode_decode_nested_dataclass_keeps_types():
+    """StatusResult contains tuple[ConnectionStatus, ...]; the inner
+    ConnectionStatus instances must survive the round-trip as real
+    dataclass instances, not bare dicts. Regression test for the
+    `susops ps` AttributeError when CS came back as dict.
+    """
+    cs1 = ConnectionStatus(tag="work", running=True, socks_port=1080, pid=1234)
+    cs2 = ConnectionStatus(tag="staging", running=False, socks_port=0, pid=None)
+    sr = StatusResult(
+        state=ProcessState.RUNNING,
+        connection_statuses=(cs1, cs2),
+        pac_running=True,
+        pac_port=51234,
+        message="",
+    )
+    decoded = decode_arg(encode_value(sr))
+    assert isinstance(decoded, StatusResult)
+    assert decoded.state is ProcessState.RUNNING
+    assert len(decoded.connection_statuses) == 2
+    for cs in decoded.connection_statuses:
+        assert isinstance(cs, ConnectionStatus), \
+            f"expected ConnectionStatus, got {type(cs).__name__}: {cs!r}"
+    assert decoded.connection_statuses[0].tag == "work"
+    assert decoded.connection_statuses[0].running is True
+    assert decoded.connection_statuses[1].tag == "staging"
