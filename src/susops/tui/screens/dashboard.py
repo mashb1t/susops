@@ -891,16 +891,8 @@ class BrowserScreen(ModalScreen):
         profile_dir = mgr.workspace / "firefox_profile"
         try:
             launch_with_pac(browser, pac_url, profile_dir=profile_dir)
-            try:
-                mgr.log_message(f"Browser launch: {browser.name} with PAC {pac_url}")
-            except Exception:
-                pass
             self.app.notify(f"Launched {browser.name} with PAC", timeout=3)
         except Exception as exc:
-            try:
-                mgr.log_message(f"Browser launch failed: {browser.name}: {exc}")
-            except Exception:
-                pass
             self.app.notify(f"Launch failed: {exc}", severity="error")
         self.dismiss()
 
@@ -918,16 +910,8 @@ class BrowserScreen(ModalScreen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         try:
             open_proxy_settings(browser)
-            try:
-                mgr.log_message(f"Opened proxy settings in {browser.name}")
-            except Exception:
-                pass
             self.app.notify(f"Opened proxy settings in {browser.name}", timeout=3)
         except Exception as exc:
-            try:
-                mgr.log_message(f"Open proxy settings failed: {browser.name}: {exc}")
-            except Exception:
-                pass
             self.app.notify(f"Open failed: {exc}", severity="error")
         self.dismiss()
 

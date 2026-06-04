@@ -506,15 +506,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 return
             try:
                 launch_with_pac(browser, pac_url)
-                try:
-                    self.manager.log_message(f"Browser launch: {exe} with PAC {pac_url}")
-                except Exception:
-                    pass
             except Exception as exc:
-                try:
-                    self.manager.log_message(f"Browser launch failed: {exe}: {exc}")
-                except Exception:
-                    pass
                 self.show_alert("Launch Failed", str(exc))
         return handler
 
@@ -524,15 +516,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         def handler(_item):
             try:
                 open_proxy_settings(browser)
-                try:
-                    self.manager.log_message(f"Opened proxy settings in {exe}")
-                except Exception:
-                    pass
             except Exception as exc:
-                try:
-                    self.manager.log_message(f"Open proxy settings failed: {exe}: {exc}")
-                except Exception:
-                    pass
                 self.show_alert("Launch Failed", str(exc))
         return handler
 
@@ -547,15 +531,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             profile_dir = self.manager.workspace / "firefox_profile"
             try:
                 launch_with_pac(browser, pac_url, profile_dir=profile_dir)
-                try:
-                    self.manager.log_message(f"Browser launch: {exe} with PAC {pac_url}")
-                except Exception:
-                    pass
             except Exception as exc:
-                try:
-                    self.manager.log_message(f"Browser launch failed: {exe}: {exc}")
-                except Exception:
-                    pass
                 self.show_alert("Launch Failed", str(exc))
         return handler
 
