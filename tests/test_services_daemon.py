@@ -82,3 +82,69 @@ def test_daemon_serves_rpc_endpoint(ws):
     finally:
         proc.terminate()
         proc.wait(timeout=3)
+
+
+def test_preflight_rejects_when_another_daemon_alive(ws):
+    """Two daemons on the same workspace = trouble. The second must refuse."""
+    first = _spawn_daemon(ws)
+    try:
+        # Wait for first to come up
+        pid_file = ws / "pids" / "susops-services.pid"
+        for _ in range(50):
+            if pid_file.exists():
+                break
+            time.sleep(0.1)
+        assert pid_file.exists()
+
+        # Try to start a second one against the same workspace
+        second = subprocess.Popen(
+            [sys.executable, "-m", "susops.core.services_daemon",
+             "--workspace", str(ws), "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, err = second.communicate(timeout=5)
+        assert second.returncode == 2, (
+            f"expected exit code 2 (another daemon alive), got {second.returncode}; "
+            f"stderr was: {err.decode()!r}"
+        )
+        assert b"already running" in err
+    finally:
+        first.terminate()
+        first.wait(timeout=3)
+
+
+def test_preflight_rejects_when_pac_port_squatted(ws):
+    """A non-susops process holding the configured PAC port must trigger
+    a loud failure (exit 3) rather than the silent half-failure we saw
+    in development."""
+    import socket
+
+    from susops.core.config import SusOpsConfig, save_config
+
+    # Bind a squatter on an arbitrary high port. Pre-write a config that
+    # points the daemon at that port.
+    squat = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squat.bind(("127.0.0.1", 0))  # ephemeral
+    squat.listen(1)
+    squat_port = squat.getsockname()[1]
+    try:
+        ws.mkdir(parents=True, exist_ok=True)
+        cfg = SusOpsConfig()
+        cfg = cfg.model_copy(update={"pac_server_port": squat_port})
+        save_config(cfg, ws)
+
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "susops.core.services_daemon",
+             "--workspace", str(ws), "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, err = proc.communicate(timeout=5)
+        assert proc.returncode == 3, (
+            f"expected exit code 3 (PAC port squatted), got {proc.returncode}; "
+            f"stderr was: {err.decode()!r}"
+        )
+        assert b"bound by another process" in err
+    finally:
+        squat.close()

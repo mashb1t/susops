@@ -46,6 +46,66 @@ def _remove_port_file(workspace: Path) -> None:
         pass
 
 
+_EXIT_ANOTHER_DAEMON_ALIVE = 2
+_EXIT_PAC_PORT_SQUATTED = 3
+
+
+def _preflight(workspace: Path, log: "logging.Logger") -> None:
+    """Refuse to start if another daemon is alive or PAC port is squatted.
+
+    Converts the silent-failure modes that bit us during development
+    (orphan accumulation → "PAC server failed: Address already in use"
+    buried in the facade's log buffer) into loud, actionable exits.
+    """
+    # 1. Another services daemon already alive?
+    pid_file = _pid_path(workspace)
+    if pid_file.exists():
+        try:
+            existing_pid = int(pid_file.read_text().strip())
+            os.kill(existing_pid, 0)  # signal 0 = liveness probe
+        except (OSError, ValueError):
+            # Stale PID file; clean it up and proceed.
+            pid_file.unlink(missing_ok=True)
+            _port_path(workspace).unlink(missing_ok=True)
+        else:
+            log.error(
+                "another susops-services daemon is already running (pid=%d). "
+                "Stop it first with `kill %d` (or `kill -9 %d` if it's wedged) "
+                "before starting a new one.",
+                existing_pid, existing_pid, existing_pid,
+            )
+            sys.exit(_EXIT_ANOTHER_DAEMON_ALIVE)
+
+    # 2. Is the configured PAC port held by an untracked process?
+    try:
+        from susops.core.config import load_config
+        cfg = load_config(workspace)
+        pac_port = cfg.pac_server_port
+    except Exception:
+        pac_port = 0
+    if not pac_port:
+        return  # 0 means auto-allocate, no port to preflight
+
+    import socket as _socket
+    probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    probe.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(("127.0.0.1", pac_port))
+    except OSError as exc:
+        log.error(
+            "PAC port %d is bound by another process (%s). "
+            "Likely an orphan susops-services or susops.core.pac from a "
+            "previous run. Recover with:\n"
+            "  pkill -9 -f 'susops-services|susops.core.services_daemon|susops.core.pac'\n"
+            "  rm -f %s/pids/susops-services.{pid,port}\n"
+            "Then start this daemon again.",
+            pac_port, exc, workspace,
+        )
+        sys.exit(_EXIT_PAC_PORT_SQUATTED)
+    finally:
+        probe.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SusOps services daemon")
     parser.add_argument("--workspace", default=str(WORKSPACE_DEFAULT))
@@ -57,6 +117,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [services] %(message)s")
     log = logging.getLogger("susops.services")
+
+    _preflight(workspace, log)
 
     from susops.core.rpc_server import serve
     from susops.facade import SusOpsManager
