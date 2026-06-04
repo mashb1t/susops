@@ -20,8 +20,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync --extra dev --extra share
-      - run: uv run pytest -x -q
+      - run: uv sync --extra dev --extra share --extra tui
+      - run: uv run pytest -x -q -m "not gui"
 
   build-pypi:
     needs: [test]
@@ -122,7 +122,11 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           VER="${VERSION#v}"
-          pip install -e ".[share]"
+          # Install every runtime extra so compute_resource_shas.py sees
+          # the full dependency closure (textual + plotext from [tui],
+          # cryptography + aiohttp from [share]) and writes accurate
+          # sha256s for every resource listed in the Formula.
+          pip install -e ".[share,tui]"
           python scripts/update_homebrew_sha.py "${VER}" --dmg "SusOps-${VER}-arm64.dmg"
       - name: Copy to tap
         run: |
