@@ -81,19 +81,32 @@ def main() -> int:
         log.info("Daemon started, pid=%d, workspace=%s", os.getpid(), workspace)
         stop_event.wait()
     finally:
-        # Stop the manager first so its background threads see shutdown
-        # before we tear down the RPC server they might be calling back into.
+        # Remove PID + port files FIRST so subsequent ensure_daemon_running()
+        # calls don't think we're still alive while we're shutting down.
+        # Anything that hangs below can't strand us with a stale PID file.
+        _remove_pid_file(workspace)
+        _remove_port_file(workspace)
+
+        # Stop the manager (kills SSH masters, stops PAC/status threads).
+        # Wrapped in a watchdog timer — if a child won't die we still exit.
+        def _watchdog():
+            # If we're still alive 5 s after starting cleanup, the OS gets
+            # to reap us with prejudice. Better than zombies.
+            import time as _t
+            _t.sleep(5.0)
+            log.error("Shutdown watchdog tripped, force-exiting")
+            os._exit(1)
+        threading.Thread(target=_watchdog, daemon=True, name="susops-services-watchdog").start()
+
         try:
             mgr.stop_quick()
         except Exception:
             log.exception("Error during manager stop")
-        try:
-            import asyncio
-            asyncio.run(runner.cleanup())
-        except Exception:
-            log.exception("Error during RPC cleanup")
-        _remove_pid_file(workspace)
-        _remove_port_file(workspace)
+        # NOTE: we intentionally do NOT call `asyncio.run(runner.cleanup())`.
+        # The aiohttp runner lives on a separate event loop (see serve() in
+        # rpc_server.py) running on a daemon thread. Spawning a fresh loop
+        # here to await an object from a different loop deadlocks. Process
+        # exit closes the listening sockets cleanly anyway.
         log.info("Daemon stopped")
     return 0
 
