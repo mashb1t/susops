@@ -106,10 +106,10 @@ class SusOpsTuiApp(App):
 
     def on_mount(self) -> None:
         from pathlib import Path
-        from susops.facade import SusOpsManager
+        from susops.client import SusOpsClient
         workspace = Path.home() / ".susops"
         try:
-            self.manager = SusOpsManager(verbose=self._verbose)
+            self.manager = SusOpsClient(workspace=workspace)
         except Exception as exc:
             config_path = str(workspace / "config.yaml")
             self.push_screen(_ConfigErrorScreen(str(exc), config_path))
@@ -118,10 +118,11 @@ class SusOpsTuiApp(App):
 
     def action_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
+            # Stops SSH tunnels + share servers in the daemon; PAC stays up
+            # via stopped-marker tombstones unless the user reset.
             self.manager.stop_quick()
-        else:
-            self.manager.detach_reconnect_monitor()
-            self.manager.detach_pac()
+        # No detach calls — the daemon is already a separate process and
+        # outlives the TUI.
         self.exit()
 
     def action_start_all(self) -> None:
