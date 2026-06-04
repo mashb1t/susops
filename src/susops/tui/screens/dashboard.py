@@ -845,7 +845,7 @@ class BrowserScreen(ModalScreen):
             yield ListView(id="browser-list")
             yield Static(
                 "[dim]Enter = launch with PAC\n"
-                "s = open open chrome://net-internals/#proxy\n"
+                "s = open proxy settings\n"
                 "Esc = close[/dim]",
                 id="browser-hint",
                 markup=True,
@@ -916,3 +916,12 @@ class BrowserScreen(ModalScreen):
 
     def action_close(self) -> None:
         self.dismiss()
+
+    def on_list_view_selected(self, _event) -> None:
+        """ListView consumes Enter and emits a Selected message instead of
+        letting the screen's `Binding("enter", "launch")` propagate — so we
+        wire the message to action_launch directly. Without this, Enter
+        appears to do nothing on the browser picker even though the binding
+        is registered.
+        """
+        self.action_launch()
