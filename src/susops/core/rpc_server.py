@@ -38,13 +38,15 @@ _ALLOWED_METHODS: set[str] = {
     "test", "test_all", "test_connection", "test_domain", "test_forward",
     "test_ssh",
     # App-level
-    "reset", "update_app_config",
+    "reset", "update_app_config", "update_config",
     # URLs
     "get_pac_url", "get_status_url",
     # Bandwidth
     "get_bandwidth", "get_bandwidth_totals",
     # Reconnect introspection
     "reconnect_monitor_info",
+    # Process introspection (used by `susops ps`)
+    "process_info",
 }
 
 

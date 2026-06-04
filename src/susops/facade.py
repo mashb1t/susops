@@ -1983,3 +1983,17 @@ class SusOpsManager:
             update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
         )
         self._save()
+
+    def update_config(self, **kwargs) -> None:
+        """Update top-level SusOpsConfig fields (e.g. pac_server_port).
+
+        Public counterpart to the in-process pattern
+            mgr._reload_config()
+            mgr.config = mgr.config.model_copy(update={...})
+            mgr._save()
+        — needed by RPC clients that can't touch private methods or rebind
+        the config attribute directly.
+        """
+        self._reload_config()
+        self.config = self.config.model_copy(update=kwargs)
+        self._save()

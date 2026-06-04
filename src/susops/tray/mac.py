@@ -1801,9 +1801,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 restore_shares_on_start=result["restore_shares"],
                 logo_style=new_logo,
             )
-            self.manager._reload_config()
-            self.manager.config = self.manager.config.model_copy(update={"pac_server_port": pac_int})
-            self.manager._save()
+            self.manager.update_config(pac_server_port=pac_int)
             # Apply Launch at Login off the main thread — osascript may block
             # for several seconds the first time (TCC prompt).
             desired_login = bool(result["launch_at_login"])

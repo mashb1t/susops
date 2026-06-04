@@ -644,11 +644,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 restore_shares_on_start=sw_restore.get_active(),
                 logo_style=new_logo,
             )
-            self.manager._reload_config()
-            self.manager.config = self.manager.config.model_copy(
-                update={"pac_server_port": int(pac_text)}
-            )
-            self.manager._save()
+            self.manager.update_config(pac_server_port=int(pac_text))
             self._apply_autostart(sw_login.get_active())
             self.update_icon(self.state)
             break
@@ -657,16 +653,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         return False
 
     def _on_logo_style_preview(self, combo, logo_styles: list) -> None:
-        """Live-preview the selected logo style — update icon immediately, no disk write."""
+        """Live-preview the selected logo style — icon swap only, no config write.
+
+        The icon path is computed directly from the chosen style enum; we don't
+        need to mutate manager state for the preview. The actual save happens
+        in the Settings handler via update_app_config().
+        """
         idx = combo.get_active()
         if not (0 <= idx < len(logo_styles)):
             return
-        # Update in-memory only so the preview is instant (saved on OK)
-        self.manager.config = self.manager.config.model_copy(
-            update={"susops_app": self.manager.config.susops_app.model_copy(
-                update={"logo_style": logo_styles[idx]}
-            )}
-        )
         icon_path = _get_icon_path(self.state, logo_styles[idx].value.lower())
         if icon_path:
             self._indicator.set_icon_full(icon_path, self.state.value)
