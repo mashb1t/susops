@@ -1264,8 +1264,8 @@ def _open_live_text_window(title: str, get_text: Callable[[], str],
     )
     from PyObjCTools import AppHelper  # noqa: F401  (ensures runloop available)
 
-    content_w = 850
-    content_h = 450
+    content_w = 896
+    content_h = 504
 
     style = (
         NSWindowStyleMaskTitled

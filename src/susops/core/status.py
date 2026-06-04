@@ -117,7 +117,7 @@ class StatusServer:
             )
             self._fire_log(
                 f"SSE client connected: {client_type} v{client_version} "
-                f"(pid {client_pid}, peer {peer_str}, events {events_str}) — {count} active"
+                f"(pid {client_pid}, peer {peer_str}, events: {events_str}) — {count} active"
             )
 
             try:
