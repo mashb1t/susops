@@ -1,8 +1,6 @@
 """Tests for browser-launch do_* methods on AbstractTrayApp."""
 from __future__ import annotations
 
-from unittest.mock import patch
-
 
 def test_do_launch_chrome_calls_subprocess(tray, monkeypatch):
     """do_launch_chrome finds a browser via shutil.which and calls Popen."""
