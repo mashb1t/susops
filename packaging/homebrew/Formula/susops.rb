@@ -8,7 +8,7 @@ class Susops < Formula
   license "MIT"
 
   depends_on "socat"
-  depends_on "python@3.12"
+  depends_on "python@3.14"
 
   livecheck do
     url :stable
