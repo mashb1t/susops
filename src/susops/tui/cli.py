@@ -20,12 +20,11 @@ from susops.core.types import ProcessState
 
 def _manager(args=None):
     """Lazy import to avoid circular imports and slow startup when not needed."""
-    from susops.facade import SusOpsManager
-    verbose = getattr(args, "verbose", False)
-    # Disable background threads so CLI invocations (ps, ls, test, …) do not
-    # kill the reconnect daemon that may be running from a previous start.
-    # start/stop/restart call detach_reconnect_monitor() explicitly when needed.
-    return SusOpsManager(verbose=verbose, _enable_background_threads=False, process_name="susops-cli")
+    from pathlib import Path
+    from susops.client import SusOpsClient
+    workspace = Path.home() / ".susops"
+    # `verbose` is daemon-side now; client doesn't pass it through.
+    return SusOpsClient(workspace=workspace, process_name="susops-cli")
 
 
 def _state_exit_code(state) -> int:
@@ -44,28 +43,18 @@ def cmd_start(args, m) -> int:
     for cs in result.connection_statuses:
         icon = "+" if cs.running else "!"
         print(f"  [{icon}] {cs.tag}" + (f" port {cs.socks_port}" if cs.socks_port else ""))
-    if any(cs.running for cs in result.connection_statuses):
-        m.detach_reconnect_monitor()
-        m.detach_pac()
     return 0 if result.success else 1
 
 
 def cmd_stop(args, m) -> int:
     result = m.stop(tag=args.connection, keep_ports=args.keep_ports)
     print(result.message)
-    if result.success and args.connection:
-        # Partial stop — respawn daemon so it no longer tries to reconnect the
-        # stopped connection, but still watches any other live connections.
-        m.detach_reconnect_monitor(force=True)
     return 0 if result.success else 1
 
 
 def cmd_restart(args, m) -> int:
     result = m.restart(tag=getattr(args, "connection", None))
     print(result.message)
-    if any(cs.running for cs in result.connection_statuses):
-        m.detach_reconnect_monitor()
-        m.detach_pac()
     return 0 if result.success else 1
 
 
