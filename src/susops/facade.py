@@ -695,6 +695,101 @@ class SusOpsManager:
             update={"connections": [updated if c.tag == updated.tag else c for c in self.config.connections]}
         )
 
+    # Auth-pending watcher timeout. 60s gives the user plenty of time to
+    # find / unlock the agent UI and approve. After that, the orphan ssh
+    # is killed so the connection doesn't stay stuck in a half-state.
+    _AUTH_WATCHER_TIMEOUT = 60.0
+
+    def _spawn_auth_watcher(self, conn: "Connection", pid: int) -> None:
+        """Wait for the ControlMaster socket asynchronously, then register
+        forwards + shares. If the socket never appears (e.g. user dismisses
+        the agent prompt) kill the orphan ssh so the connection doesn't
+        stay pinned in a "PID alive but never authenticated" state."""
+
+        def _watch() -> None:
+            sock = socket_path(conn.tag, self.workspace)
+            deadline = time.monotonic() + self._AUTH_WATCHER_TIMEOUT
+            while time.monotonic() < deadline:
+                if not is_tunnel_running(conn.tag, self._process_mgr):
+                    # User cancelled the agent prompt → ssh exited.
+                    self._error(
+                        f"[{conn.tag}] SSH master exited before authenticating "
+                        "(agent prompt cancelled?)"
+                    )
+                    self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                    return
+                if sock.exists() and is_socket_alive(conn.tag, self.workspace):
+                    try:
+                        self._finalize_connection_after_auth(conn, pid)
+                    except Exception as exc:
+                        self._error(f"[{conn.tag}] Post-auth setup failed: {exc}")
+                    return
+                time.sleep(0.2)
+            # Timed out — ssh master is alive but never authenticated.
+            self._error(
+                f"[{conn.tag}] SSH did not authenticate within "
+                f"{int(self._AUTH_WATCHER_TIMEOUT)}s — killing orphan master. "
+                "Approve the agent prompt next time."
+            )
+            try:
+                stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host)
+            except Exception:
+                pass
+            self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+
+        threading.Thread(
+            target=_watch, daemon=True, name=f"susops-auth-{conn.tag}",
+        ).start()
+
+    def _finalize_connection_after_auth(self, conn: "Connection", pid: int) -> None:
+        """Register forwards + start file-share servers + emit "running".
+        Called from _spawn_auth_watcher once the ControlMaster socket is up."""
+        self._register_forwards(conn)
+
+        # Start HTTP servers for config-only (stopped) shares, then forward
+        # slaves for all running share servers belonging to this connection.
+        for fs in conn.file_shares:
+            if fs.stopped:
+                continue
+            if fs.port in self._share_servers:
+                continue
+            fp = Path(fs.file_path)
+            if not fp.exists():
+                self._log(f"[{conn.tag}] Share '{fs.file_path}' not found — skipping")
+                continue
+            try:
+                srv = ShareServer()
+                raw = srv.start(file_path=fp, password=fs.password,
+                                port=fs.port, workspace=self.workspace)
+                si = ShareInfo(
+                    file_path=str(fp), port=raw.port, password=fs.password,
+                    url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
+                )
+                self._share_servers[raw.port] = (srv, si)
+                if raw.port != fs.port:
+                    self._update_file_share_port(conn.tag, fs, raw.port)
+                self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
+                self._emit("share", {
+                    "port": raw.port, "file": fp.name, "running": True, "conn_tag": conn.tag,
+                })
+            except Exception as exc:
+                self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+
+        for share_port, (_server, share_info) in list(self._share_servers.items()):
+            if share_info.conn_tag == conn.tag:
+                fw = PortForward(
+                    src_port=share_port, dst_port=share_port,
+                    src_addr="localhost", dst_addr="localhost",
+                    tag=f"share-{share_port}",
+                )
+                try:
+                    start_forward(conn, fw, "remote", self.workspace)
+                except Exception as exc:
+                    self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
+
+        self._log(f"[{conn.tag}] Authenticated and ready")
+        self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
+
     def _register_forwards(self, conn: Connection, error_suffix: str = "") -> None:
         """Register all enabled forwards for conn through its ControlMaster.
 
@@ -1044,53 +1139,14 @@ class SusOpsManager:
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
 
-                self._register_forwards(conn)
-
-                # Start HTTP servers for config-only (stopped) shares, then forward slaves
-                # for all running share servers belonging to this connection.
-                for fs in conn.file_shares:
-                    if fs.stopped:
-                        continue  # user manually stopped — do not auto-restart
-                    if fs.port in self._share_servers:
-                        continue  # already running
-                    fp = Path(fs.file_path)
-                    if not fp.exists():
-                        self._log(f"[{conn.tag}] Share '{fs.file_path}' not found — skipping")
-                        continue
-                    try:
-                        srv = ShareServer()
-                        raw = srv.start(file_path=fp, password=fs.password,
-                                        port=fs.port, workspace=self.workspace)
-                        si = ShareInfo(
-                            file_path=str(fp), port=raw.port, password=fs.password,
-                            url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
-                        )
-                        self._share_servers[raw.port] = (srv, si)
-                        if raw.port != fs.port:
-                            self._update_file_share_port(conn.tag, fs, raw.port)
-                        self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
-                        self._emit("share", {
-                            "port": raw.port,
-                            "file": fp.name,
-                            "running": True,
-                            "conn_tag": conn.tag,
-                        })
-                    except Exception as exc:
-                        self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
-
-                for share_port, (_server, share_info) in list(self._share_servers.items()):
-                    if share_info.conn_tag == conn.tag:
-                        fw = PortForward(
-                            src_port=share_port,
-                            dst_port=share_port,
-                            src_addr="localhost",
-                            dst_addr="localhost",
-                            tag=f"share-{share_port}",
-                        )
-                        try:
-                            start_forward(conn, fw, "remote", self.workspace)
-                        except Exception as exc:
-                            self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
+                # Forwards and share-forwards can only register once the
+                # ControlMaster socket exists — i.e. after ssh has finished
+                # authenticating. With a 1Password / Bitwarden prompt that
+                # can take 30s+. Watch in the background so start() returns
+                # immediately; the watcher emits state events as the SSH
+                # session moves through pending → running → (or stopped on
+                # timeout / cancelled prompt).
+                self._spawn_auth_watcher(conn, pid)
 
                 statuses.append(ConnectionStatus(
                     tag=conn.tag, running=True, pid=pid,
