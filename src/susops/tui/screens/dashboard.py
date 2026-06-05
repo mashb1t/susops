@@ -352,13 +352,25 @@ class DashboardScreen(Screen):
             }
         self._conn_data = new_conn_data
 
-        # Update rolling bandwidth history (60 samples)
+        # Update rolling bandwidth history (60 samples). Seed from the
+        # daemon's persisted history on first encounter so reopening the
+        # TUI doesn't reset the chart to flatlined zeros.
         for cs in result.connection_statuses:
             tag = cs.tag
             rx, tx = bw.get(tag, (0.0, 0.0))
             if tag not in self._rx_history:
-                self._rx_history[tag] = deque([0.0] * 60, maxlen=60)
-                self._tx_history[tag] = deque([0.0] * 60, maxlen=60)
+                rx_seed = [0.0] * 60
+                tx_seed = [0.0] * 60
+                try:
+                    persisted = mgr.get_bandwidth_history(tag) or []
+                except Exception:
+                    persisted = []
+                if persisted:
+                    persisted = persisted[-60:]
+                    rx_seed[-len(persisted):] = [s[0] for s in persisted]
+                    tx_seed[-len(persisted):] = [s[1] for s in persisted]
+                self._rx_history[tag] = deque(rx_seed, maxlen=60)
+                self._tx_history[tag] = deque(tx_seed, maxlen=60)
             self._rx_history[tag].append(rx)
             self._tx_history[tag].append(tx)
 

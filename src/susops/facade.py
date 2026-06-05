@@ -376,6 +376,11 @@ class _BandwidthSampler:
         with self._lock:
             return self._totals.get(tag, (0.0, 0.0))
 
+    def get_history(self, tag: str) -> list[list[float]]:
+        """Return the persisted (rx_bps, tx_bps) samples for *tag* (newest last)."""
+        with self._lock:
+            return list(self._history.get(tag, []))
+
     def reset_totals(self, tag: str | None = None) -> None:
         """Reset cumulative counters. Pass tag=None to reset all."""
         with self._lock:
@@ -2142,6 +2147,10 @@ class SusOpsManager:
     def get_bandwidth_totals(self, tag: str) -> tuple[float, float]:
         """Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop."""
         return self._bw_sampler.get_totals(tag)
+
+    def get_bandwidth_history(self, tag: str) -> list[list[float]]:
+        """Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest)."""
+        return self._bw_sampler.get_history(tag)
 
     def get_bandwidth_global(self) -> tuple[float, float]:
         """Return (rx_bps, tx_bps) summed across every connection."""

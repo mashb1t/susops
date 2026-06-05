@@ -26,6 +26,7 @@ paths:
         - `add_pac_host`\n- `add_remote_forward`\n- `delete_share` — Stop and permanently remove a share
         from config.\n- `fetch` — Download and decrypt a shared file via a transient local forward slave.\n\
         - `get_bandwidth`\n- `get_bandwidth_global` — Return (rx_bps, tx_bps) summed across every connection.\n\
+        - `get_bandwidth_history` — Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest).\n\
         - `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last start. Resets on
         stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n- `get_uptime`
         — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
@@ -527,6 +528,36 @@ components:
       prefixItems:
       - type: number
       - type: number
+      type: array
+    InvokeGetBandwidthHistory:
+      type: object
+      description: Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest).
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_bandwidth_history
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetBandwidthHistoryResult:
+      items:
+        items:
+          type: number
+        type: array
       type: array
     InvokeGetBandwidthTotals:
       type: object
@@ -2101,6 +2132,7 @@ components:
       - $ref: '#/components/schemas/InvokeFetch'
       - $ref: '#/components/schemas/InvokeGetBandwidth'
       - $ref: '#/components/schemas/InvokeGetBandwidthGlobal'
+      - $ref: '#/components/schemas/InvokeGetBandwidthHistory'
       - $ref: '#/components/schemas/InvokeGetBandwidthTotals'
       - $ref: '#/components/schemas/InvokeGetLogs'
       - $ref: '#/components/schemas/InvokeGetPacUrl'
