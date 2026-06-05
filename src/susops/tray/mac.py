@@ -2861,12 +2861,36 @@ class SusOpsMacTray(AbstractTrayApp):
     # ------------------------------------------------------------------ #
 
     def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        try:
+            button = self._app._nsapp.nsstatusitem.button()
+        except Exception:
+            button = None
         if rx_bps is None or tx_bps is None:
+            if button is not None:
+                from AppKit import NSAttributedString  # type: ignore[import]
+                button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
             self._app.title = ""
             return
-        up = self._format_rate(tx_bps)
-        down = self._format_rate(rx_bps)
-        self._app.title = f"↑ {up}\n↓ {down}"
+        text = f"↑ {self._format_rate(tx_bps)}\n↓ {self._format_rate(rx_bps)}"
+        if button is None:
+            self._app.title = text
+            return
+        from AppKit import (  # type: ignore[import]
+            NSAttributedString,
+            NSFont,
+            NSFontAttributeName,
+            NSFontWeightRegular,
+            NSMutableParagraphStyle,
+            NSParagraphStyleAttributeName,
+        )
+        font = NSFont.monospacedSystemFontOfSize_weight_(9, NSFontWeightRegular)
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setMaximumLineHeight_(10)
+        para.setLineSpacing_(-4)
+        attrs = {NSFontAttributeName: font, NSParagraphStyleAttributeName: para}
+        button.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+        )
 
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
