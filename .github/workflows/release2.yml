@@ -165,38 +165,38 @@ jobs:
           git commit -m "chore: bump to ${VERSION}"
           git push
 
-  update-aur:
-    if: github.event_name == 'release'
-    needs: [publish-pypi]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-      - name: Update PKGBUILD
-        run: |
-          VER="${VERSION#v}"
-          python scripts/update_aur_pkgver.py "${VER}"
-      - name: Generate .SRCINFO via Arch Docker
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}/packaging/aur:/pkg" \
-            archlinux:base-devel \
-            sh -c "useradd -m builder && chown builder /pkg && su builder -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'"
-      - uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
-      - name: Add AUR host key
-        run: ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-      - name: Clone and push AUR repo
-        run: |
-          git clone ssh://aur@aur.archlinux.org/susops.git aur-repo
-          cp packaging/aur/PKGBUILD  aur-repo/PKGBUILD
-          cp packaging/aur/.SRCINFO  aur-repo/.SRCINFO
-          cd aur-repo
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add PKGBUILD .SRCINFO
-          git commit -m "chore: bump to ${VERSION}"
-          git push
+#   update-aur:
+#     if: github.event_name == 'release'
+#     needs: [publish-pypi]
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v6
+#       - uses: actions/setup-python@v6
+#         with:
+#           python-version: "3.14"
+#       - name: Update PKGBUILD
+#         run: |
+#           VER="${VERSION#v}"
+#           python scripts/update_aur_pkgver.py "${VER}"
+#       - name: Generate .SRCINFO via Arch Docker
+#         run: |
+#           docker run --rm \
+#             -v "${{ github.workspace }}/packaging/aur:/pkg" \
+#             archlinux:base-devel \
+#             sh -c "useradd -m builder && chown builder /pkg && su builder -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'"
+#       - uses: webfactory/ssh-agent@v0.10.0
+#         with:
+#           ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
+#       - name: Add AUR host key
+#         run: ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+#       - name: Clone and push AUR repo
+#         run: |
+#           git clone ssh://aur@aur.archlinux.org/susops.git aur-repo
+#           cp packaging/aur/PKGBUILD  aur-repo/PKGBUILD
+#           cp packaging/aur/.SRCINFO  aur-repo/.SRCINFO
+#           cd aur-repo
+#           git config user.name  "github-actions[bot]"
+#           git config user.email "github-actions[bot]@users.noreply.github.com"
+#           git add PKGBUILD .SRCINFO
+#           git commit -m "chore: bump to ${VERSION}"
+#           git push
