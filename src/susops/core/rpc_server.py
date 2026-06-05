@@ -44,7 +44,7 @@ _ALLOWED_METHODS: set[str] = {
     # URLs
     "get_pac_url", "get_status_url",
     # Bandwidth
-    "get_bandwidth", "get_bandwidth_totals",
+    "get_bandwidth", "get_bandwidth_totals", "get_bandwidth_global",
     # Reconnect introspection
     "reconnect_monitor_info",
     # Process introspection

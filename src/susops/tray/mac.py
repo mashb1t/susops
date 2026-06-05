@@ -2288,6 +2288,7 @@ class SusOpsMacTray(AbstractTrayApp):
             "stop_on_quit": ac.stop_on_quit,
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
+            "show_bandwidth": ac.tray_show_bandwidth,
             "logo_style": logo_styles.index(saved_logo),
             "rpc_port": str(rpc_port) if rpc_port else "",
             "sse_port": str(sse_port) if sse_port else "",
@@ -2304,6 +2305,8 @@ class SusOpsMacTray(AbstractTrayApp):
                  "default": defaults["ephemeral_ports"]},
                 {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
                  "default": defaults["restore_shares"]},
+                {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
+                 "default": defaults["show_bandwidth"]},
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
@@ -2366,8 +2369,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 stop_on_quit=result["stop_on_quit"],
                 ephemeral_ports=result["ephemeral_ports"],
                 restore_shares_on_start=result["restore_shares"],
+                tray_show_bandwidth=result["show_bandwidth"],
                 logo_style=new_logo,
             )
+            self.refresh_bandwidth_title()
             self.manager.update_config(
                 rpc_server_port=port_ints["rpc_port"],
                 status_server_port=port_ints["sse_port"],
@@ -2855,12 +2860,26 @@ class SusOpsMacTray(AbstractTrayApp):
     # Run
     # ------------------------------------------------------------------ #
 
+    def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        if rx_bps is None or tx_bps is None:
+            self._app.title = ""
+            return
+        up = self._format_rate(tx_bps)
+        down = self._format_rate(rx_bps)
+        self._app.title = f"↑ {up}\n↓ {down}"
+
+    def _tick_bandwidth(self, _timer=None) -> None:
+        self.refresh_bandwidth_title()
+
     def run(self) -> None:
         # Initial state pull on startup; from then on the SSE listener drives
         # every refresh. No periodic polling fallback — SSE reconnects with
         # a small backoff cap on its own.
         self.do_poll()
+        self.refresh_bandwidth_title()
         self._start_sse_listener()
+        self._bw_timer = self._rumps.Timer(self._tick_bandwidth, 2)
+        self._bw_timer.start()
         self._app.run()
 
 

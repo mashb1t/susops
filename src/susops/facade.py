@@ -2143,6 +2143,16 @@ class SusOpsManager:
         """Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop."""
         return self._bw_sampler.get_totals(tag)
 
+    def get_bandwidth_global(self) -> tuple[float, float]:
+        """Return (rx_bps, tx_bps) summed across every connection."""
+        rx_total = 0.0
+        tx_total = 0.0
+        for conn in self.config.connections:
+            rx, tx = self._bw_sampler.get_rate(conn.tag)
+            rx_total += rx
+            tx_total += tx
+        return rx_total, tx_total
+
     def get_uptime(self, tag: str) -> float | None:
         """Return seconds since connection started, or None if not recorded."""
         start = self._start_times.get(tag)

@@ -655,6 +655,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(sw_restore, 1, row, 1, 1)
         row += 1
 
+        # Show Bandwidth In Tray
+        lbl = Gtk.Label(label="Show Bandwidth In Tray:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        sw_bw = Gtk.Switch(halign=Gtk.Align.START)
+        sw_bw.set_active(ac.tray_show_bandwidth)
+        grid.attach(sw_bw, 1, row, 1, 1)
+        row += 1
+
         # Logo Style
         lbl = Gtk.Label(label="Logo Style:", xalign=1.0)
         lbl.set_width_chars(24)
@@ -743,8 +752,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 stop_on_quit=sw_stop.get_active(),
                 ephemeral_ports=sw_eph.get_active(),
                 restore_shares_on_start=sw_restore.get_active(),
+                tray_show_bandwidth=sw_bw.get_active(),
                 logo_style=new_logo,
             )
+            self.refresh_bandwidth_title()
             self.manager.update_config(
                 rpc_server_port=port_values["RPC"],
                 status_server_port=port_values["SSE"],
@@ -1580,13 +1591,30 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self.do_poll()
         return False
 
+    def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        def _apply():
+            if rx_bps is None or tx_bps is None:
+                self._indicator.set_label("", "")
+                return False
+            up = self._format_rate(tx_bps)
+            down = self._format_rate(rx_bps)
+            self._indicator.set_label(f"↑ {up}   ↓ {down}", "")
+            return False
+        self._GLib.idle_add(_apply)
+
+    def _tick_bandwidth(self) -> bool:
+        self.refresh_bandwidth_title()
+        return True
+
     def run(self) -> None:
         """Start the GTK main loop."""
         # Initial state pull on startup; SSE listener drives every refresh
         # after that. No periodic polling fallback — SSE reconnects within
         # 5 s on its own.
         self.do_poll()
+        self.refresh_bandwidth_title()
         self._start_sse_listener()
+        self._GLib.timeout_add(2000, self._tick_bandwidth)
         self._Gtk.main()
 
 

@@ -111,8 +111,15 @@ class AppConfig(BaseModel):
     ephemeral_ports: bool = False
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
+    tray_show_bandwidth: bool = False
 
-    @field_validator("stop_on_quit", "ephemeral_ports", "restore_shares_on_start", mode="before")
+    @field_validator(
+        "stop_on_quit",
+        "ephemeral_ports",
+        "restore_shares_on_start",
+        "tray_show_bandwidth",
+        mode="before",
+    )
     @classmethod
     def coerce_bool_string(cls, v: Any) -> Any:
         """Handle "1"/"0" string values from old yq-based config."""

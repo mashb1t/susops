@@ -106,6 +106,39 @@ class AbstractTrayApp(ABC):
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
         ...
 
+    def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        """Render aggregated up/down bandwidth in the tray title/label.
+
+        ``None`` for both rates means clear the title. Default is a no-op so
+        subclasses that haven't wired this up still work.
+        """
+        return None
+
+    @staticmethod
+    def _format_rate(bps: float) -> str:
+        if bps < 1024:
+            return f"{int(bps)} B/s"
+        if bps < 1024 ** 2:
+            return f"{bps / 1024:.0f} KB/s"
+        if bps < 1024 ** 3:
+            return f"{bps / (1024 ** 2):.1f} MB/s"
+        return f"{bps / (1024 ** 3):.2f} GB/s"
+
+    def refresh_bandwidth_title(self) -> None:
+        """Refresh the tray title with current global bandwidth, or clear it."""
+        try:
+            enabled = bool(self.manager.app_config.tray_show_bandwidth)
+        except Exception:
+            enabled = False
+        if not enabled:
+            self.update_title(None, None)
+            return
+        try:
+            rx, tx = self.manager.get_bandwidth_global()
+        except Exception:
+            rx, tx = 0.0, 0.0
+        self.update_title(rx, tx)
+
     def show_live_logs(self, get_text: Callable[[], str], *, title: str = "Logs",
                        interval_ms: int = 1000) -> None:
         """Show a non-modal, auto-refreshing log window.
