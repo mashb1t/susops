@@ -2881,6 +2881,7 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         from AppKit import (  # type: ignore[import]
             NSAttributedString,
+            NSBaselineOffsetAttributeName,
             NSFont,
             NSFontAttributeName,
             NSFontWeightRegular,
@@ -2888,14 +2889,20 @@ class SusOpsMacTray(AbstractTrayApp):
             NSParagraphStyleAttributeName,
             NSTextAlignmentRight,
         )
-        font = NSFont.monospacedSystemFontOfSize_weight_(9, NSFontWeightRegular)
+        font = NSFont.monospacedSystemFontOfSize_weight_(8, NSFontWeightRegular)
         para = NSMutableParagraphStyle.alloc().init()
-        # Fixed line box, 2 lines = 20pt within a ~22pt menu bar so the
-        # NSButtonCell vertically centres the block automatically.
-        para.setMinimumLineHeight_(10)
-        para.setMaximumLineHeight_(10)
+        para.setMinimumLineHeight_(9)
+        para.setMaximumLineHeight_(9)
         para.setAlignment_(NSTextAlignmentRight)
-        attrs = {NSFontAttributeName: font, NSParagraphStyleAttributeName: para}
+        attrs = {
+            NSFontAttributeName: font,
+            NSParagraphStyleAttributeName: para,
+            # NSButtonCell anchors a multi-line title near the top of the
+            # button frame, so the block reads top-heavy. Lower every glyph
+            # below its baseline to push the whole block down into the
+            # menu-bar centre. Negative = visually down.
+            NSBaselineOffsetAttributeName: -4.0,
+        }
         button.setAttributedTitle_(
             NSAttributedString.alloc().initWithString_attributes_(text, attrs)
         )
