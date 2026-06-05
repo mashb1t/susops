@@ -8,7 +8,9 @@ from PyInstaller.utils.hooks import collect_all
 SPEC_DIR = os.path.abspath(SPECPATH)
 REPO_ROOT = os.path.abspath(os.path.join(SPEC_DIR, "..", ".."))
 ASSETS = os.path.join(REPO_ROOT, "src", "susops", "assets")
-ICNS = os.path.join(ASSETS, "susops.icns")
+# .icns is a PyInstaller build asset (not used at runtime), kept next to
+# the spec and committed so CI doesn't need to regenerate it on each run.
+ICNS = os.path.join(SPEC_DIR, "susops.icns")
 
 import sys
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
