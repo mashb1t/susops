@@ -69,6 +69,24 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
         port = _read_port(workspace)
         if port:
             return port
+        # Daemon claimed its PID file but hasn't published the port yet.
+        # Wait for it instead of spawning a competitor that would race the
+        # O_EXCL claim and exit rc=2 ("another daemon is already running").
+        deadline = time.monotonic() + _DAEMON_SPAWN_TIMEOUT
+        while time.monotonic() < deadline:
+            if not _is_daemon_alive(workspace):
+                break  # died mid-startup, fall through to spawn a new one
+            port = _read_port(workspace)
+            if port:
+                return port
+            time.sleep(0.1)
+        else:
+            raise DaemonUnavailableError(
+                "An existing susops-services daemon is alive but never "
+                "published an RPC port. Try `kill " +
+                (_pid_path(workspace).read_text().strip() or "<pid>") +
+                "` and start again."
+            )
 
     proc = subprocess.Popen(
         [sys.executable, "-m", "susops.core.services_daemon",
