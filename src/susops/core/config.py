@@ -30,7 +30,6 @@ from ruamel.yaml import YAML
 
 from susops.core.types import LogoStyle
 
-
 __all__ = [
     "PortForward",
     "Forwards",
@@ -92,7 +91,7 @@ class FileShare(BaseModel):
 
     file_path: str
     password: str
-    port: int = 0  # 0 = auto-assigned; written back after first start
+    port: int = 0  # 0 = auto-assigned, written back after first start
     stopped: bool = False  # True when manually stopped — not auto-restarted
 
 
@@ -112,8 +111,15 @@ class AppConfig(BaseModel):
     ephemeral_ports: bool = False
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
+    tray_show_bandwidth: bool = False
 
-    @field_validator("stop_on_quit", "ephemeral_ports", "restore_shares_on_start", mode="before")
+    @field_validator(
+        "stop_on_quit",
+        "ephemeral_ports",
+        "restore_shares_on_start",
+        "tray_show_bandwidth",
+        mode="before",
+    )
     @classmethod
     def coerce_bool_string(cls, v: Any) -> Any:
         """Handle "1"/"0" string values from old yq-based config."""
@@ -143,11 +149,6 @@ class SusOpsConfig(BaseModel):
     @classmethod
     def _migrate_status_server_port(cls, data: Any) -> Any:
         """Pull legacy susops_app.status_server_port up to the top level.
-
-        Older configs nested the SSE port under `susops_app` alongside user
-        preferences. It's a server port, not a preference — moved to the
-        top with the other ports. This migration runs on every load so old
-        files keep working; the new schema is written back on the next save.
         """
         if not isinstance(data, dict):
             return data
@@ -155,7 +156,7 @@ class SusOpsConfig(BaseModel):
         if isinstance(app, dict) and "status_server_port" in app:
             legacy = app.pop("status_server_port")
             # Only adopt the legacy value when the new field isn't already set
-            # to something non-default — explicit top-level config wins.
+            # to something non-default.
             if not data.get("status_server_port"):
                 data["status_server_port"] = legacy
         return data
@@ -185,7 +186,7 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
 
     Writes atomically (to a temp file, then POSIX rename) so a concurrent
     load_config never observes a half-written or freshly-truncated file. The
-    old behaviour — `open(path, 'w')` — truncated the file to 0 bytes before
+    old behavior — `open(path, 'w')` — truncated the file to 0 bytes before
     `yaml.dump` ran; a reader in that window got an empty file → empty config →
     and any save that followed wiped the connections list. The TUI's
     `@work(thread=True)` makes this a real (and reported) race on rapid Stop
@@ -230,12 +231,11 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
             except OSError:
                 pass
             raise
-        # umask may have stripped bits from O_CREAT's mode argument — set
-        # explicitly so the result matches target_mode exactly.
+
         os.chmod(tmp_path, target_mode)
-        tmp_path.replace(path)  # atomic on POSIX + Windows ≥ 3.3
+        tmp_path.replace(path)
     except Exception:
-        # Best-effort cleanup of the temp file if the write failed.
+        # Best-effort cleanup of the temp file if writing failed.
         try:
             tmp_path.unlink(missing_ok=True)
         except Exception:

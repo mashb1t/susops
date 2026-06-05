@@ -6,8 +6,6 @@ from pathlib import Path
 
 from rich.markup import escape as markup_escape
 from rich.text import Text as RichText
-
-from susops.core.log_style import style_log_line
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -27,12 +25,12 @@ from textual.widgets import (
 from textual_plotext import PlotextPlot
 
 import susops
+from susops.core.log_style import style_log_line
 from susops.core.types import StatusResult
-from susops.tui.screens import fmt_bps, fmt_bytes, open_in_explorer, open_path, proto_label, share_name_markup, status_dot, share_status_dot
-
+from susops.tui.screens import fmt_bps, fmt_bytes, open_in_explorer, open_path, proto_label, share_name_markup, \
+    status_dot, share_status_dot
 
 _fmt_bps = fmt_bps
-
 
 # Map log_style labels to Rich style strings. None means no styling.
 _LOG_STYLE_RICH: dict[str | None, str | None] = {
@@ -88,15 +86,15 @@ def _fmt_uptime(seconds: float) -> str:
 
 
 def _fmt_bw_line(
-    tag: str,
-    running: bool,
-    rx: float,
-    tx: float,
-    rx_t: float,
-    tx_t: float,
-    tag_width: int = 25,
-    show_dot: bool = True,
-    enabled: bool = True,
+        tag: str,
+        running: bool,
+        rx: float,
+        tx: float,
+        rx_t: float,
+        tx_t: float,
+        tag_width: int = 25,
+        show_dot: bool = True,
+        enabled: bool = True,
 ) -> str:
     dot = status_dot(running, enabled)
     prefix = f"  {dot} " if show_dot else "    "
@@ -110,6 +108,7 @@ def _fmt_bw_line(
 def _fmt_domain_line(host: str, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
     return f"{pre}[link='http://{host}']{host}[/link]"
+
 
 def _fmt_forward_local(fw, prefix: str = "") -> str:
     pre = f"[dim]{prefix}[/dim] " if prefix else ""
@@ -226,7 +225,7 @@ class DashboardScreen(Screen):
         mgr.on_log = self._on_new_log
         self._prev_on_error = mgr.on_error
         mgr.on_error = self._on_new_error
-        self.set_interval(2.0, self._tick_refresh)
+        self.set_interval(1.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
 
@@ -246,11 +245,11 @@ class DashboardScreen(Screen):
         mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
-        """Adaptive refresh: every 2s when connections are active, every 10s when idle."""
+        """Adaptive refresh: every 1s when connections are active, every 10s when idle."""
         has_active = any(d["cs"].running for d in self._conn_data.values())
         if not has_active:
             self._idle_ticks += 1
-            if self._idle_ticks < 5:  # skip 4 ticks → refresh every 10s when idle
+            if self._idle_ticks < 10:  # skip 9 ticks → refresh every 10s when idle
                 return
             self._idle_ticks = 0
         else:
@@ -512,8 +511,10 @@ class DashboardScreen(Screen):
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [dim]  {'Connection':<25}  [/dim]   [green]↓ RX[/green] [dim]{'Total':>7}[/dim]     [yellow]↑ TX[/yellow] [dim]{'Total':>7}[/dim]",            f"  [dim]{'─' * 61}[/dim]",
-            _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes, tag_width=25 + len("[bold][/bold]"), show_dot=False),
+            f"  [dim]  {'Connection':<25}  [/dim]   [green]↓ RX[/green] [dim]{'Total':>7}[/dim]     [yellow]↑ TX[/yellow] [dim]{'Total':>7}[/dim]",
+            f"  [dim]{'─' * 61}[/dim]",
+            _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes,
+                         tag_width=25 + len("[bold][/bold]"), show_dot=False),
             f"  [dim]{'─' * 61}[/dim]",
         ]
         for tag, data in self._conn_data.items():
@@ -788,7 +789,6 @@ class DashboardScreen(Screen):
     def action_restart(self) -> None:
         self.app.manager.restart(self._selected_tag)  # type: ignore[attr-defined]
         self.app.call_from_thread(self.refresh_status)
-
 
     def action_launch_browser(self) -> None:
         """Open the modal browser picker — see BrowserScreen for the rest."""

@@ -1,11 +1,9 @@
 """Tests for susops.core.ssh — ControlMaster command building."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from susops.core.config import Connection, Forwards, PortForward
+from susops.core.config import Connection, PortForward
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,

@@ -23,6 +23,7 @@ from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
 BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
 
+
 # ---------------------------------------------------------------------------
 # Appearance + icon helpers
 # ---------------------------------------------------------------------------
@@ -87,6 +88,7 @@ def _find_installed_browsers() -> list[tuple[str, str, bool]]:
 # ---------------------------------------------------------------------------
 
 _segmented_handler_cls = None
+_switch_handler_cls = None
 _main_dispatcher_cls = None
 _button_handler_cls = None
 _tagged_button_handler_cls = None
@@ -259,6 +261,33 @@ def _get_segmented_handler_cls():
     return _SegmentedHandler
 
 
+def _get_switch_handler_cls():
+    """Lazily build the NSObject subclass used as target for NSSwitch buttons."""
+    global _switch_handler_cls
+    if _switch_handler_cls is not None:
+        return _switch_handler_cls
+
+    import objc  # type: ignore[import]
+    from Cocoa import NSObject  # type: ignore[import]
+
+    class _SwitchHandler(NSObject):
+        def initWithCallback_(self, callback):
+            self = objc.super(_SwitchHandler, self).init()
+            if self is None:
+                return None
+            self._cb = callback
+            return self
+
+        def switchChanged_(self, sender):
+            try:
+                self._cb(bool(sender.state()))
+            except Exception:
+                pass
+
+    _switch_handler_cls = _SwitchHandler
+    return _SwitchHandler
+
+
 def _get_main_dispatcher_cls():
     """Lazily build the NSObject subclass used to dispatch callables onto the main thread."""
     global _main_dispatcher_cls
@@ -413,13 +442,13 @@ def _ensure_edit_menu() -> None:
         # (label, selector, key-equivalent). Nil target → walks responder
         # chain → reaches the text field's editor, which implements these.
         spec = [
-            ("Undo",       "undo:",      "z"),
-            ("Redo",       "redo:",      "Z"),  # Cmd+Shift+Z
-            (None,         None,         None),  # separator
-            ("Cut",        "cut:",       "x"),
-            ("Copy",       "copy:",      "c"),
-            ("Paste",      "paste:",     "v"),
-            (None,         None,         None),
+            ("Undo", "undo:", "z"),
+            ("Redo", "redo:", "Z"),  # Cmd+Shift+Z
+            (None, None, None),  # separator
+            ("Cut", "cut:", "x"),
+            ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"),
+            (None, None, None),
             ("Select All", "selectAll:", "a"),
         ]
         for label, selector, key in spec:
@@ -500,13 +529,13 @@ def _make_label(text: str, x: float, y: float, w: float, h: float, *, right: boo
 
 
 def _show_form_dialog(
-    title: str,
-    fields: list[dict],
-    *,
-    ok_title: str = "OK",
-    cancel_title: str = "Cancel",
-    informative: str | None = None,
-    icon_path: str | None = None,
+        title: str,
+        fields: list[dict],
+        *,
+        ok_title: str = "OK",
+        cancel_title: str = "Cancel",
+        informative: str | None = None,
+        icon_path: str | None = None,
 ) -> dict | None:
     """Show a multi-field modal NSPanel form.
 
@@ -692,6 +721,12 @@ def _show_form_dialog(
             btn.setButtonType_(NSSwitchButton)
             btn.setTitle_("")
             btn.setState_(NSOnState if default else NSOffState)
+            if on_change is not None:
+                cls = _get_switch_handler_cls()
+                handler = cls.alloc().initWithCallback_(on_change)
+                handlers.append(handler)
+                btn.setTarget_(handler)
+                btn.setAction_("switchChanged:")
             content.addSubview_(btn)
             widgets[key] = btn
 
@@ -811,7 +846,7 @@ def _show_form_dialog(
         widgets.get(f["key"])
         for f in fields
         if widgets.get(f["key"]) is not None
-        and f.get("kind", "text") in ("text", "secure", "combo", "popup", "switch", "segmented")
+           and f.get("kind", "text") in ("text", "secure", "combo", "popup", "switch", "segmented")
     ]
     for i in range(len(keyable) - 1):
         try:
@@ -890,12 +925,12 @@ def _show_form_dialog(
 
 
 def _show_pick_dialog(
-    title: str,
-    label: str,
-    items: list[str],
-    *,
-    ok_title: str = "Select",
-    cancel_title: str = "Cancel",
+        title: str,
+        label: str,
+        items: list[str],
+        *,
+        ok_title: str = "Select",
+        cancel_title: str = "Cancel",
 ) -> str | None:
     """Show an NSAlert with a single NSPopUpButton; returns selected item or None."""
     if not items:
@@ -913,12 +948,12 @@ def _show_pick_dialog(
 
 
 def _show_message_panel(
-    title: str,
-    message: str,
-    buttons: list[tuple[str, int]],
-    *,
-    default_index: int = 0,
-    cancel_index: int | None = None,
+        title: str,
+        message: str,
+        buttons: list[tuple[str, int]],
+        *,
+        default_index: int = 0,
+        cancel_index: int | None = None,
 ) -> int:
     """Show a modal message NSPanel with a multiline body and 1–3 buttons.
 
@@ -1256,10 +1291,10 @@ def _open_live_text_window(title: str, get_text: Callable[[], str],
     content_h = 504
 
     style = (
-        NSWindowStyleMaskTitled
-        | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskResizable
-        | NSWindowStyleMaskNonactivatingPanel
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable
+            | NSWindowStyleMaskNonactivatingPanel
     )
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, content_w, content_h),
@@ -1584,9 +1619,9 @@ def _show_about_panel(version: str = "", *, icon_state=None) -> None:
     icon_size = 64
 
     style = (
-        NSWindowStyleMaskTitled
-        | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskNonactivatingPanel
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskNonactivatingPanel
     )
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, win_w, win_h),
@@ -1874,6 +1909,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._launch_at_login_cached = _is_launch_at_login_enabled()
             except Exception:
                 self._launch_at_login_cached = False
+
         threading.Thread(target=_probe, daemon=True, name="susops-loginitem-probe").start()
 
     # ------------------------------------------------------------------ #
@@ -1902,11 +1938,41 @@ class SusOpsMacTray(AbstractTrayApp):
     # AbstractTrayApp implementation
     # ------------------------------------------------------------------ #
 
+    def _apply_icon_path(self, icon_path: str) -> None:
+        """Route an icon path through the bandwidth subview when active, else
+        fall back to rumps's normal app.icon setter."""
+        if icon_path:
+            self._last_icon_path = icon_path
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is None or not icon_path:
+            if icon_path:
+                self._app.icon = icon_path
+            return
+        from AppKit import NSImage  # type: ignore[import]
+        img = NSImage.alloc().initByReferencingFile_(icon_path)
+        if img is not None:
+            iv.setImage_(img)
+        try:
+            button = self._app._nsapp.nsstatusitem.button()
+            if button is not None:
+                button.setImage_(None)
+        except Exception:
+            pass
+
+    def _current_icon_path(self) -> str | None:
+        """Most recently applied icon path. Falls back to the saved logo style
+        so the first read after launch (before any _apply_icon_path) works."""
+        cached = getattr(self, "_last_icon_path", None)
+        if cached:
+            return cached
+        logo_style = self.manager.app_config.logo_style.value.lower()
+        return _get_icon_path(self.state, logo_style)
+
     def update_icon(self, state: ProcessState) -> None:
         logo_style = self.manager.app_config.logo_style.value.lower()
         icon_path = _get_icon_path(state, logo_style)
         if icon_path:
-            self._app.icon = icon_path
+            self._apply_icon_path(icon_path)
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
@@ -1957,10 +2023,12 @@ class SusOpsMacTray(AbstractTrayApp):
         so we dispatch them via _on_main rather than running them on the worker. Without
         this, AppKit raises NSInternalInconsistencyException and the app gets stuck.
         """
+
         def _worker():
             result = fn()
             if callback is not None:
                 _on_main(lambda: callback(result))
+
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------ #
@@ -1979,6 +2047,7 @@ class SusOpsMacTray(AbstractTrayApp):
             is_chromium=True,
             bundle=bundle_name,
         )
+
         # Spawn in a background thread — `open -na` can block briefly on macOS
         # while LaunchServices coordinates with the new app instance, and we
         # don't want to freeze the menu bar app while that happens.
@@ -1987,6 +2056,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 launch_with_pac(browser, pac_url)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
     def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
@@ -1998,11 +2068,13 @@ class SusOpsMacTray(AbstractTrayApp):
             is_chromium=True,
             bundle=bundle_name,
         )
+
         def _spawn():
             try:
                 open_proxy_settings(browser)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
 
     def _launch_firefox_app(self, bundle_name: str = "Firefox") -> None:
@@ -2018,11 +2090,13 @@ class SusOpsMacTray(AbstractTrayApp):
             bundle=bundle_name,
         )
         profile_dir = self.manager.workspace / "firefox_profile"
+
         def _spawn():
             try:
                 launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
 
     def do_launch_chrome(self) -> None:
@@ -2193,11 +2267,13 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._launch_chromium_app(bundle)
             else:
                 self._launch_firefox_app(bundle)
+
         return handler
 
     def _make_browser_settings(self, bundle: str):
         def handler(_sender):
             self._open_chromium_proxy_settings(bundle)
+
         return handler
 
     # ------------------------------------------------------------------ #
@@ -2266,7 +2342,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 style = logo_styles[idx]
                 icon_path = _get_icon_path(self.state, style.value.lower())
                 if icon_path:
-                    self._app.icon = icon_path
+                    self._apply_icon_path(icon_path)
 
         # Initial defaults — updated after each invalid attempt so the user keeps state.
         # Launch-at-login state is read from a background-populated cache to avoid
@@ -2276,6 +2352,7 @@ class SusOpsMacTray(AbstractTrayApp):
             "stop_on_quit": ac.stop_on_quit,
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
+            "show_bandwidth": ac.tray_show_bandwidth,
             "logo_style": logo_styles.index(saved_logo),
             "rpc_port": str(rpc_port) if rpc_port else "",
             "sse_port": str(sse_port) if sse_port else "",
@@ -2292,6 +2369,9 @@ class SusOpsMacTray(AbstractTrayApp):
                  "default": defaults["ephemeral_ports"]},
                 {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
                  "default": defaults["restore_shares"]},
+                {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
+                 "default": defaults["show_bandwidth"],
+                 "on_change": self._preview_bandwidth_visibility},
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
@@ -2312,6 +2392,7 @@ class SusOpsMacTray(AbstractTrayApp):
             if result is None:
                 # Revert any preview
                 self.update_icon(self.state)
+                self.refresh_bandwidth_title()
                 return
 
             # Refresh defaults so a re-show on validation failure keeps user edits.
@@ -2322,9 +2403,9 @@ class SusOpsMacTray(AbstractTrayApp):
             # value without losing their other edits.
             port_ints: dict[str, int] = {}
             port_specs = [
-                ("rpc_port",  "RPC", rpc_port),
-                ("sse_port",  "SSE", sse_port),
-                ("pac_port",  "PAC", pac_port),
+                ("rpc_port", "RPC", rpc_port),
+                ("sse_port", "SSE", sse_port),
+                ("pac_port", "PAC", pac_port),
             ]
             invalid = False
             for key, label, current in port_specs:
@@ -2354,8 +2435,12 @@ class SusOpsMacTray(AbstractTrayApp):
                 stop_on_quit=result["stop_on_quit"],
                 ephemeral_ports=result["ephemeral_ports"],
                 restore_shares_on_start=result["restore_shares"],
+                tray_show_bandwidth=result["show_bandwidth"],
                 logo_style=new_logo,
             )
+            # No refresh_bandwidth_title() here: preview already left the
+            # menu bar in its final state. Re-running update_title rebuilds
+            # the subview frame and momentarily nudges the icon size.
             self.manager.update_config(
                 rpc_server_port=port_ints["rpc_port"],
                 status_server_port=port_ints["sse_port"],
@@ -2739,6 +2824,7 @@ class SusOpsMacTray(AbstractTrayApp):
     def _make_share_info_handler(self, info):
         def handler(_sender):
             self._show_share_info_dialog(info)
+
         return handler
 
     def _show_share_info_dialog(self, info) -> None:
@@ -2775,10 +2861,10 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _confirm_reset(self) -> None:
         if not _show_confirm(
-            "Reset All?",
-            "This will stop all tunnels and delete the workspace. This cannot be undone.",
-            ok="Reset",
-            cancel="Cancel",
+                "Reset All?",
+                "This will stop all tunnels and delete the workspace. This cannot be undone.",
+                ok="Reset",
+                cancel="Cancel",
         ):
             return
         self.run_in_background(lambda: self.do_reset(), lambda _: None)
@@ -2842,12 +2928,175 @@ class SusOpsMacTray(AbstractTrayApp):
     # Run
     # ------------------------------------------------------------------ #
 
+    _BW_RATE_COL_WIDTH = 9  # widest expected rate, e.g. "99.9 MB/s"
+
+    def _clear_bw_views(self, button) -> None:
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is not None:
+            iv.removeFromSuperview()
+            self._bw_icon_view = None
+        tf = getattr(self, "_bw_text_view", None)
+        if tf is not None:
+            tf.removeFromSuperview()
+            self._bw_text_view = None
+        try:
+            self._app._nsapp.nsstatusitem.setLength_(-1.0)  # NSVariableStatusItemLength
+        except Exception:
+            pass
+        # Restore the button's icon via rumps's own path so it picks up the
+        # exact NSImage sizing rumps applies at launch. Poke the internal
+        # path cache first so the setter doesn't short-circuit on a value
+        # that matches the last one we routed through it.
+        icon_path = self._current_icon_path()
+        if icon_path:
+            try:
+                self._app._icon = None
+            except Exception:
+                pass
+            self._app.icon = icon_path
+
+    def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        try:
+            status_item = self._app._nsapp.nsstatusitem
+            button = status_item.button()
+        except Exception:
+            status_item, button = None, None
+
+        if rx_bps is None or tx_bps is None:
+            self._clear_bw_views(button)
+            self._app.title = ""
+            return
+
+        up = self._format_rate(tx_bps).rjust(self._BW_RATE_COL_WIDTH)
+        down = self._format_rate(rx_bps).rjust(self._BW_RATE_COL_WIDTH)
+        text = f"{up}\n{down}"
+        if button is None:
+            self._app.title = text
+            return
+
+        from AppKit import (  # type: ignore[import]
+            NSAttributedString,
+            NSColor,
+            NSFont,
+            NSFontAttributeName,
+            NSFontWeightRegular,
+            NSForegroundColorAttributeName,
+            NSImageView,
+            NSLineBreakByClipping,
+            NSMutableParagraphStyle,
+            NSParagraphStyleAttributeName,
+            NSTextAlignmentRight,
+            NSTextField,
+        )
+        from Foundation import NSMakeRect  # type: ignore[import]
+
+        font = NSFont.systemFontOfSize_weight_(8, NSFontWeightRegular)
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setLineSpacing_(0)
+        para.setAlignment_(NSTextAlignmentRight)
+        attrs = {
+            NSFontAttributeName: font,
+            NSParagraphStyleAttributeName: para,
+            NSForegroundColorAttributeName: NSColor.labelColor(),
+        }
+        attr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+        # Lock text-view dimensions to the widest possible two-line block
+        # so the frame stays the same even as digits / units fluctuate.
+        max_text = (
+            f"↑ {'99.9 MB/s'.rjust(self._BW_RATE_COL_WIDTH)}\n"
+            f"↓ {'99.9 MB/s'.rjust(self._BW_RATE_COL_WIDTH)}"
+        )
+        max_attr = NSAttributedString.alloc().initWithString_attributes_(max_text, attrs)
+        max_size = max_attr.size()
+        fixed_w = max_size.width
+        fixed_h = max_size.height
+
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is None:
+            iv = NSImageView.alloc().init()
+            iv.setImageScaling_(0)  # NSImageScaleProportionallyDown
+            button.addSubview_(iv)
+            self._bw_icon_view = iv
+
+        tf = getattr(self, "_bw_text_view", None)
+        if tf is None:
+            tf = NSTextField.alloc().init()
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(False)
+            tf.setSelectable_(False)
+            tf.setBordered_(False)
+            tf.setAlignment_(NSTextAlignmentRight)
+            tf.cell().setLineBreakMode_(NSLineBreakByClipping)
+            button.addSubview_(tf)
+            self._bw_text_view = tf
+
+        # Load the current icon directly into NSImageView so we don't depend
+        # on button.image() (which can be None when rumps short-circuits on
+        # an unchanged path). NSImageView scales the native asset to fit
+        # the view frame. Honour the last-previewed logo, not just the
+        # saved one, so the Settings preview survives toggling Bandwidth.
+        btn_h = button.frame().size.height
+        # macOS draws menu-bar item icons at 20pt with a small inset on a
+        # 22pt-tall button. Match that so the subview doesn't render the
+        # icon noticeably larger than rumps's bare-button path.
+        icon_box = 20.0
+        icon_path = self._current_icon_path()
+        if icon_path:
+            from AppKit import NSImage as _NSImage  # type: ignore[import]
+            img = _NSImage.alloc().initByReferencingFile_(icon_path)
+            if img is not None:
+                iv.setImage_(img)
+        button.setImage_(None)
+        button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
+        tf.setAttributedStringValue_(attr)
+
+        icon_w = icon_box
+        icon_h = icon_box
+        gap = 6.0
+        right_pad = 4.0
+        total_w = icon_w + gap + fixed_w + right_pad
+
+        if status_item is not None:
+            status_item.setLength_(total_w)
+        iv.setFrame_(NSMakeRect(0, (btn_h - icon_h) / 2.0, icon_w, icon_h))
+        y = (btn_h - fixed_h) / 2.0
+        x = icon_w + gap
+        tf.setFrame_(NSMakeRect(x, y, fixed_w, fixed_h))
+
+    def _tick_bandwidth(self, _timer=None) -> None:
+        self.refresh_bandwidth_title()
+
+    def _preview_bandwidth_visibility(self, checked: bool) -> None:
+        """Live-toggle the menu-bar bandwidth title from the Settings switch.
+        Config isn't persisted until the user clicks Save; Cancel reverts via
+        refresh_bandwidth_title() reading the unchanged saved value."""
+        if checked:
+            try:
+                rx, tx = self.manager.get_bandwidth_global()
+            except Exception:
+                rx, tx = 0.0, 0.0
+            self.update_title(rx, tx)
+        else:
+            self.update_title(None, None)
+
     def run(self) -> None:
         # Initial state pull on startup; from then on the SSE listener drives
         # every refresh. No periodic polling fallback — SSE reconnects with
         # a small backoff cap on its own.
         self.do_poll()
+        # rumps creates the NSStatusItem inside applicationDidFinishLaunching,
+        # which only fires once _app.run() starts the runloop. Schedule the
+        # bandwidth subview population for the first runloop tick so the
+        # status item never paints in its "icon-only, default width" state
+        # before we widen it.
+        from Foundation import NSTimer  # type: ignore[import]
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.0, False, lambda _t: self.refresh_bandwidth_title()
+        )
         self._start_sse_listener()
+        self._bw_timer = self._rumps.Timer(self._tick_bandwidth, 1)
+        self._bw_timer.start()
         self._app.run()
 
 

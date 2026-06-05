@@ -3,6 +3,7 @@ def test_version_is_importable_string():
     assert isinstance(__version__, str)
     assert __version__
 
+
 def test_version_matches_pyproject():
     import tomllib
     from pathlib import Path
@@ -13,6 +14,7 @@ def test_version_matches_pyproject():
     )
     # importlib.metadata normalizes per PEP 440, compare canonical forms.
     assert canonicalize_version(__version__) == canonicalize_version(pyproject["project"]["version"])
+
 
 def test_version_fallback_reads_pyproject(monkeypatch):
     """Verify the tomllib fallback works when the package is not installed."""

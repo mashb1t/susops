@@ -7,11 +7,11 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
-PKGBUILD  = REPO_ROOT / "packaging" / "aur" / "PKGBUILD"
-FORMULA   = REPO_ROOT / "packaging" / "homebrew" / "Formula" / "susops.rb"
-CASK      = REPO_ROOT / "packaging" / "homebrew" / "Casks" / "susops.rb"
-DESKTOP   = REPO_ROOT / "packaging" / "aur" / "susops-tray.desktop"
-SPEC      = REPO_ROOT / "packaging" / "macos" / "susops.spec"
+PKGBUILD = REPO_ROOT / "packaging" / "aur" / "PKGBUILD"
+FORMULA = REPO_ROOT / "packaging" / "homebrew" / "Formula" / "susops.rb"
+CASK = REPO_ROOT / "packaging" / "homebrew" / "Casks" / "susops.rb"
+DESKTOP = REPO_ROOT / "packaging" / "aur" / "susops-tray.desktop"
+SPEC = REPO_ROOT / "packaging" / "macos" / "susops.spec"
 
 
 def _pyproject_version() -> str:
@@ -29,22 +29,27 @@ def _pkgbuild_array(name: str) -> list[str]:
 def test_pkgbuild_exists():
     assert PKGBUILD.exists()
 
+
 def test_pkgbuild_depends_no_gtk():
     depends = _pkgbuild_array("depends")
     gtk_pkgs = {"python-gobject", "gtk3", "libayatana-appindicator"}
     assert not gtk_pkgs & set(depends)
 
+
 def test_pkgbuild_depends_ruamel():
     assert "python-ruamel-yaml" in _pkgbuild_array("depends")
+
 
 def test_pkgbuild_optdepends_has_gtk():
     names = {e.split(":")[0] for e in _pkgbuild_array("optdepends")}
     assert "python-gobject" in names
     assert "gtk3" in names
 
+
 def test_pkgbuild_optdepends_has_textual():
     names = {e.split(":")[0] for e in _pkgbuild_array("optdepends")}
     assert "python-textual" in names
+
 
 def test_pkgbuild_version_matches_pyproject():
     # AUR pkgver disallows hyphens, so the PKGBUILD stores the PEP-440
@@ -53,25 +58,32 @@ def test_pkgbuild_version_matches_pyproject():
     m = re.search(r"^pkgver=(.+)$", PKGBUILD.read_text(), re.MULTILINE)
     assert m and canonicalize_version(m.group(1)) == canonicalize_version(_pyproject_version())
 
+
 def test_desktop_file_exists():
     assert DESKTOP.exists()
 
+
 def test_desktop_file_has_exec():
     assert "Exec=susops-tray" in DESKTOP.read_text()
+
 
 # ── Homebrew Formula ──────────────────────────────────────────────────────────
 
 def test_formula_exists():
     assert FORMULA.exists()
 
+
 def test_formula_has_no_placeholder():
     assert "PLACEHOLDER" not in FORMULA.read_text()
+
 
 def test_formula_has_livecheck():
     assert "livecheck" in FORMULA.read_text()
 
+
 def test_formula_has_virtualenv_include():
     assert "Language::Python::Virtualenv" in FORMULA.read_text()
+
 
 def test_formula_version_matches_pyproject():
     m = re.search(
@@ -80,21 +92,26 @@ def test_formula_version_matches_pyproject():
     )
     assert m and m.group(1) == _pyproject_version()
 
+
 # ── Homebrew Cask ─────────────────────────────────────────────────────────────
 
 def test_cask_exists():
     assert CASK.exists()
 
+
 def test_cask_url_has_arm64():
     assert "arm64" in CASK.read_text()
 
+
 def test_cask_version_interpolation():
     assert "#{version}" in CASK.read_text()
+
 
 # ── PyInstaller spec ──────────────────────────────────────────────────────────
 
 def test_pyinstaller_spec_exists():
     assert SPEC.exists()
+
 
 def test_pyinstaller_spec_has_bundle():
     text = SPEC.read_text()

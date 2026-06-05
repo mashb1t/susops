@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
@@ -21,10 +20,10 @@ _STATE_FILENAMES = {
 
 
 def get_icon_path(
-    state: ProcessState,
-    logo_style: str = "colored_glasses",
-    variant: str = "dark",
-    prefer_png: bool = False,
+        state: ProcessState,
+        logo_style: str = "colored_glasses",
+        variant: str = "dark",
+        prefer_png: bool = False,
 ) -> str | None:
     """Return the icon path for a given state, style, and variant.
 
@@ -62,6 +61,7 @@ def get_ssh_hosts() -> list[str]:
                     hosts.append(h)
     return hosts
 
+
 from susops.client import SusOpsClient
 from susops.core.config import PortForward
 
@@ -87,19 +87,57 @@ class AbstractTrayApp(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def update_icon(self, state: ProcessState) -> None: ...
+    def update_icon(self, state: ProcessState) -> None:
+        ...
 
     @abstractmethod
-    def update_menu_sensitivity(self, state: ProcessState) -> None: ...
+    def update_menu_sensitivity(self, state: ProcessState) -> None:
+        ...
 
     @abstractmethod
-    def show_alert(self, title: str, msg: str) -> None: ...
+    def show_alert(self, title: str, msg: str) -> None:
+        ...
 
     @abstractmethod
-    def show_output_dialog(self, title: str, output: str) -> None: ...
+    def show_output_dialog(self, title: str, output: str) -> None:
+        ...
 
     @abstractmethod
-    def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None: ...
+    def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
+        ...
+
+    def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
+        """Render aggregated up/down bandwidth in the tray title/label.
+
+        ``None`` for both rates means clear the title. Default is a no-op so
+        subclasses that haven't wired this up still work.
+        """
+        return None
+
+    @staticmethod
+    def _format_rate(bps: float) -> str:
+        if bps < 1024:
+            return f"{int(bps)} B/s"
+        if bps < 1024 ** 2:
+            return f"{bps / 1024:.0f} KB/s"
+        if bps < 1024 ** 3:
+            return f"{bps / (1024 ** 2):.1f} MB/s"
+        return f"{bps / (1024 ** 3):.2f} GB/s"
+
+    def refresh_bandwidth_title(self) -> None:
+        """Refresh the tray title with current global bandwidth, or clear it."""
+        try:
+            enabled = bool(self.manager.app_config.tray_show_bandwidth)
+        except Exception:
+            enabled = False
+        if not enabled:
+            self.update_title(None, None)
+            return
+        try:
+            rx, tx = self.manager.get_bandwidth_global()
+        except Exception:
+            rx, tx = 0.0, 0.0
+        self.update_title(rx, tx)
 
     def show_live_logs(self, get_text: Callable[[], str], *, title: str = "Logs",
                        interval_ms: int = 1000) -> None:
@@ -175,6 +213,7 @@ class AbstractTrayApp(ABC):
                 icon = "✓" if r.success else "✗"
                 lat = f" ({r.latency_ms:.0f}ms)" if r.latency_ms else ""
                 return f"{icon} {r.target}{lat}: {r.message}"
+
             self.run_in_background(_run, lambda msg: self.show_output_dialog("Test result", msg))
         else:
             def _run():
@@ -185,6 +224,7 @@ class AbstractTrayApp(ABC):
                     lat = f" ({r.latency_ms:.0f}ms)" if r.latency_ms else ""
                     lines.append(f"{icon} {r.target}{lat}: {r.message}")
                 return "\n".join(lines) or "No PAC hosts configured."
+
             self.run_in_background(_run, lambda msg: self.show_output_dialog("Test all results", msg))
 
     def do_status(self) -> None:
@@ -272,6 +312,7 @@ class AbstractTrayApp(ABC):
                 lines.append(f"     SSE      {sse_url}")
             lines.append(f"     Workspace {workspace}")
             return "\n".join(lines)
+
         self.run_in_background(_run, lambda msg: self.show_output_dialog("Status", msg))
 
     def do_logs(self, n: int = 500) -> None:
@@ -281,9 +322,11 @@ class AbstractTrayApp(ABC):
         interacting with the tray (and the logs scroll automatically as new
         entries arrive).
         """
+
         def _get_text() -> str:
             lines = self.manager.get_logs(n)
             return "\n".join(lines) if lines else "(no log entries yet)"
+
         self.show_live_logs(_get_text, title="Logs")
 
     def do_add_connection(self, tag: str, host: str, port: int = 0) -> None:
@@ -345,36 +388,43 @@ class AbstractTrayApp(ABC):
                 return f"Connection '{tag}' {'enabled' if new_state else 'disabled'}."
             except Exception as e:
                 return f"Error: {e}"
+
         self.run_in_background(_run, lambda msg: self.show_alert("Toggle Connection", msg))
 
     def do_start_connection(self, tag: str) -> None:
         def _run():
             result = self.manager.start(tag=tag)
             return result.message, result.success
+
         def _done(r):
             msg, ok = r
             if not ok:
                 self.show_alert("Start failed", msg)
+
         self.run_in_background(_run, _done)
 
     def do_stop_connection(self, tag: str) -> None:
         def _run():
             result = self.manager.stop(tag=tag)
             return result.message, result.success
+
         def _done(r):
             msg, ok = r
             if not ok:
                 self.show_alert("Stop failed", msg)
+
         self.run_in_background(_run, _done)
 
     def do_restart_connection(self, tag: str) -> None:
         def _run():
             result = self.manager.restart(tag=tag)
             return result.message, result.success
+
         def _done(r):
             msg, ok = r
             if not ok:
                 self.show_alert("Restart failed", msg)
+
         self.run_in_background(_run, _done)
 
     def do_toggle_pac_host_enabled(self, host: str) -> None:
@@ -387,6 +437,7 @@ class AbstractTrayApp(ABC):
                 return f"Domain '{host}' {'enabled' if currently_disabled else 'disabled'}."
             except Exception as e:
                 return f"Error: {e}"
+
         self.run_in_background(_run, lambda msg: self.show_alert("Toggle Domain", msg))
 
     def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
@@ -396,6 +447,7 @@ class AbstractTrayApp(ABC):
                 return f"Forward :{src_port} toggled."
             except Exception as e:
                 return f"Error: {e}"
+
         self.run_in_background(_run, lambda msg: self.show_alert("Toggle Forward", msg))
 
     def do_test_connection(self, conn_tag: str) -> None:
@@ -404,6 +456,7 @@ class AbstractTrayApp(ABC):
             icon = "✓" if result.success else "✗"
             lat = f" ({result.latency_ms:.0f} ms)" if result.latency_ms else ""
             return f"{icon} {conn_tag}{lat}: {result.message}"
+
         self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {conn_tag}", msg))
 
     def do_test_domain(self, host: str, conn_tag: str) -> None:
@@ -412,6 +465,7 @@ class AbstractTrayApp(ABC):
             icon = "✓" if result.success else "✗"
             lat = f" ({result.latency_ms:.0f} ms)" if result.latency_ms else ""
             return f"{icon} [{conn_tag}] {host}{lat}: {result.message}"
+
         self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {host}", msg))
 
     def do_test_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
@@ -431,6 +485,7 @@ class AbstractTrayApp(ABC):
                 return "\n".join(lines) or "No results."
             except Exception as e:
                 return f"Error: {e}"
+
         self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {direction} :{src_port}", msg))
 
     def do_add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
@@ -502,11 +557,11 @@ class AbstractTrayApp(ABC):
     # ------------------------------------------------------------------ #
 
     def do_share(
-        self,
-        conn_tag: str,
-        file_path: str,
-        password: str | None = None,
-        port: int = 0,
+            self,
+            conn_tag: str,
+            file_path: str,
+            password: str | None = None,
+            port: int = 0,
     ) -> None:
         def _run():
             try:
@@ -537,19 +592,21 @@ class AbstractTrayApp(ABC):
     def do_stop_share(self, port: int | None = None) -> None:
         def _run():
             self.manager.stop_share(port)
+
         self.run_in_background(_run)
 
     def do_delete_share(self, port: int) -> None:
         def _run():
             self.manager.delete_share(port)
+
         self.run_in_background(_run)
 
     def do_fetch(
-        self,
-        conn_tag: str,
-        port: int,
-        password: str,
-        outfile: str | None = None,
+            self,
+            conn_tag: str,
+            port: int,
+            password: str,
+            outfile: str | None = None,
     ) -> None:
         def _run():
             try:

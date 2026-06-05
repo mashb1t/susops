@@ -26,7 +26,6 @@ def parse(argv: list[str]) -> argparse.Namespace:
 
 def run(argv: list[str], workspace: Path) -> tuple[int, str, str]:
     """Parse argv, patch workspace, run dispatch, capture stdout/stderr."""
-    import susops.tui.cli as cli_mod
     from susops.facade import SusOpsManager
 
     args = parse(argv)
@@ -267,7 +266,6 @@ def test_cmd_share_file_not_found(ws_with_conn):
 
 def test_cmd_share_and_fetch(ws_with_conn, tmp_path):
     """End-to-end: share a file via CLI then fetch it via CLI."""
-    from susops.tui.cli import cmd_share, cmd_fetch
     from susops.facade import SusOpsManager
 
     test_file = tmp_path / "payload.txt"
@@ -309,7 +307,6 @@ def test_cmd_share_and_fetch(ws_with_conn, tmp_path):
 
 def test_cmd_fetch_wrong_password(ws_with_conn, tmp_path):
     from susops.core.share import ShareServer, generate_password
-    from susops.facade import SusOpsManager
 
     test_file = tmp_path / "secret.txt"
     test_file.write_text("secret")
@@ -544,10 +541,10 @@ def test_cmd_guide_contains_tool_sections(ws_with_conn):
         assert section in out, f"Missing section: {section}"
     # Each tool must show an alias line
     for tool_alias in (
-        "alias susops-brew=", "alias susops-pip=", "alias susops-pip3=",
-        "alias susops-curl=", "alias susops-wget=",
-        "alias susops-npm=", "alias susops-yarn=", "alias susops-pnpm=",
-        "alias susops-docker=", "alias susops-apt=",
+            "alias susops-brew=", "alias susops-pip=", "alias susops-pip3=",
+            "alias susops-curl=", "alias susops-wget=",
+            "alias susops-npm=", "alias susops-yarn=", "alias susops-pnpm=",
+            "alias susops-docker=", "alias susops-apt=",
     ):
         assert tool_alias in out, f"Missing alias: {tool_alias}"
 

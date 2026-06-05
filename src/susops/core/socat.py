@@ -43,11 +43,11 @@ def _udp_process_name(conn_tag: str, fw_tag: str, suffix: str) -> str:
 
 
 def start_udp_forward(
-    conn: Connection,
-    fw: PortForward,
-    direction: str,
-    process_mgr: ProcessManager,
-    workspace: Path,
+        conn: Connection,
+        fw: PortForward,
+        direction: str,
+        process_mgr: ProcessManager,
+        workspace: Path,
 ) -> None:
     """Start socat process(es) for a UDP port forward.
 
@@ -70,12 +70,12 @@ def start_udp_forward(
 
 
 def _start_local_udp(
-    conn: Connection,
-    fw: PortForward,
-    sock: Path,
-    tag: str,
-    process_mgr: ProcessManager,
-    log_dir: Path,
+        conn: Connection,
+        fw: PortForward,
+        sock: Path,
+        tag: str,
+        process_mgr: ProcessManager,
+        log_dir: Path,
 ) -> None:
     """Local UDP forward: socat EXEC piped through SSH ControlMaster.
 
@@ -99,12 +99,12 @@ def _start_local_udp(
 
 
 def _start_remote_udp(
-    conn: Connection,
-    fw: PortForward,
-    sock: Path,
-    tag: str,
-    process_mgr: ProcessManager,
-    log_dir: Path,
+        conn: Connection,
+        fw: PortForward,
+        sock: Path,
+        tag: str,
+        process_mgr: ProcessManager,
+        log_dir: Path,
 ) -> None:
     """Remote UDP forward: local socat + SSH -R slave + remote socat (via SSH).
 
@@ -160,9 +160,9 @@ def _start_remote_udp(
 
 
 def stop_udp_forward(
-    conn_tag: str,
-    fw_tag: str,
-    process_mgr: ProcessManager,
+        conn_tag: str,
+        fw_tag: str,
+        process_mgr: ProcessManager,
 ) -> bool:
     """Stop all socat/SSH processes for a single UDP forward.
 
@@ -178,10 +178,10 @@ def stop_udp_forward(
 
 
 def is_udp_forward_running(
-    conn_tag: str,
-    fw: PortForward,
-    direction: str,
-    process_mgr: ProcessManager,
+        conn_tag: str,
+        fw: PortForward,
+        direction: str,
+        process_mgr: ProcessManager,
 ) -> bool:
     """Return True if the main socat process (lsocat) for this UDP forward is alive."""
     tag = _fw_tag(fw, direction)
@@ -190,8 +190,8 @@ def is_udp_forward_running(
 
 
 def stop_all_udp_forwards_for_connection(
-    conn_tag: str,
-    process_mgr: ProcessManager,
+        conn_tag: str,
+        process_mgr: ProcessManager,
 ) -> None:
     """Stop all UDP socat processes for every forward on a connection."""
     prefix = f"{UDP_PROCESS_PREFIX}-{conn_tag}-"

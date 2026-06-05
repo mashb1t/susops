@@ -1,5 +1,6 @@
 """Process lifecycle management for SusOps via PID files."""
 from __future__ import annotations
+
 import os
 import signal
 import subprocess
@@ -7,6 +8,7 @@ import time
 from pathlib import Path
 
 __all__ = ["ProcessManager"]
+
 
 class ProcessManager:
     """Manages long-running background processes via PID files.
@@ -23,12 +25,12 @@ class ProcessManager:
         return self._pids_dir / f"{name}.pid"
 
     def start(
-        self,
-        name: str,
-        cmd: list[str],
-        env: dict[str, str] | None = None,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+            self,
+            name: str,
+            cmd: list[str],
+            env: dict[str, str] | None = None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
     ) -> int:
         """Start a process and record its PID.
 
@@ -70,10 +72,7 @@ class ProcessManager:
             pid_file = self._pid_file(name)
             if pid_file.exists():
                 pid_file.unlink()
-            # Reap the zombie if this process is our direct child.
-            # Popen objects are not stored, so Python never calls wait()
-            # automatically, leaving the exited process as a zombie until
-            # the parent exits.
+            # Reap the zombie if this process is a direct child. (always wanted to write this as a code comment LOL)
             try:
                 os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
@@ -93,9 +92,9 @@ class ProcessManager:
             return False
         except PermissionError:
             return True  # exists, not our process, but it's running
-        # Process exists in the table — check whether it's a zombie.
+        # Process exists in the table, check whether it's a zombie.
         # Zombies respond to kill(0) but can't do any real work.
-        # Reading /proc is Linux-only; on other platforms we trust kill(0).
+        # Reading /proc is Linux-only, on other platforms we trust kill(0).
         try:
             status = Path(f"/proc/{pid}/status").read_text()
             for line in status.splitlines():

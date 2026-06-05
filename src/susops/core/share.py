@@ -145,11 +145,11 @@ class ShareServer:
         self._failed_count: int = 0
 
     def start(
-        self,
-        file_path: Path,
-        password: str,
-        port: int = 0,
-        workspace: Path | None = None,
+            self,
+            file_path: Path,
+            password: str,
+            port: int = 0,
+            workspace: Path | None = None,
     ) -> ShareInfo:
         """Encrypt and start serving the file asynchronously.
 
@@ -250,10 +250,10 @@ class ShareServer:
 
 
 def fetch_file(
-    host: str,
-    port: int,
-    password: str,
-    outfile: Path | None = None,
+        host: str,
+        port: int,
+        password: str,
+        outfile: Path | None = None,
 ) -> Path:
     """Download and decrypt a file from a ShareServer.
 
@@ -274,10 +274,10 @@ def fetch_file(
 
 
 async def _fetch_async(
-    host: str,
-    port: int,
-    password: str,
-    outfile: Path | None,
+        host: str,
+        port: int,
+        password: str,
+        outfile: Path | None,
 ) -> Path:
     import aiohttp
 
@@ -286,9 +286,9 @@ async def _fetch_async(
 
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            url,
-            headers={"Authorization": f"Basic {credentials}"},
-            timeout=aiohttp.ClientTimeout(total=30),
+                url,
+                headers={"Authorization": f"Basic {credentials}"},
+                timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"Share server returned HTTP {resp.status}")

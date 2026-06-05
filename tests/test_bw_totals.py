@@ -1,14 +1,12 @@
 """Tests for cumulative bandwidth counters and uptime tracking."""
 from __future__ import annotations
 
-import time
-import threading
 from unittest.mock import MagicMock
 
 import pytest
 
-from susops.facade import _BandwidthSampler
 from susops.core.process import ProcessManager
+from susops.facade import _BandwidthSampler
 
 
 @pytest.fixture

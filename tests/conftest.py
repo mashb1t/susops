@@ -53,7 +53,7 @@ import pytest
 def _suppress_background_threads():
     """Disable reconnect monitor thread and desktop notifications for all tests."""
     with patch("susops.facade._ReconnectMonitor.start"), \
-         patch("susops.facade.SusOpsManager._notify"):
+            patch("susops.facade.SusOpsManager._notify"):
         yield
 
 

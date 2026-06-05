@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from susops.core.config import Connection, PortForward, SusOpsConfig
+from susops.core.config import Connection
 from susops.core.rpc_protocol import (
     decode_arg,
     encode_value,
@@ -9,13 +9,9 @@ from susops.core.rpc_protocol import (
 )
 from susops.core.types import (
     ConnectionStatus,
-    LogoStyle,
     ProcessState,
-    ShareInfo,
     StartResult,
     StatusResult,
-    StopResult,
-    TestResult,
 )
 
 

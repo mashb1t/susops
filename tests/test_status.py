@@ -7,6 +7,7 @@ pytest_plugins = []
 
 try:
     import aiohttp  # noqa: F401
+
     _HAS_AIOHTTP = True
 except ImportError:
     _HAS_AIOHTTP = False
@@ -57,8 +58,8 @@ def test_emit_reaches_client(status_server):
                     received.append(line)
                     # Wait until we have both the event line and the data line
                     if (
-                        any("event: test" in r for r in received)
-                        and any("data:" in r for r in received)
+                            any("event: test" in r for r in received)
+                            and any("data:" in r for r in received)
                     ):
                         done.set()
                         return
@@ -100,8 +101,8 @@ def test_emit_multiple_clients_both_receive(status_server):
                     line = raw.decode()
                     results[idx].append(line)
                     if (
-                        any("event: multi" in r for r in results[idx])
-                        and any("data:" in r for r in results[idx])
+                            any("event: multi" in r for r in results[idx])
+                            and any("data:" in r for r in results[idx])
                     ):
                         dones[idx].set()
                         return

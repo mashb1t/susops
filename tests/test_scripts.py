@@ -154,7 +154,7 @@ def test_update_formula_resource_shas(tmp_path):
     formula = tmp_path / "susops.rb"
     formula.write_text(_formula_template())
     shas = {
-        "rich":    {"sha256": "richsha123",    "url": "https://example.com/rich.tar.gz"},
+        "rich": {"sha256": "richsha123", "url": "https://example.com/rich.tar.gz"},
         "pydantic": {"sha256": "pydanticsha456", "url": "https://example.com/pydantic.tar.gz"},
     }
     update_formula_resource_shas(formula, shas)

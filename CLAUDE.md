@@ -195,7 +195,7 @@ Key implementation notes:
 - File shares belonging to that connection are also stopped
 - PAC server and other connections are left running
 
-**Bandwidth sampling.** `_BandwidthSampler` (inside `facade.py`) is a daemon thread that reads `read_chars`/`write_chars` from `/proc/pid/io` every 2 s — these include socket I/O, unlike `read_bytes`/`write_bytes` which only count disk. `get_bandwidth(tag)` is a non-blocking dict lookup.
+**Bandwidth sampling.** `_BandwidthSampler` (inside `facade.py`) is a daemon thread that reads `read_chars`/`write_chars` from `/proc/pid/io` every second. These include socket I/O, unlike `read_bytes`/`write_bytes` which only count disk. `get_bandwidth(tag)` is a non-blocking dict lookup.
 
 **Multi-share.** `_share_servers: dict[int, tuple[ShareServer, ShareInfo]]` in the facade is keyed by port, allowing concurrent shares on different ports. Each `ShareServer` tracks `access_count` and `failed_count` in memory (not persisted). `list_shares()` attaches live counts to the returned `ShareInfo` via `dataclasses.replace`.
 

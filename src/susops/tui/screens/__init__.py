@@ -5,11 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import susops
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Label, Static
 
+import susops
 from susops.core.config import PortForward as _PortForward
 
 

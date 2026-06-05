@@ -26,14 +26,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import dataclasses
-import datetime
 import inspect
 import sys
 import typing
-from pathlib import Path
-
 from io import StringIO
+from pathlib import Path
 
 from pydantic import TypeAdapter
 from ruamel.yaml import YAML
@@ -48,9 +45,7 @@ from susops import __version__ as SUSOPS_VERSION  # noqa: E402
 from susops.core.rpc_server import _ALLOWED_METHODS  # noqa: E402
 from susops.facade import SusOpsManager  # noqa: E402
 
-
 OUTPUT = ROOT / "docs" / "openapi.yaml"
-
 
 # Annotations we want to normalise before handing them to Pydantic. Most of
 # the work is automatic; this map only catches things Pydantic chokes on or
@@ -231,11 +226,11 @@ def _build_paths() -> tuple[dict, dict]:
             "post": {
                 "summary": "Invoke a SusOpsManager method",
                 "description": (
-                    "Single endpoint dispatch. The request body's `method` "
-                    "field selects which `SusOpsManager.<method>(*args, "
-                    "**kwargs)` is invoked.\n\n"
-                    "**Allowlisted methods:**\n\n"
-                    + "\n".join(method_doc_lines)
+                        "Single endpoint dispatch. The request body's `method` "
+                        "field selects which `SusOpsManager.<method>(*args, "
+                        "**kwargs)` is invoked.\n\n"
+                        "**Allowlisted methods:**\n\n"
+                        + "\n".join(method_doc_lines)
                 ),
                 "operationId": "invoke",
                 "requestBody": {
@@ -396,7 +391,6 @@ def build_openapi() -> dict:
                 "[Access & Authentication](https://github.com/mashb1t/susops"
                 "#access--authentication) section."
             ),
-            "x-generated-at": datetime.date.today().isoformat(),
             "x-generator": "tools/gen_openapi.py",
         },
         "servers": [

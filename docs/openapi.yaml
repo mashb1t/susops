@@ -8,7 +8,6 @@ info:
     address:** `127.0.0.1` — loopback only.\n\n**Authentication:** none. Any local process that can reach
     loopback and read `~/.susops/pids/susops-services.port` can invoke any allowlisted method. See the
     README's [Access & Authentication](https://github.com/mashb1t/susops#access--authentication) section."
-  x-generated-at: '2026-06-05'
   x-generator: tools/gen_openapi.py
 servers:
 - url: http://127.0.0.1:{port}
@@ -26,9 +25,10 @@ paths:
         **kwargs)` is invoked.\n\n**Allowlisted methods:**\n\n- `add_connection`\n- `add_local_forward`\n\
         - `add_pac_host`\n- `add_remote_forward`\n- `delete_share` — Stop and permanently remove a share
         from config.\n- `fetch` — Download and decrypt a shared file via a transient local forward slave.\n\
-        - `get_bandwidth`\n- `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last
-        start. Resets on stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n\
-        - `get_uptime` — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
+        - `get_bandwidth`\n- `get_bandwidth_global` — Return (rx_bps, tx_bps) summed across every connection.\n\
+        - `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last start. Resets on
+        stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n- `get_uptime`
+        — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
         — Return True if the UDP socat process for this forward is alive.\n- `list_config`\n- `list_shares`
         — Return info for all shares: running (in-memory) and stopped (config-only).\n- `log_message`
         — Push an arbitrary line into the daemon's in-memory log buffer.\n- `process_info` — Return subprocess
@@ -501,6 +501,33 @@ components:
       - type: number
       - type: number
       type: array
+    InvokeGetBandwidthGlobal:
+      type: object
+      description: Return (rx_bps, tx_bps) summed across every connection.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_bandwidth_global
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    GetBandwidthGlobalResult:
+      maxItems: 2
+      minItems: 2
+      prefixItems:
+      - type: number
+      - type: number
+      type: array
     InvokeGetBandwidthTotals:
       type: object
       description: Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop.
@@ -729,6 +756,10 @@ components:
               default: true
               title: Restore Shares On Start
               type: boolean
+            tray_show_bandwidth:
+              default: false
+              title: Tray Show Bandwidth
+              type: boolean
           title: AppConfig
           type: object
         Connection:
@@ -884,6 +915,7 @@ components:
             ephemeral_ports: false
             logo_style: COLORED_GLASSES
             restore_shares_on_start: true
+            tray_show_bandwidth: false
       title: SusOpsConfig
       type: object
     InvokeListShares:
@@ -2068,6 +2100,7 @@ components:
       - $ref: '#/components/schemas/InvokeDeleteShare'
       - $ref: '#/components/schemas/InvokeFetch'
       - $ref: '#/components/schemas/InvokeGetBandwidth'
+      - $ref: '#/components/schemas/InvokeGetBandwidthGlobal'
       - $ref: '#/components/schemas/InvokeGetBandwidthTotals'
       - $ref: '#/components/schemas/InvokeGetLogs'
       - $ref: '#/components/schemas/InvokeGetPacUrl'

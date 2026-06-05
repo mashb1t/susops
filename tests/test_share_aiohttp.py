@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 
 pytest.importorskip("cryptography", reason="cryptography package required")
 pytest.importorskip("aiohttp", reason="aiohttp package required")

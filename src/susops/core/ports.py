@@ -1,5 +1,6 @@
 """Port allocation, validation, and CIDR utilities for SusOps."""
 from __future__ import annotations
+
 import random
 import socket
 import struct
@@ -10,6 +11,7 @@ __all__ = [
     "validate_port",
     "cidr_to_netmask"
 ]
+
 
 def get_random_free_port(start: int = 49152, end: int = 65535) -> int:
     """Return a random free TCP port in [start, end].
@@ -23,6 +25,7 @@ def get_random_free_port(start: int = 49152, end: int = 65535) -> int:
             return port
     raise RuntimeError(f"No free port found in range {start}-{end}")
 
+
 def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
     """Return True if the given TCP port is not currently bound."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -33,6 +36,7 @@ def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
         except OSError:
             return False
 
+
 def validate_port(port: int, *, allow_zero: bool = False) -> bool:
     """Return True if port is in valid range 1–65535, or 0 when allow_zero=True."""
     if not isinstance(port, int):
@@ -40,6 +44,7 @@ def validate_port(port: int, *, allow_zero: bool = False) -> bool:
     if allow_zero and port == 0:
         return True
     return 1 <= port <= 65535
+
 
 def cidr_to_netmask(cidr_bits: int) -> str:
     """Convert CIDR prefix length to dotted-decimal netmask.

@@ -1,7 +1,7 @@
 """PAC file generation and Python HTTP server for SusOps."""
 from __future__ import annotations
+
 import re
-import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -183,5 +183,3 @@ class PacServer:
         if self._server is not None:
             self._server.pac_path = pac_path  # type: ignore[attr-defined]
         self._pac_path = pac_path
-
-

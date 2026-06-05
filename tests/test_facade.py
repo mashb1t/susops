@@ -1,8 +1,9 @@
 """Tests for susops.facade — SusOpsManager integration."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from susops.core.config import PortForward
 from susops.core.types import ProcessState
@@ -308,8 +309,6 @@ def test_stop_share_then_start_again(mgr_with_conn, tmp_path):
 
 
 def test_list_shares_shows_running_and_stopped(mgr_with_conn, tmp_path):
-    from susops.core.share import ShareServer, generate_password
-
     test_file = tmp_path / "data.txt"
     test_file.write_text("hello")
 
@@ -553,7 +552,8 @@ def test_start_logs_ssh_tail_on_failure(tmp_path, monkeypatch):
     )
 
     # Force start_master to raise so the exception handler is exercised
-    monkeypatch.setattr(facade_mod, "start_master", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("Connection refused (port 22)")))
+    monkeypatch.setattr(facade_mod, "start_master",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("Connection refused (port 22)")))
 
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("demo", "user@nonexistent.invalid")
@@ -728,8 +728,8 @@ def test_disabled_forward_not_started(tmp_path):
         started_forwards.append(fw.tag or str(fw.src_port))
 
     with patch("susops.facade.start_forward", side_effect=fake_start_forward), \
-         patch("susops.facade.start_master", return_value=1234), \
-         patch("susops.core.ssh.is_socket_alive", return_value=True):
+            patch("susops.facade.start_master", return_value=1234), \
+            patch("susops.core.ssh.is_socket_alive", return_value=True):
         mgr.start(tag="demo")
 
     assert "pg" not in started_forwards, "Disabled forward must not be registered"
@@ -790,7 +790,6 @@ def test_test_connection_unknown_conn(tmp_path, monkeypatch):
 
 def test_test_domain_success(tmp_path, monkeypatch):
     """test_domain returns success when curl exits 0 through the SOCKS proxy."""
-    import subprocess
     import susops.facade as facade_mod
 
     class _FakeResult:
@@ -1096,8 +1095,6 @@ def test_process_info_tcp_and_udp_forward(tmp_path):
     displays = [c["display"] for c in children]
     assert any("fwd local" in d for d in displays)
     assert any("udp local" in d for d in displays)
-
-
 
 
 def test_compute_state_running_when_only_enabled_are_running(tmp_path):

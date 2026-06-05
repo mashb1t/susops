@@ -13,7 +13,6 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
-
 from susops.core.config import (
     Connection,
     FileShare,
@@ -28,6 +27,13 @@ from susops.core.pac import PacServer, write_pac_file
 from susops.core.ports import get_random_free_port, is_port_free
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
+from susops.core.socat import (
+    UDP_PROCESS_PREFIX,
+    start_udp_forward,
+    stop_udp_forward,
+    stop_all_udp_forwards_for_connection,
+    is_udp_forward_running as _is_udp_forward_running,
+)
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
@@ -40,13 +46,6 @@ from susops.core.ssh import (
     start_master,
     stop_tunnel,
     test_ssh_connectivity,
-)
-from susops.core.socat import (
-    UDP_PROCESS_PREFIX,
-    start_udp_forward,
-    stop_udp_forward,
-    stop_all_udp_forwards_for_connection,
-    is_udp_forward_running as _is_udp_forward_running,
 )
 from susops.core.status import StatusServer
 from susops.core.types import (
@@ -65,9 +64,9 @@ _WORKSPACE_DEFAULT = Path.home() / ".susops"
 
 
 class _BandwidthSampler:
-    """Background thread that samples per-connection bandwidth every 2 seconds."""
+    """Background thread that samples per-connection bandwidth every second."""
 
-    INTERVAL = 2.0
+    INTERVAL = 1.0
     _HISTORY_MAX = 60
     _HISTORY_FILE = "bandwidth_history.json"
 
@@ -415,10 +414,10 @@ class _ReconnectMonitor:
         """
         # If a thread is actually running (event exists and not set), keep it.
         if (
-            self._thread is not None
-            and self._thread.is_alive()
-            and self._stop_event is not None
-            and not self._stop_event.is_set()
+                self._thread is not None
+                and self._thread.is_alive()
+                and self._stop_event is not None
+                and not self._stop_event.is_set()
         ):
             return
         # Spin up a fresh thread with its own fresh stop event. Any prior
@@ -529,12 +528,12 @@ class SusOpsManager:
     """Unified manager for SSH tunnels, PAC server, and file sharing."""
 
     def __init__(
-        self,
-        workspace: Path = _WORKSPACE_DEFAULT,
-        verbose: bool = False,
-        _enable_background_threads: bool = True,
-        _skip_restore: bool = False,
-        process_name: str = "SusOps",
+            self,
+            workspace: Path = _WORKSPACE_DEFAULT,
+            verbose: bool = False,
+            _enable_background_threads: bool = True,
+            _skip_restore: bool = False,
+            process_name: str = "SusOps",
     ) -> None:
         self.workspace = workspace
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -1738,7 +1737,8 @@ class SusOpsManager:
                 self._save()
                 fw_tag = fw.tag or f"{direction}-{src_port}"
                 self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
-                if enabled and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
+                if enabled and (
+                        is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
                     try:
                         if fw.tcp:
                             start_forward(conn, fw, direction, self.workspace)
@@ -1825,7 +1825,8 @@ class SusOpsManager:
         self._add_file_share_to_config(conn_tag, str(file), pw, info.port)
 
         conn = get_connection(self.config, conn_tag)
-        _tunnel_up = conn and (is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace))
+        _tunnel_up = conn and (
+                    is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace))
         if conn and not _tunnel_up:
             # Tunnel not running — start it; start() will also launch the remote forward slave.
             self.start(conn_tag)
@@ -2141,6 +2142,16 @@ class SusOpsManager:
     def get_bandwidth_totals(self, tag: str) -> tuple[float, float]:
         """Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop."""
         return self._bw_sampler.get_totals(tag)
+
+    def get_bandwidth_global(self) -> tuple[float, float]:
+        """Return (rx_bps, tx_bps) summed across every connection."""
+        rx_total = 0.0
+        tx_total = 0.0
+        for conn in self.config.connections:
+            rx, tx = self._bw_sampler.get_rate(conn.tag)
+            rx_total += rx
+            tx_total += tx
+        return rx_total, tx_total
 
     def get_uptime(self, tag: str) -> float | None:
         """Return seconds since connection started, or None if not recorded."""
