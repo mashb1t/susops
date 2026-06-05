@@ -2860,6 +2860,8 @@ class SusOpsMacTray(AbstractTrayApp):
     # Run
     # ------------------------------------------------------------------ #
 
+    _BW_RATE_COL_WIDTH = 9  # widest expected rate, e.g. "99.9 MB/s"
+
     def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
         try:
             button = self._app._nsapp.nsstatusitem.button()
@@ -2871,7 +2873,9 @@ class SusOpsMacTray(AbstractTrayApp):
                 button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
             self._app.title = ""
             return
-        text = f"↑ {self._format_rate(tx_bps)}\n↓ {self._format_rate(rx_bps)}"
+        up = self._format_rate(tx_bps).rjust(self._BW_RATE_COL_WIDTH)
+        down = self._format_rate(rx_bps).rjust(self._BW_RATE_COL_WIDTH)
+        text = f"↑ {up}\n↓ {down}"
         if button is None:
             self._app.title = text
             return
@@ -2882,11 +2886,15 @@ class SusOpsMacTray(AbstractTrayApp):
             NSFontWeightRegular,
             NSMutableParagraphStyle,
             NSParagraphStyleAttributeName,
+            NSTextAlignmentRight,
         )
         font = NSFont.monospacedSystemFontOfSize_weight_(9, NSFontWeightRegular)
         para = NSMutableParagraphStyle.alloc().init()
+        # Fixed line box, 2 lines = 20pt within a ~22pt menu bar so the
+        # NSButtonCell vertically centres the block automatically.
+        para.setMinimumLineHeight_(10)
         para.setMaximumLineHeight_(10)
-        para.setLineSpacing_(-4)
+        para.setAlignment_(NSTextAlignmentRight)
         attrs = {NSFontAttributeName: font, NSParagraphStyleAttributeName: para}
         button.setAttributedTitle_(
             NSAttributedString.alloc().initWithString_attributes_(text, attrs)
