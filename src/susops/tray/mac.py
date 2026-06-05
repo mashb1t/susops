@@ -1941,6 +1941,8 @@ class SusOpsMacTray(AbstractTrayApp):
     def _apply_icon_path(self, icon_path: str) -> None:
         """Route an icon path through the bandwidth subview when active, else
         fall back to rumps's normal app.icon setter."""
+        if icon_path:
+            self._last_icon_path = icon_path
         iv = getattr(self, "_bw_icon_view", None)
         if iv is None or not icon_path:
             if icon_path:
@@ -1956,6 +1958,15 @@ class SusOpsMacTray(AbstractTrayApp):
                 button.setImage_(None)
         except Exception:
             pass
+
+    def _current_icon_path(self) -> str | None:
+        """Most recently applied icon path. Falls back to the saved logo style
+        so the first read after launch (before any _apply_icon_path) works."""
+        cached = getattr(self, "_last_icon_path", None)
+        if cached:
+            return cached
+        logo_style = self.manager.app_config.logo_style.value.lower()
+        return _get_icon_path(self.state, logo_style)
 
     def update_icon(self, state: ProcessState) -> None:
         logo_style = self.manager.app_config.logo_style.value.lower()
@@ -2427,7 +2438,9 @@ class SusOpsMacTray(AbstractTrayApp):
                 tray_show_bandwidth=result["show_bandwidth"],
                 logo_style=new_logo,
             )
-            self.refresh_bandwidth_title()
+            # No refresh_bandwidth_title() here: preview already left the
+            # menu bar in its final state. Re-running update_title rebuilds
+            # the subview frame and momentarily nudges the icon size.
             self.manager.update_config(
                 rpc_server_port=port_ints["rpc_port"],
                 status_server_port=port_ints["sse_port"],
@@ -2920,9 +2933,6 @@ class SusOpsMacTray(AbstractTrayApp):
     def _clear_bw_views(self, button) -> None:
         iv = getattr(self, "_bw_icon_view", None)
         if iv is not None:
-            last_img = iv.image()
-            if last_img is not None and button is not None:
-                button.setImage_(last_img)
             iv.removeFromSuperview()
             self._bw_icon_view = None
         tf = getattr(self, "_bw_text_view", None)
@@ -2933,6 +2943,17 @@ class SusOpsMacTray(AbstractTrayApp):
             self._app._nsapp.nsstatusitem.setLength_(-1.0)  # NSVariableStatusItemLength
         except Exception:
             pass
+        # Restore the button's icon via rumps's own path so it picks up the
+        # exact NSImage sizing rumps applies at launch. Poke the internal
+        # path cache first so the setter doesn't short-circuit on a value
+        # that matches the last one we routed through it.
+        icon_path = self._current_icon_path()
+        if icon_path:
+            try:
+                self._app._icon = None
+            except Exception:
+                pass
+            self._app.icon = icon_path
 
     def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
         try:
@@ -3013,11 +3034,11 @@ class SusOpsMacTray(AbstractTrayApp):
         # Load the current icon directly into NSImageView so we don't depend
         # on button.image() (which can be None when rumps short-circuits on
         # an unchanged path). NSImageView scales the native asset to fit
-        # the view frame.
+        # the view frame. Honour the last-previewed logo, not just the
+        # saved one, so the Settings preview survives toggling Bandwidth.
         btn_h = button.frame().size.height
         icon_box = btn_h
-        logo_style = self.manager.app_config.logo_style.value.lower()
-        icon_path = _get_icon_path(self.state, logo_style)
+        icon_path = self._current_icon_path()
         if icon_path:
             from AppKit import NSImage as _NSImage  # type: ignore[import]
             img = _NSImage.alloc().initWithContentsOfFile_(icon_path)
