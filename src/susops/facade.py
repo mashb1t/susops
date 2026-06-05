@@ -64,9 +64,9 @@ _WORKSPACE_DEFAULT = Path.home() / ".susops"
 
 
 class _BandwidthSampler:
-    """Background thread that samples per-connection bandwidth every 2 seconds."""
+    """Background thread that samples per-connection bandwidth every second."""
 
-    INTERVAL = 2.0
+    INTERVAL = 1.0
     _HISTORY_MAX = 60
     _HISTORY_FILE = "bandwidth_history.json"
 

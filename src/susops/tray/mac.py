@@ -1904,24 +1904,30 @@ class SusOpsMacTray(AbstractTrayApp):
     # AbstractTrayApp implementation
     # ------------------------------------------------------------------ #
 
+    def _apply_icon_path(self, icon_path: str) -> None:
+        """Route an icon path through the bandwidth subview when active, else
+        fall back to rumps's normal app.icon setter."""
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is None or not icon_path:
+            if icon_path:
+                self._app.icon = icon_path
+            return
+        from AppKit import NSImage  # type: ignore[import]
+        img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+        if img is not None:
+            iv.setImage_(img)
+        try:
+            button = self._app._nsapp.nsstatusitem.button()
+            if button is not None:
+                button.setImage_(None)
+        except Exception:
+            pass
+
     def update_icon(self, state: ProcessState) -> None:
         logo_style = self.manager.app_config.logo_style.value.lower()
         icon_path = _get_icon_path(state, logo_style)
         if icon_path:
-            self._app.icon = icon_path
-        # When the bandwidth subview is active, divert the just-set icon
-        # from the button into our NSImageView so the button doesn't
-        # centre it on top of our text.
-        iv = getattr(self, "_bw_icon_view", None)
-        if iv is not None:
-            try:
-                button = self._app._nsapp.nsstatusitem.button()
-                img = button.image()
-                if img is not None:
-                    iv.setImage_(img)
-                    button.setImage_(None)
-            except Exception:
-                pass
+            self._apply_icon_path(icon_path)
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
@@ -2291,7 +2297,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 style = logo_styles[idx]
                 icon_path = _get_icon_path(self.state, style.value.lower())
                 if icon_path:
-                    self._app.icon = icon_path
+                    self._apply_icon_path(icon_path)
 
         # Initial defaults — updated after each invalid attempt so the user keeps state.
         # Launch-at-login state is read from a background-populated cache to avoid
@@ -2968,27 +2974,31 @@ class SusOpsMacTray(AbstractTrayApp):
             button.addSubview_(tf)
             self._bw_text_view = tf
 
-        # Move rumps's icon into our own NSImageView so the button stops
-        # centring it inside the widened frame. update_icon() re-runs this
-        # transfer whenever rumps swaps the icon on state change.
-        img = button.image()
-        if img is not None:
-            iv.setImage_(img)
-            button.setImage_(None)
+        # Load the current icon directly into NSImageView so we don't depend
+        # on button.image() (which can be None when rumps short-circuits on
+        # an unchanged path). NSImageView scales the native asset to fit
+        # the view frame.
+        btn_h = button.frame().size.height
+        icon_box = btn_h
+        logo_style = self.manager.app_config.logo_style.value.lower()
+        icon_path = _get_icon_path(self.state, logo_style)
+        if icon_path:
+            from AppKit import NSImage as _NSImage  # type: ignore[import]
+            img = _NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if img is not None:
+                iv.setImage_(img)
+        button.setImage_(None)
         button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
         tf.setAttributedStringValue_(attr)
 
-        icon_img = iv.image()
-        icon_w = icon_img.size().width if icon_img is not None else 18.0
+        icon_w = icon_box
+        icon_h = icon_box
         gap = 6.0
         right_pad = 4.0
         total_w = icon_w + gap + fixed_w + right_pad
 
         if status_item is not None:
             status_item.setLength_(total_w)
-
-        btn_h = button.frame().size.height
-        icon_h = icon_img.size().height if icon_img is not None else btn_h
         iv.setFrame_(NSMakeRect(0, (btn_h - icon_h) / 2.0, icon_w, icon_h))
         y = (btn_h - fixed_h) / 2.0
         x = icon_w + gap

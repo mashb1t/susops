@@ -225,7 +225,7 @@ class DashboardScreen(Screen):
         mgr.on_log = self._on_new_log
         self._prev_on_error = mgr.on_error
         mgr.on_error = self._on_new_error
-        self.set_interval(2.0, self._tick_refresh)
+        self.set_interval(1.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
 
@@ -245,11 +245,11 @@ class DashboardScreen(Screen):
         mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
-        """Adaptive refresh: every 2s when connections are active, every 10s when idle."""
+        """Adaptive refresh: every 1s when connections are active, every 10s when idle."""
         has_active = any(d["cs"].running for d in self._conn_data.values())
         if not has_active:
             self._idle_ticks += 1
-            if self._idle_ticks < 5:  # skip 4 ticks → refresh every 10s when idle
+            if self._idle_ticks < 10:  # skip 9 ticks → refresh every 10s when idle
                 return
             self._idle_ticks = 0
         else:
