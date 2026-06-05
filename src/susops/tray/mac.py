@@ -88,6 +88,7 @@ def _find_installed_browsers() -> list[tuple[str, str, bool]]:
 # ---------------------------------------------------------------------------
 
 _segmented_handler_cls = None
+_switch_handler_cls = None
 _main_dispatcher_cls = None
 _button_handler_cls = None
 _tagged_button_handler_cls = None
@@ -258,6 +259,33 @@ def _get_segmented_handler_cls():
 
     _segmented_handler_cls = _SegmentedHandler
     return _SegmentedHandler
+
+
+def _get_switch_handler_cls():
+    """Lazily build the NSObject subclass used as target for NSSwitch buttons."""
+    global _switch_handler_cls
+    if _switch_handler_cls is not None:
+        return _switch_handler_cls
+
+    import objc  # type: ignore[import]
+    from Cocoa import NSObject  # type: ignore[import]
+
+    class _SwitchHandler(NSObject):
+        def initWithCallback_(self, callback):
+            self = objc.super(_SwitchHandler, self).init()
+            if self is None:
+                return None
+            self._cb = callback
+            return self
+
+        def switchChanged_(self, sender):
+            try:
+                self._cb(bool(sender.state()))
+            except Exception:
+                pass
+
+    _switch_handler_cls = _SwitchHandler
+    return _SwitchHandler
 
 
 def _get_main_dispatcher_cls():
@@ -693,6 +721,12 @@ def _show_form_dialog(
             btn.setButtonType_(NSSwitchButton)
             btn.setTitle_("")
             btn.setState_(NSOnState if default else NSOffState)
+            if on_change is not None:
+                cls = _get_switch_handler_cls()
+                handler = cls.alloc().initWithCallback_(on_change)
+                handlers.append(handler)
+                btn.setTarget_(handler)
+                btn.setAction_("switchChanged:")
             content.addSubview_(btn)
             widgets[key] = btn
 
@@ -2325,7 +2359,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
                  "default": defaults["restore_shares"]},
                 {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
-                 "default": defaults["show_bandwidth"]},
+                 "default": defaults["show_bandwidth"],
+                 "on_change": self._preview_bandwidth_visibility},
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
@@ -2346,6 +2381,7 @@ class SusOpsMacTray(AbstractTrayApp):
             if result is None:
                 # Revert any preview
                 self.update_icon(self.state)
+                self.refresh_bandwidth_title()
                 return
 
             # Refresh defaults so a re-show on validation failure keeps user edits.
@@ -3006,6 +3042,19 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
+
+    def _preview_bandwidth_visibility(self, checked: bool) -> None:
+        """Live-toggle the menu-bar bandwidth title from the Settings switch.
+        Config isn't persisted until the user clicks Save; Cancel reverts via
+        refresh_bandwidth_title() reading the unchanged saved value."""
+        if checked:
+            try:
+                rx, tx = self.manager.get_bandwidth_global()
+            except Exception:
+                rx, tx = 0.0, 0.0
+            self.update_title(rx, tx)
+        else:
+            self.update_title(None, None)
 
     def run(self) -> None:
         # Initial state pull on startup; from then on the SSE listener drives
