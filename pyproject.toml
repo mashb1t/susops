@@ -13,6 +13,8 @@ dependencies = [
     "pydantic==2.13.3",
     "ruamel.yaml>=0.18",
     "psutil>=5.9",
+    "aiohttp>=3.9",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -31,13 +33,6 @@ udp = []
 #   Ubuntu: sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1
 tray-mac = [
     "rumps>=0.4",
-]
-share = [
-    "cryptography>=42",
-    "aiohttp>=3.9",
-]
-crypto = [
-    "cryptography>=42",
 ]
 dev = [
     "pytest>=9.0.3",

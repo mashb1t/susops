@@ -20,8 +20,17 @@ def test_do_status_calls_show_output_dialog(tray):
     assert len(tray.output_dialogs) == 1
     title, output = tray.output_dialogs[0]
     assert title == "Status"
-    # Output should mention State (the facade's status format)
-    assert "State" in output
+    # Output uses sectioned layout: header + CONNECTIONS + PAC SERVER
+    assert "SusOps" in output
+    assert "CONNECTIONS" in output
+    assert "PAC SERVER" in output
+
+
+def test_do_logs_calls_show_output_dialog(tray):
+    tray.do_logs()
+    assert len(tray.output_dialogs) == 1
+    title, _ = tray.output_dialogs[0]
+    assert title == "Logs"
 
 
 def test_do_start_no_connections_does_not_crash(tray):

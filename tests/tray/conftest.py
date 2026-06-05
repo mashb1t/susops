@@ -41,7 +41,6 @@ class _TestTrayApp(AbstractTrayApp):
         self.alerts: list[tuple[str, str]] = []
         self.output_dialogs: list[tuple[str, str]] = []
         self.bg_jobs: list[tuple] = []
-        self.poll_intervals: list[int] = []
 
     # ---- Platform-abstract overrides → recorders ----
 
@@ -63,9 +62,6 @@ class _TestTrayApp(AbstractTrayApp):
         result = fn()
         if callback is not None:
             callback(result)
-
-    def schedule_poll(self, interval_seconds: int) -> None:
-        self.poll_intervals.append(interval_seconds)
 
 
 @pytest.fixture

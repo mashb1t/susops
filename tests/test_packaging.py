@@ -47,8 +47,11 @@ def test_pkgbuild_optdepends_has_textual():
     assert "python-textual" in names
 
 def test_pkgbuild_version_matches_pyproject():
+    # AUR pkgver disallows hyphens, so the PKGBUILD stores the PEP-440
+    # canonical form. Compare canonicalized versions.
+    from packaging.utils import canonicalize_version
     m = re.search(r"^pkgver=(.+)$", PKGBUILD.read_text(), re.MULTILINE)
-    assert m and m.group(1) == _pyproject_version()
+    assert m and canonicalize_version(m.group(1)) == canonicalize_version(_pyproject_version())
 
 def test_desktop_file_exists():
     assert DESKTOP.exists()

@@ -5,7 +5,6 @@ Requires: python-gobject, gtk3, libayatana-appindicator (system packages).
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -204,18 +203,103 @@ class SusOpsLinuxTray(AbstractTrayApp):
             return False
         self._GLib.idle_add(_show)
 
+    def show_live_logs(self, get_text, *, title: str = "Logs",
+                       interval_ms: int = 1000) -> None:
+        """Non-modal, auto-refreshing log window that tails get_text().
+
+        Polls get_text() every interval_ms; if the text changed, replaces the
+        buffer and scrolls to the bottom. The user can keep using the tray
+        menu while it's open. Each line is colored via the shared log_style
+        rules to match the TUI's Logs tab.
+        """
+        Gtk = self._Gtk
+        GLib = self._GLib
+        from susops.core.log_style import style_log_line
+
+        def _show():
+            dlg = Gtk.Dialog(title=title, transient_for=self._root, modal=False)
+            dlg.set_default_size(896, 504)
+
+            # Scroll view fills the dialog edge-to-edge; dismissal is via the
+            # titlebar close (X) only — no explicit Close button.
+            sw = Gtk.ScrolledWindow(vexpand=True)
+            tv = Gtk.TextView(
+                editable=False,
+                monospace=True,
+                wrap_mode=Gtk.WrapMode.NONE,
+                left_margin=0,
+            )
+            buf = tv.get_buffer()
+
+            # Register color tags. GTK named foreground colors look reasonable
+            # against both light and dark themes.
+            tag_table = {
+                "tag":  {"foreground": "#3DB6C9", "weight": 700},
+                "ok":   {"foreground": "#2EA043"},
+                "warn": {"foreground": "#D29922"},
+                "err":  {"foreground": "#F85149", "weight": 700},
+                "dim":  {"foreground": "#7D8590"},
+                "info": {"foreground": "#58A6FF"},
+            }
+            tags: dict[str, object] = {}
+            for label, props in tag_table.items():
+                tags[label] = buf.create_tag(label, **props)
+
+            sw.add(tv)
+            dlg.get_content_area().add(sw)
+
+            state = {"closed": False, "last": None}
+
+            def _autoscroll():
+                end_iter = buf.get_end_iter()
+                tv.scroll_to_iter(end_iter, 0.0, False, 0.0, 1.0)
+
+            def _apply_colored(text: str) -> None:
+                buf.set_text("")
+                end = buf.get_end_iter()
+                for i, line in enumerate(text.split("\n")):
+                    for chunk, label in style_log_line(line):
+                        if not chunk:
+                            continue
+                        tag = tags.get(label) if label else None
+                        if tag is None:
+                            buf.insert(end, chunk)
+                        else:
+                            buf.insert_with_tags(end, chunk, tag)
+                    if i < len(text.split("\n")) - 1:
+                        buf.insert(end, "\n")
+
+            def _refresh():
+                if state["closed"]:
+                    return False
+                try:
+                    text = get_text()
+                except Exception as exc:
+                    text = f"(log fetch failed: {exc})"
+                if text != state["last"]:
+                    state["last"] = text
+                    _apply_colored(text)
+                    GLib.idle_add(_autoscroll)
+                return True  # keep ticking
+
+            def _on_response(d, _r):
+                state["closed"] = True
+                d.destroy()
+
+            dlg.connect("response", _on_response)
+            dlg.show_all()
+            _refresh()  # initial fill
+            GLib.timeout_add(interval_ms, _refresh)
+            return False
+
+        GLib.idle_add(_show)
+
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
         def _worker():
             result = fn()
             if callback is not None:
                 self._GLib.idle_add(callback, result)
         threading.Thread(target=_worker, daemon=True).start()
-
-    def schedule_poll(self, interval_seconds: int) -> None:
-        def _poll():
-            self.do_poll()
-            return True  # keep repeating
-        self._GLib.timeout_add_seconds(interval_seconds, _poll)
 
     # ------------------------------------------------------------------ #
     # Menu building
@@ -332,6 +416,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
         i.connect("activate", lambda _: self.do_status())
         self._menu.append(i)
 
+        # ── Show logs ─────────────────────────────────────────────────────
+        i = Gtk.MenuItem(label="Show Logs")
+        i.connect("activate", lambda _: self.do_logs())
+        self._menu.append(i)
+
         # ── Launch Browser ────────────────────────────────────────────────
         self._browser_item = Gtk.MenuItem(label="Launch Browser")
         self._menu.append(self._browser_item)
@@ -374,19 +463,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
         Gtk = self._Gtk
         browser_sub = Gtk.Menu()
 
-        _BROWSER_DEFS = [
-            ("Chrome", ["google-chrome", "google-chrome-stable"], True),
-            ("Chromium", ["chromium", "chromium-browser"], True),
-            ("Brave", ["brave-browser", "brave", "brave-browser-stable"], True),
-            ("Vivaldi", ["vivaldi", "vivaldi-stable"], True),
-            ("Edge", ["microsoft-edge", "microsoft-edge-stable"], True),
-            ("Firefox", ["firefox", "firefox-bin"], False),
-        ]
-        found = []
-        for name, exes, chromium in _BROWSER_DEFS:
-            exe = next((shutil.which(e) for e in exes if shutil.which(e)), None)
-            if exe:
-                found.append((name, exe, chromium))
+        # Detection delegated to susops.core.browsers — same table used by
+        # the macOS tray and the TUI so a new browser only needs registering
+        # in one place.
+        from susops.core.browsers import detect_browsers
+        found = [(b.name, b.launch_cmd[0], b.is_chromium) for b in detect_browsers()]
 
         if not found:
             ni = Gtk.MenuItem(label="No browsers found")
@@ -413,6 +494,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._browser_item.set_submenu(browser_sub)
 
     def _make_chromium_launch(self, exe: str):
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
@@ -422,60 +505,32 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 )
                 return
             try:
-                subprocess.Popen([exe, f"--proxy-pac-url={pac_url}"])
+                launch_with_pac(browser, pac_url)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
         return handler
 
     def _make_chromium_settings(self, exe: str):
+        from susops.core.browsers import Browser, open_proxy_settings
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
         def handler(_item):
             try:
-                subprocess.Popen([exe])
-            except Exception:
-                pass
-            url = "chrome://net-internals/#proxy"
-            def _show():
-                dlg = self._Gtk.Dialog(title="Open Proxy Settings",
-                                       transient_for=self._root, modal=True)
-                dlg.add_button("_OK", self._Gtk.ResponseType.OK)
-                dlg.set_default_response(self._Gtk.ResponseType.OK)
-                box = dlg.get_content_area()
-                box.set_spacing(8)
-                box.set_margin_start(16)
-                box.set_margin_end(16)
-                box.set_margin_top(12)
-                box.set_margin_bottom(8)
-                box.add(self._Gtk.Label(label="Paste this URL into the address bar:", xalign=0.0))
-                tv = self._Gtk.TextView()
-                tv.get_buffer().set_text(url)
-                tv.set_monospace(True)
-                tv.set_hexpand(True)
-                box.add(tv)
-                dlg.show_all()
-                buf = tv.get_buffer()
-                buf.select_range(buf.get_start_iter(), buf.get_end_iter())
-                tv.grab_focus()
-                dlg.run()
-                dlg.destroy()
-                return False
-            self._GLib.idle_add(_show)
+                open_proxy_settings(browser)
+            except Exception as exc:
+                self.show_alert("Launch Failed", str(exc))
         return handler
 
     def _make_firefox_launch(self, exe: str):
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=False)
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
                 self.show_alert("Proxy Not Running", "Start the proxy first.")
                 return
             profile_dir = self.manager.workspace / "firefox_profile"
-            profile_dir.mkdir(exist_ok=True)
-            (profile_dir / "user.js").write_text(
-                f'user_pref("network.proxy.type", 2);\n'
-                f'user_pref("network.proxy.autoconfig_url", "{pac_url}");\n'
-                f'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
-            )
             try:
-                subprocess.Popen([exe, "-profile", str(profile_dir), "-no-remote"])
+                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
         return handler
@@ -604,7 +659,28 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(combo_logo, 1, row, 1, 1)
         row += 1
 
-        # PAC Server Port
+        # Server ports — RPC + SSE require daemon restart to apply, PAC is
+        # hot-restarted by the facade. Shown before the existing PAC field.
+        lbl = Gtk.Label(label="RPC Server Port:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        entry_rpc = Gtk.Entry(activates_default=True)
+        rpc_val = self.manager.config.rpc_server_port
+        entry_rpc.set_text(str(rpc_val) if rpc_val else "")
+        entry_rpc.set_placeholder_text("auto (0) — restart daemon to apply")
+        grid.attach(entry_rpc, 1, row, 1, 1)
+        row += 1
+
+        lbl = Gtk.Label(label="SSE Server Port:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        entry_sse = Gtk.Entry(activates_default=True)
+        sse_val = self.manager.config.status_server_port
+        entry_sse.set_text(str(sse_val) if sse_val else "")
+        entry_sse.set_placeholder_text("auto (0) — restart daemon to apply")
+        grid.attach(entry_sse, 1, row, 1, 1)
+        row += 1
+
         lbl = Gtk.Label(label="PAC Server Port:", xalign=1.0)
         lbl.set_width_chars(24)
         grid.attach(lbl, 0, row, 1, 1)
@@ -627,14 +703,30 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 self.update_icon(self.state)
                 break
 
-            pac_text = entry_pac.get_text().strip() or "0"
-            if pac_text != "0" and not _is_valid_port(pac_text):
-                _alert(Gtk, dlg, "Invalid Port", "PAC Server Port must be between 1 and 65535.")
-                continue
-            current_pac_port = self.manager.config.pac_server_port
-            pac_port_changed = int(pac_text) != current_pac_port
-            if pac_text != "0" and pac_port_changed and not is_port_free(int(pac_text)):
-                _alert(Gtk, dlg, "Port In Use", f"Port {pac_text} is already in use.")
+            # Validate all three ports together — short-circuit on first
+            # invalid so the user keeps their other edits in the dialog.
+            cfg = self.manager.config
+            port_specs = [
+                ("RPC", entry_rpc, cfg.rpc_server_port),
+                ("SSE", entry_sse, cfg.status_server_port),
+                ("PAC", entry_pac, cfg.pac_server_port),
+            ]
+            port_values: dict[str, int] = {}
+            invalid = False
+            for label, entry, current in port_specs:
+                text = entry.get_text().strip() or "0"
+                if text != "0" and not _is_valid_port(text):
+                    _alert(Gtk, dlg, "Invalid Port",
+                           f"{label} Server Port must be between 1 and 65535.")
+                    invalid = True
+                    break
+                n = int(text)
+                if n != 0 and n != current and not is_port_free(n):
+                    _alert(Gtk, dlg, "Port In Use", f"Port {n} is already in use.")
+                    invalid = True
+                    break
+                port_values[label] = n
+            if invalid:
                 continue
 
             new_logo = logo_styles[combo_logo.get_active()] if combo_logo.get_active() >= 0 else _saved_logo
@@ -644,7 +736,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 restore_shares_on_start=sw_restore.get_active(),
                 logo_style=new_logo,
             )
-            self.manager.update_config(pac_server_port=int(pac_text))
+            self.manager.update_config(
+                rpc_server_port=port_values["RPC"],
+                status_server_port=port_values["SSE"],
+                pac_server_port=port_values["PAC"],
+            )
             self._apply_autostart(sw_login.get_active())
             self.update_icon(self.state)
             break
@@ -1356,17 +1452,38 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self._GLib.idle_add(_ask)
 
     def _on_about(self) -> None:
+        """About dialog. Original layout (name / version / description / link
+        buttons / copyright). Non-modal so the tray menu stays usable, and
+        keep-above so the window stays in the foreground."""
+        from pathlib import Path
+
         def _show():
             Gtk = self._Gtk
-            dlg = Gtk.Dialog(title="About SusOps", transient_for=self._root, modal=True)
+            dlg = Gtk.Dialog(title="About SusOps", transient_for=self._root, modal=False)
             dlg.add_button("_Close", Gtk.ResponseType.CLOSE)
             dlg.set_default_size(280, -1)
+            try:
+                dlg.set_keep_above(True)
+            except Exception:
+                pass
             box = dlg.get_content_area()
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
                            margin_start=20, margin_end=20,
                            margin_top=16, margin_bottom=12,
                            halign=Gtk.Align.CENTER)
             box.add(vbox)
+
+            # Static logo at the top, if available.
+            icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+            if icon_path.exists():
+                try:
+                    from gi.repository import GdkPixbuf  # type: ignore[import]
+                    pix = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 64, 64)
+                    img = Gtk.Image.new_from_pixbuf(pix)
+                    vbox.pack_start(img, False, False, 4)
+                except Exception:
+                    pass
+
             import susops
             name_lbl = Gtk.Label()
             name_lbl.set_markup("<b><big>SusOps</big></b>")
@@ -1387,9 +1504,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             copy_lbl.get_style_context().add_class("dim-label")
             vbox.pack_start(copy_lbl, False, False, 4)
             _polish_dialog(Gtk, dlg)
+            dlg.connect("response", lambda d, _r: d.destroy())
             dlg.show_all()
-            dlg.run()
-            dlg.destroy()
             return False
         self._GLib.idle_add(_show)
 
@@ -1413,8 +1529,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
                     time.sleep(2.0)
                     continue
                 try:
+                    import os
                     import urllib.request
-                    req = urllib.request.Request(status_url)
+                    import susops as _susops_pkg
+                    req = urllib.request.Request(status_url, headers={
+                        "X-Susops-Client": "tray-linux",
+                        "X-Susops-Client-Version": _susops_pkg.__version__,
+                        "X-Susops-Pid": str(os.getpid()),
+                        # Tray only reacts to state + share events; skip the
+                        # high-frequency `bandwidth` broadcasts.
+                        "X-Susops-Events": "state,share",
+                    })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
                         buf = ""
@@ -1429,7 +1554,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
                                 buf = ""
                 except Exception:
                     time.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
+                    # Cap at 5s — short enough that the user never sees more
+                    # than 5s of staleness, even when the daemon is bouncing.
+                    backoff = min(backoff * 2, 5.0)
 
         threading.Thread(target=_listen, daemon=True, name="susops-sse-linux").start()
 
@@ -1439,8 +1566,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def run(self) -> None:
         """Start the GTK main loop."""
+        # Initial state pull on startup; SSE listener drives every refresh
+        # after that. No periodic polling fallback — SSE reconnects within
+        # 5 s on its own.
         self.do_poll()
-        self.schedule_poll(5)
         self._start_sse_listener()
         self._Gtk.main()
 

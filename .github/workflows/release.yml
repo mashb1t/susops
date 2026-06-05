@@ -20,8 +20,8 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync --extra dev --extra share
-      - run: uv run pytest -x -q
+      - run: uv sync --extra dev --extra tui
+      - run: uv run pytest -x -q -m "not gui"
 
   build-pypi:
     needs: [test]
@@ -32,10 +32,21 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
+      - name: Install dependencies for OpenAPI generation
+        run: uv sync --extra dev
+      - name: Regenerate OpenAPI spec
+        # Always regenerate against the source at tag time — guarantees the
+        # spec attached to the release matches the released code, even if the
+        # committed docs/openapi.yaml was somehow stale. The PR-time freshness
+        # test (tests/test_openapi.py) already prevents that, but belt + braces.
+        run: uv run python tools/gen_openapi.py
       - run: uv build
-      - uses: softprops/action-gh-release@v2
+      - name: Attach release artifacts
+        uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/*
+            docs/openapi.yaml
           generate_release_notes: true
       - run: uv publish
         env:
@@ -111,7 +122,10 @@ jobs:
           VERSION: ${{ env.VERSION }}
         run: |
           VER="${VERSION#v}"
-          pip install -e ".[share]"
+          # Install [tui] so compute_resource_shas.py sees the full runtime
+          # closure (core deps + textual/plotext) and writes accurate
+          # sha256s for every resource listed in the Formula.
+          pip install -e ".[tui]"
           python scripts/update_homebrew_sha.py "${VER}" --dmg "SusOps-${VER}-arm64.dmg"
       - name: Copy to tap
         run: |

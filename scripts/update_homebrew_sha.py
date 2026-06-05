@@ -67,14 +67,19 @@ def update_formula_resource_shas(
 
 
 def update_cask_sha(cask_path: Path, version: str, sha256: str) -> None:
-    """Pin the cask to a specific version + sha256."""
+    """Pin cask version + sha256. Idempotent across :latest/:no_check and previously-pinned states."""
     content = cask_path.read_text()
-    content = re.sub(r"version :latest", f'version "{version}"', content)
-    content = re.sub(r"sha256 :no_check", f'sha256 "{sha256}"', content)
     content = re.sub(
-        r'url "([^"]*)/releases/latest/download/SusOps-#\{version\}-arm64\.dmg"',
-        f'url "https://github.com/mashb1t/susops/releases/download/v{version}/SusOps-{version}-arm64.dmg"',
+        r'version (?::latest|"[^"]*")',
+        f'version "{version}"',
         content,
+        count=1,
+    )
+    content = re.sub(
+        r'sha256 (?::no_check|"[^"]*")',
+        f'sha256 "{sha256}"',
+        content,
+        count=1,
     )
     cask_path.write_text(content)
 

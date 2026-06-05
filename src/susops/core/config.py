@@ -112,7 +112,6 @@ class AppConfig(BaseModel):
     ephemeral_ports: bool = False
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
-    status_server_port: int = 0
 
     @field_validator("stop_on_quit", "ephemeral_ports", "restore_shares_on_start", mode="before")
     @classmethod
@@ -131,9 +130,35 @@ class AppConfig(BaseModel):
 
 
 class SusOpsConfig(BaseModel):
+    # Server ports are at the top of the config so they're the first thing
+    # users see when they open the file. All three default to 0 (auto-allocate
+    # at startup and write back).
+    rpc_server_port: int = 0
+    status_server_port: int = 0
     pac_server_port: int = 0
     connections: list[Connection] = []
     susops_app: AppConfig = AppConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_status_server_port(cls, data: Any) -> Any:
+        """Pull legacy susops_app.status_server_port up to the top level.
+
+        Older configs nested the SSE port under `susops_app` alongside user
+        preferences. It's a server port, not a preference — moved to the
+        top with the other ports. This migration runs on every load so old
+        files keep working; the new schema is written back on the next save.
+        """
+        if not isinstance(data, dict):
+            return data
+        app = data.get("susops_app")
+        if isinstance(app, dict) and "status_server_port" in app:
+            legacy = app.pop("status_server_port")
+            # Only adopt the legacy value when the new field isn't already set
+            # to something non-default — explicit top-level config wins.
+            if not data.get("status_server_port"):
+                data["status_server_port"] = legacy
+        return data
 
 
 def get_config_path(workspace: Path = WORKSPACE_DEFAULT) -> Path:
@@ -156,7 +181,17 @@ def load_config(workspace: Path = WORKSPACE_DEFAULT) -> SusOpsConfig:
 
 
 def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> None:
-    """Save config to workspace/config.yaml using ruamel.yaml for comment preservation."""
+    """Save config to workspace/config.yaml using ruamel.yaml for comment preservation.
+
+    Writes atomically (to a temp file, then POSIX rename) so a concurrent
+    load_config never observes a half-written or freshly-truncated file. The
+    old behaviour — `open(path, 'w')` — truncated the file to 0 bytes before
+    `yaml.dump` ran; a reader in that window got an empty file → empty config →
+    and any save that followed wiped the connections list. The TUI's
+    `@work(thread=True)` makes this a real (and reported) race on rapid Stop
+    clicks.
+    """
+    import os
     path = get_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml = YAML()
@@ -166,8 +201,46 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
     data = config.model_dump(mode='python')
     # Convert enums to their values for serialization
     data['susops_app']['logo_style'] = config.susops_app.logo_style.value
-    with open(path, 'w') as f:
-        yaml.dump(data, f)
+    # Compute the target mode BEFORE writing: preserve any user-set restrictive
+    # permissions (e.g. chmod 600 on a hardened install) since Path.replace()
+    # would otherwise clobber them with the temp file's umask-derived mode.
+    # New configs default to 0o600 — the file holds share passwords.
+    try:
+        target_mode = path.stat().st_mode & 0o777
+    except OSError:
+        target_mode = 0o600
+    # Temp file in the same directory so the rename stays on one filesystem.
+    # Open with O_EXCL so we never overwrite a leftover temp file from a
+    # crashed earlier save (would otherwise inherit its mode).
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            target_mode,
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                yaml.dump(data, f)
+        except Exception:
+            # fdopen owns fd on success; on failure we may need to close it
+            # if fdopen never took ownership. Best-effort.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        # umask may have stripped bits from O_CREAT's mode argument — set
+        # explicitly so the result matches target_mode exactly.
+        os.chmod(tmp_path, target_mode)
+        tmp_path.replace(path)  # atomic on POSIX + Windows ≥ 3.3
+    except Exception:
+        # Best-effort cleanup of the temp file if the write failed.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def get_connection(config: SusOpsConfig, tag: str) -> Connection | None:

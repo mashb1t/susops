@@ -3,7 +3,7 @@ class Susops < Formula
 
   desc "SSH SOCKS5 proxy manager — Python TUI + PAC server"
   homepage "https://github.com/mashb1t/susops"
-  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"
+  url "https://github.com/mashb1t/susops/archive/v3.0.0-rc2.tar.gz"
   sha256 "76c387b268234b796d208aa4eea829e3287c1738dd2f29b7e96d42abd8231644"
   license "MIT"
 
@@ -170,6 +170,16 @@ class Susops < Formula
 
   def install
     virtualenv_install_with_resources
+    # The tray entry point is shipped as a standalone .app via the Cask
+    # (`brew install --cask susops`); the Formula stays CLI/TUI-only.
+    (bin/"susops-tray").unlink if (bin/"susops-tray").exist?
+  end
+
+  def caveats
+    <<~EOS
+      The macOS tray app is distributed separately as a Cask:
+        brew install --cask susops
+    EOS
   end
 
   test do

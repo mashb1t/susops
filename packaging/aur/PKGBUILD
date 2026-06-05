@@ -14,6 +14,8 @@ depends=(
     'python-pydantic'
     'python-psutil'
     'python-ruamel-yaml'
+    'python-aiohttp'
+    'python-cryptography'
 )
 optdepends=(
     'python-textual: interactive TUI interface'
@@ -21,8 +23,6 @@ optdepends=(
     'python-gobject: GTK3 system tray app'
     'gtk3: GTK3 system tray app'
     'libayatana-appindicator: GTK3 system tray app'
-    'python-cryptography: encrypted file sharing'
-    'python-aiohttp: file sharing and SSE status server'
     'socat: UDP port forwarding support'
 )
 makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')

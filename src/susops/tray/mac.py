@@ -71,27 +71,15 @@ def _get_status_icon_path(state: ProcessState) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-_MAC_BROWSERS: list[tuple[str, str, bool]] = [
-    # (app bundle name, display name, is_chromium)
-    ("Google Chrome", "Chrome", True),
-    ("Chromium", "Chromium", True),
-    ("Brave Browser", "Brave", True),
-    ("Vivaldi", "Vivaldi", True),
-    ("Microsoft Edge", "Edge", True),
-    ("Arc", "Arc", True),
-    ("Firefox", "Firefox", False),
-]
-
-
 def _find_installed_browsers() -> list[tuple[str, str, bool]]:
-    """Return list of (app_bundle, display_name, is_chromium) found on disk."""
-    found: list[tuple[str, str, bool]] = []
-    for bundle, name, chromium in _MAC_BROWSERS:
-        for base in (Path("/Applications"), Path.home() / "Applications"):
-            if (base / f"{bundle}.app").exists():
-                found.append((bundle, name, chromium))
-                break
-    return found
+    """Return list of (app_bundle, display_name, is_chromium) for installed browsers.
+
+    Thin adapter over susops.core.browsers.detect_browsers() — the menu
+    construction code below was written before the shared module existed
+    and expects this 3-tuple shape. Kept stable for that reason.
+    """
+    from susops.core.browsers import detect_browsers
+    return [(b.bundle, b.name, b.is_chromium) for b in detect_browsers() if b.bundle]
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +364,80 @@ def _try_restore_policy(_timer=None) -> None:
     _policy_prev = None
 
 
+_edit_menu_installed = False
+
+
+def _ensure_edit_menu() -> None:
+    """Install a minimal app-level Edit menu so Cmd+C/V/X/A/Z work in dialogs.
+
+    LSUIElement-style apps (no Dock icon, no menubar by default) get NO app
+    menu from AppKit. Without an Edit menu, ``performKeyEquivalent:`` walks
+    the menu hierarchy looking for an item whose key equivalent matches the
+    pressed combo + whose action selector exists somewhere on the responder
+    chain. With no menu, the lookup fails and Cmd+C / Cmd+V / Cmd+X /
+    Cmd+A / Cmd+Z fall through — text fields appear to "swallow" the
+    shortcut.
+
+    We install an Edit menu with nil-targeted items so AppKit routes the
+    selectors (``copy:``, ``paste:``, ``cut:``, ``selectAll:``, ``undo:``,
+    ``redo:``) up the responder chain to the field editor (NSText), which
+    has built-in implementations.
+
+    Idempotent — runs at most once per process.
+    """
+    global _edit_menu_installed
+    if _edit_menu_installed:
+        return
+    try:
+        from AppKit import NSApplication, NSMenu, NSMenuItem  # type: ignore[import]
+
+        app = NSApplication.sharedApplication()
+        main_menu = app.mainMenu()
+        if main_menu is None:
+            main_menu = NSMenu.alloc().init()
+            app.setMainMenu_(main_menu)
+
+        # AppKit conventions: the first top-level item is the "app menu"
+        # (whose label gets ignored — macOS uses the app name). Even though
+        # we don't populate it, having it present makes the menubar render
+        # correctly during the activation-policy regular scope.
+        if main_menu.numberOfItems() == 0:
+            app_item = NSMenuItem.alloc().init()
+            app_item.setSubmenu_(NSMenu.alloc().initWithTitle_("SusOps"))
+            main_menu.addItem_(app_item)
+
+        edit_item = NSMenuItem.alloc().init()
+        edit_item.setTitle_("Edit")
+        edit_submenu = NSMenu.alloc().initWithTitle_("Edit")
+
+        # (label, selector, key-equivalent). Nil target → walks responder
+        # chain → reaches the text field's editor, which implements these.
+        spec = [
+            ("Undo",       "undo:",      "z"),
+            ("Redo",       "redo:",      "Z"),  # Cmd+Shift+Z
+            (None,         None,         None),  # separator
+            ("Cut",        "cut:",       "x"),
+            ("Copy",       "copy:",      "c"),
+            ("Paste",      "paste:",     "v"),
+            (None,         None,         None),
+            ("Select All", "selectAll:", "a"),
+        ]
+        for label, selector, key in spec:
+            if label is None:
+                edit_submenu.addItem_(NSMenuItem.separatorItem())
+                continue
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                label, selector, key,
+            )
+            edit_submenu.addItem_(item)
+
+        edit_item.setSubmenu_(edit_submenu)
+        main_menu.addItem_(edit_item)
+        _edit_menu_installed = True
+    except Exception:
+        pass
+
+
 class _RegularPolicyScope:
     """Context manager: ensure app is in .regular activation policy while open.
 
@@ -384,6 +446,9 @@ class _RegularPolicyScope:
     dialogs reliably receive key-window focus. Stacks safely: chained scopes
     share one policy transition; restoration is delayed by 0.3 s so a chained
     dialog cancels the pending restore.
+
+    Also lazily installs the app-level Edit menu on first entry so Cmd+C /
+    Cmd+V / etc. work in text fields inside dialogs — see _ensure_edit_menu.
     """
 
     def __enter__(self):
@@ -393,6 +458,7 @@ class _RegularPolicyScope:
                 NSApplication,
                 NSApplicationActivationPolicyRegular,
             )
+            _ensure_edit_menu()
             _cancel_policy_restore_timer()
             app = NSApplication.sharedApplication()
             current = app.activationPolicy()
@@ -895,18 +961,29 @@ def _show_message_panel(
     BUTTON_MIN_W = 80
     BUTTON_GAP = 10
     MSG_W = 360
+    # Hard cap on the body height — beyond this we wrap the content in an
+    # NSScrollView so the panel stays usable even for log dumps with hundreds
+    # of lines.
+    MSG_H_MAX = 460
+    # Widen the panel for content with long lines (e.g. log entries) so the
+    # text doesn't have to wrap as aggressively.
+    MSG_W_WIDE = 640
 
     # Rough message height estimate (good enough — NSTextField will wrap).
     line_count = message.count("\n") + 1
     longest = max((len(line) for line in message.split("\n")), default=0)
-    wraps_per_long_line = max(0, longest // 56)
-    msg_h = max(36, (line_count + wraps_per_long_line) * 18 + 10)
+    use_wide = longest > 56
+    msg_w_target = MSG_W_WIDE if use_wide else MSG_W
+    wraps_per_long_line = max(0, longest // (96 if use_wide else 56))
+    msg_h_natural = max(36, (line_count + wraps_per_long_line) * 18 + 10)
+    scrollable = msg_h_natural > MSG_H_MAX
+    msg_h = min(msg_h_natural, MSG_H_MAX)
 
     # Compute button widths based on label lengths so long labels fit.
     button_widths = [max(BUTTON_MIN_W, 16 + 7 * len(label)) for label, _ in buttons]
     buttons_total_w = sum(button_widths) + BUTTON_GAP * max(0, len(buttons) - 1)
 
-    content_w = max(MSG_W + PAD_X * 2, buttons_total_w + PAD_X * 2)
+    content_w = max(msg_w_target + PAD_X * 2, buttons_total_w + PAD_X * 2)
     content_h = PAD_TOP + msg_h + GAP_BETWEEN + BUTTON_H + PAD_BOTTOM
 
     if cancel_index is None:
@@ -934,21 +1011,74 @@ def _show_message_panel(
     content = panel.contentView()
     handlers: list = []
 
-    # Message body
+    # Message body. Multi-line messages need monospaced text so column-
+    # aligned output (status tables, log excerpts) renders correctly; for
+    # single-line alerts the difference is barely noticeable. When the
+    # natural content height exceeds MSG_H_MAX we wrap it in an NSScrollView
+    # so log dumps stay browsable instead of producing a panel taller than
+    # the screen.
     msg_y = content_h - PAD_TOP - msg_h
-    msg_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD_X, msg_y, content_w - 2 * PAD_X, msg_h))
-    msg_lbl.setStringValue_(message or "")
-    msg_lbl.setBezeled_(False)
-    msg_lbl.setDrawsBackground_(False)
-    msg_lbl.setEditable_(False)
-    msg_lbl.setSelectable_(True)
-    try:
-        cell = msg_lbl.cell()
-        cell.setWraps_(True)
-        cell.setLineBreakMode_(0)  # NSLineBreakByWordWrapping
-    except Exception:
-        pass
-    content.addSubview_(msg_lbl)
+    use_mono = "\n" in (message or "")
+    if scrollable:
+        from AppKit import (  # type: ignore[import]
+            NSScrollView,
+            NSTextView,
+            NSBezelBorder,
+        )
+        from Cocoa import NSMakeSize  # type: ignore[import]
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(PAD_X, msg_y, content_w - 2 * PAD_X, msg_h)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setHasHorizontalScroller_(False)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setBorderType_(NSBezelBorder)
+        tv = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, content_w - 2 * PAD_X, msg_h)
+        )
+        tv.setEditable_(False)
+        tv.setSelectable_(True)
+        tv.setRichText_(False)
+        tv.setVerticallyResizable_(True)
+        tv.setHorizontallyResizable_(False)
+        tv.setAutoresizingMask_(2)  # NSViewWidthSizable
+        if use_mono:
+            try:
+                from AppKit import NSFont, NSFontWeightRegular  # type: ignore[import]
+                tv.setFont_(NSFont.monospacedSystemFontOfSize_weight_(12, NSFontWeightRegular))
+            except Exception:
+                pass
+        tv.setString_(message or "")
+        try:
+            tv.textContainer().setContainerSize_(
+                NSMakeSize(content_w - 2 * PAD_X, 1.0e7)
+            )
+            tv.textContainer().setWidthTracksTextView_(True)
+        except Exception:
+            pass
+        scroll.setDocumentView_(tv)
+        content.addSubview_(scroll)
+    else:
+        msg_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD_X, msg_y, content_w - 2 * PAD_X, msg_h))
+        msg_lbl.setStringValue_(message or "")
+        msg_lbl.setBezeled_(False)
+        msg_lbl.setDrawsBackground_(False)
+        msg_lbl.setEditable_(False)
+        msg_lbl.setSelectable_(True)
+        if use_mono:
+            try:
+                from AppKit import NSFont, NSFontWeightRegular  # type: ignore[import]
+                msg_lbl.setFont_(NSFont.monospacedSystemFontOfSize_weight_(12, NSFontWeightRegular))
+            except Exception:
+                pass
+        try:
+            cell = msg_lbl.cell()
+            cell.setWraps_(True)
+            cell.setLineBreakMode_(0)  # NSLineBreakByWordWrapping
+        except Exception:
+            pass
+        content.addSubview_(msg_lbl)
 
     # Buttons (button[0] = rightmost)
     button_handler = _get_tagged_button_handler_cls().alloc().init()
@@ -1011,6 +1141,340 @@ def _show_message(title: str, message: str, *, ok: str = "OK") -> None:
     _show_message_panel(title, message, [(ok, 1)])
 
 
+# Strong refs to keep live windows + their timers/delegates alive after the
+# Python caller returns. Indexed by id(panel) to allow multiple windows.
+_LIVE_WINDOWS: dict[int, dict] = {}
+
+# NSObject subclasses are registered globally by name in the Objective-C
+# runtime. Defining them inside a function means the SECOND call re-registers
+# the same class name and PyObjC returns a stale class whose selectors no
+# longer dispatch to fresh Python state — that's why the logs panel only
+# worked on its first invocation. Build these lazily once and reuse.
+_live_tick_target_cls = None
+_live_close_handler_cls = None
+_live_window_delegate_cls = None
+
+
+def _get_live_window_classes():
+    """Lazily build the timer-target / close-button / window-delegate NSObject
+    subclasses used by _open_live_text_window. Cached at module scope so
+    repeated opens reuse the same registered ObjC classes."""
+    global _live_tick_target_cls, _live_close_handler_cls, _live_window_delegate_cls
+    if _live_tick_target_cls is not None:
+        return (
+            _live_tick_target_cls,
+            _live_close_handler_cls,
+            _live_window_delegate_cls,
+        )
+
+    import objc  # type: ignore[import]
+    from Foundation import NSObject  # type: ignore[import]
+
+    class _LiveTickTarget(NSObject):
+        def initWithCallback_(self, cb):  # noqa: N802
+            self = objc.super(_LiveTickTarget, self).init()
+            if self is None:
+                return None
+            self._cb = cb
+            return self
+
+        def tick_(self, _timer):  # noqa: N802
+            try:
+                self._cb()
+            except Exception:
+                pass
+
+    class _LiveCloseHandler(NSObject):
+        def initWithCallback_(self, cb):  # noqa: N802
+            self = objc.super(_LiveCloseHandler, self).init()
+            if self is None:
+                return None
+            self._cb = cb
+            return self
+
+        def click_(self, _sender):  # noqa: N802
+            try:
+                self._cb()
+            except Exception:
+                pass
+
+    class _LiveWindowDelegate(NSObject):
+        def initWithCallback_(self, cb):  # noqa: N802
+            self = objc.super(_LiveWindowDelegate, self).init()
+            if self is None:
+                return None
+            self._cb = cb
+            return self
+
+        def windowShouldClose_(self, _sender):  # noqa: N802
+            try:
+                self._cb()
+            except Exception:
+                pass
+            return True
+
+    _live_tick_target_cls = _LiveTickTarget
+    _live_close_handler_cls = _LiveCloseHandler
+    _live_window_delegate_cls = _LiveWindowDelegate
+    return _LiveTickTarget, _LiveCloseHandler, _LiveWindowDelegate
+
+
+def _open_live_text_window(title: str, get_text: Callable[[], str],
+                           interval_ms: int = 1000) -> None:
+    """Open a non-modal panel that periodically refreshes its text body and
+    auto-scrolls to the bottom. The tray menu stays responsive while it's open.
+
+    `get_text` is called on the main thread by an NSTimer every interval_ms;
+    if the result changed since the last tick the NSTextView is updated and
+    scrolled to the bottom.
+    """
+    from AppKit import (  # type: ignore[import]
+        NSApplication,
+        NSBackingStoreBuffered,
+        NSBezelBorder,
+        NSFont,
+        NSFontWeightRegular,
+        NSPanel,
+        NSScrollView,
+        NSStatusWindowLevel,
+        NSTextView,
+        NSTimer,
+        NSWindowCollectionBehaviorCanJoinAllSpaces,
+        NSWindowCollectionBehaviorFullScreenAuxiliary,
+        NSWindowStyleMaskClosable,
+        NSWindowStyleMaskNonactivatingPanel,
+        NSWindowStyleMaskResizable,
+        NSWindowStyleMaskTitled,
+    )
+    from Cocoa import (  # type: ignore[import]
+        NSMakeRect,
+        NSMakeSize,
+    )
+    from PyObjCTools import AppHelper  # noqa: F401  (ensures runloop available)
+
+    content_w = 896
+    content_h = 504
+
+    style = (
+        NSWindowStyleMaskTitled
+        | NSWindowStyleMaskClosable
+        | NSWindowStyleMaskResizable
+        | NSWindowStyleMaskNonactivatingPanel
+    )
+    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(0, 0, content_w, content_h),
+        style,
+        NSBackingStoreBuffered,
+        False,
+    )
+    panel.setTitle_(title or "Logs")
+    panel.setReleasedWhenClosed_(False)
+    panel.setHidesOnDeactivate_(False)
+    # Status-window level keeps the panel above other app windows; the panel
+    # also joins every Space + survives full-screen so it really does stay on
+    # top regardless of where the user is.
+    panel.setLevel_(NSStatusWindowLevel)
+    try:
+        panel.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+    except Exception:
+        pass
+    try:
+        panel.setBecomesKeyOnlyIfNeeded_(False)
+    except Exception:
+        pass
+    try:
+        panel.setFloatingPanel_(True)
+    except Exception:
+        pass
+
+    content = panel.contentView()
+
+    # Scroll view fills the entire panel edge-to-edge — no in-panel close
+    # button; the titlebar X handles dismissal via the window delegate below.
+    scroll = NSScrollView.alloc().initWithFrame_(
+        NSMakeRect(0, 0, content_w, content_h)
+    )
+    scroll.setHasVerticalScroller_(True)
+    scroll.setHasHorizontalScroller_(False)
+    scroll.setAutohidesScrollers_(True)
+    scroll.setBorderType_(NSBezelBorder)
+    scroll.setAutoresizingMask_(2 | 16)  # WidthSizable | HeightSizable
+
+    tv = NSTextView.alloc().initWithFrame_(
+        NSMakeRect(0, 0, content_w, content_h)
+    )
+    tv.setEditable_(False)
+    tv.setSelectable_(True)
+    tv.setRichText_(False)
+    tv.setVerticallyResizable_(True)
+    tv.setHorizontallyResizable_(False)
+    tv.setAutoresizingMask_(2)  # NSViewWidthSizable
+    try:
+        tv.setFont_(NSFont.monospacedSystemFontOfSize_weight_(12, NSFontWeightRegular))
+    except Exception:
+        pass
+    try:
+        tv.textContainer().setContainerSize_(NSMakeSize(content_w, 1.0e7))
+        tv.textContainer().setWidthTracksTextView_(True)
+    except Exception:
+        pass
+    scroll.setDocumentView_(tv)
+    content.addSubview_(scroll)
+
+    state: dict = {"last": None, "closed": False}
+
+    def _build_attributed(text: str):
+        """Build an NSAttributedString with colored segments per the shared
+        log_style rules. Each line is parsed independently."""
+        from AppKit import (  # type: ignore[import]
+            NSAttributedString,
+            NSColor,
+            NSFont,
+            NSFontWeightBold,
+            NSFontWeightRegular,
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        from susops.core.log_style import style_log_line
+
+        base_font = NSFont.monospacedSystemFontOfSize_weight_(12, NSFontWeightRegular)
+        bold_font = NSFont.monospacedSystemFontOfSize_weight_(12, NSFontWeightBold)
+
+        # Pre-resolve colors for each label.
+        palette = {
+            "tag": (NSColor.systemTealColor(), True),
+            "ok": (NSColor.systemGreenColor(), False),
+            "warn": (NSColor.systemYellowColor(), False),
+            "err": (NSColor.systemRedColor(), True),
+            "dim": (NSColor.tertiaryLabelColor(), False),
+            "info": (NSColor.systemBlueColor(), False),
+        }
+        default_color = NSColor.labelColor()
+
+        result = NSMutableAttributedString.alloc().init()
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            for chunk, label in style_log_line(line):
+                if not chunk:
+                    continue
+                color, bold = palette.get(label, (default_color, False))
+                attrs = {
+                    NSForegroundColorAttributeName: color,
+                    NSFontAttributeName: bold_font if bold else base_font,
+                }
+                seg = NSAttributedString.alloc().initWithString_attributes_(chunk, attrs)
+                result.appendAttributedString_(seg)
+            if i < len(lines) - 1:
+                nl = NSAttributedString.alloc().initWithString_attributes_(
+                    "\n",
+                    {NSFontAttributeName: base_font, NSForegroundColorAttributeName: default_color},
+                )
+                result.appendAttributedString_(nl)
+        return result
+
+    def _refresh_now() -> None:
+        if state["closed"]:
+            return
+        try:
+            text = get_text()
+        except Exception as exc:  # never let a timer crash the runloop
+            text = f"(log fetch failed: {exc})"
+        if text == state["last"]:
+            return
+        state["last"] = text
+        try:
+            attr = _build_attributed(text)
+            tv.textStorage().setAttributedString_(attr)
+        except Exception:
+            tv.setString_(text)
+        # Scroll to bottom.
+        try:
+            length = tv.string().length() if tv.string() else 0
+            tv.scrollRangeToVisible_((length, 0))
+        except Exception:
+            pass
+
+    # Resolve cached NSObject classes (see _get_live_window_classes for why
+    # they must NOT be defined inline inside this function).
+    TickTargetCls, _CloseHandlerCls_unused, WindowDelegateCls = _get_live_window_classes()
+
+    # Forward-declared so the delegate closure can call it. Real implementation
+    # is assigned below once `policy_scope` and `state` exist.
+    teardown_box: dict = {"fn": None}
+
+    def _teardown_proxy():
+        fn = teardown_box["fn"]
+        if fn is not None:
+            fn()
+
+    tick_target = TickTargetCls.alloc().initWithCallback_(_refresh_now)
+    timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        interval_ms / 1000.0, tick_target, "tick:", None, True,
+    )
+
+    # Titlebar close (X) → tear down via the window delegate. No in-panel
+    # close button.
+    delegate = WindowDelegateCls.alloc().initWithCallback_(_teardown_proxy)
+    panel.setDelegate_(delegate)
+
+    # Hold the activation-policy scope open across the window's lifetime —
+    # using `with _RegularPolicyScope()` here would exit immediately after
+    # ordering the window front, and 0.3 s later the app flips back to
+    # accessory mode which hides regular windows. Enter the scope manually
+    # on open and exit in _teardown so the panel stays visible until closed.
+    policy_scope = _RegularPolicyScope()
+    policy_scope.__enter__()
+
+    def _teardown():
+        if state["closed"]:
+            return
+        state["closed"] = True
+        try:
+            timer.invalidate()
+        except Exception:
+            pass
+        try:
+            panel.orderOut_(None)
+        except Exception:
+            pass
+        try:
+            policy_scope.__exit__(None, None, None)
+        except Exception:
+            pass
+        _LIVE_WINDOWS.pop(id(panel), None)
+
+    teardown_box["fn"] = _teardown
+
+    _LIVE_WINDOWS[id(panel)] = {
+        "panel": panel,
+        "timer": timer,
+        "tick_target": tick_target,
+        "delegate": delegate,
+        "tv": tv,
+        "policy_scope": policy_scope,
+    }
+
+    # Initial fill before the first timer tick.
+    _refresh_now()
+
+    panel.center()
+    panel.makeKeyAndOrderFront_(None)
+    # orderFrontRegardless makes the panel show even if the app would
+    # otherwise lose focus during the activation-policy transition.
+    try:
+        panel.orderFrontRegardless()
+    except Exception:
+        pass
+    try:
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
+
+
 def _show_confirm(title: str, message: str, *, ok: str = "OK", cancel: str = "Cancel") -> bool:
     """Show a confirmation panel; return True if OK clicked."""
     r = _show_message_panel(
@@ -1068,32 +1532,41 @@ def _pick_file() -> str | None:
     return str(urls[0].path())
 
 
-def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.RUNNING) -> None:
-    """Show the About panel, styled to match susops-mac's AboutPanel.
+_ABOUT_WINDOWS: dict[int, dict] = {}
 
-    Layout matches the original exactly:
-        ┌──────────────────────────────────────────┐
-        │              [ icon (64x64) ]            │
-        │                 SusOps                   │
-        │              Version X.Y.Z               │
-        │                                          │
-        │   GitHub | CLI | Sponsor | Report a Bug  │
-        │                                          │
-        │        Copyright © Manuel Schmid         │
-        └──────────────────────────────────────────┘
 
-    Links are rendered as borderless NSButtons (not NSTextField attributed
-    strings — those don't reliably receive click events in PyObjC).
+def _show_about_panel(version: str = "", *, icon_state=None) -> None:
+    """Show the About panel — non-modal, always-on-top, titlebar-X-to-close.
+
+    Behavioural changes vs the original:
+      * Non-modal — no ``runModalForWindow_``. The tray menu stays usable.
+      * Always on top — ``NSStatusWindowLevel`` + canJoinAllSpaces +
+        fullScreenAuxiliary, plus a held-open ``_RegularPolicyScope`` so the
+        panel doesn't vanish when accessory mode reasserts.
+      * Static icon — ``assets/icon.png`` instead of the state-dependent
+        per-style status icon.
+
+    ``icon_state`` is accepted and ignored to keep the old call sites working.
     """
+    if version == "":
+        try:
+            import susops
+            version = getattr(susops, "__version__", "")
+        except Exception:
+            version = ""
+
     from AppKit import (  # type: ignore[import]
         NSApplication,
         NSBackingStoreBuffered,
         NSButton,
-        NSFloatingWindowLevel,
         NSImage,
         NSImageView,
         NSPanel,
+        NSStatusWindowLevel,
+        NSWindowCollectionBehaviorCanJoinAllSpaces,
+        NSWindowCollectionBehaviorFullScreenAuxiliary,
         NSWindowStyleMaskClosable,
+        NSWindowStyleMaskNonactivatingPanel,
         NSWindowStyleMaskTitled,
     )
     from Cocoa import (  # type: ignore[import]
@@ -1106,11 +1579,15 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
         NSTextField,
     )
 
-    win_w = 360
-    win_h = 220
+    win_w = 250
+    win_h = 170
     icon_size = 64
 
-    style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+    style = (
+        NSWindowStyleMaskTitled
+        | NSWindowStyleMaskClosable
+        | NSWindowStyleMaskNonactivatingPanel
+    )
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, win_w, win_h),
         style,
@@ -1120,24 +1597,32 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
     panel.setTitle_("")
     panel.setReleasedWhenClosed_(False)
     panel.setHidesOnDeactivate_(False)
-    panel.setLevel_(NSFloatingWindowLevel)
-    # NSPanel default is becomesKeyOnlyIfNeeded=YES which can prevent the
-    # panel from becoming key for our modal — explicitly disable it so
-    # text fields receive keystrokes.
+    panel.setLevel_(NSStatusWindowLevel)
+    try:
+        panel.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+    except Exception:
+        pass
+    try:
+        panel.setFloatingPanel_(True)
+    except Exception:
+        pass
     try:
         panel.setBecomesKeyOnlyIfNeeded_(False)
     except Exception:
         pass
 
     content = panel.contentView()
-    handlers: list = []
+    url_handlers: list = []
 
-    # ── App icon (centered at top) ──
-    icon_path = _get_icon_path(icon_state)
+    # ── App icon (centered at top) — static assets/icon.png ──
+    icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
     y_icon = win_h - icon_size - 14
-    if icon_path:
+    if icon_path.exists():
         try:
-            img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
             if img is not None:
                 img.setSize_((icon_size, icon_size))
                 x_icon = (win_w - icon_size) / 2
@@ -1166,7 +1651,7 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
         content.addSubview_(lbl)
 
     # ── "SusOps" bold name ──
-    name_y = y_icon - 22
+    name_y = y_icon - 30
     _add_centered_label("SusOps", name_y, 20, NSFont.boldSystemFontOfSize_(14))
 
     # ── Version subtitle (dimmed) ──
@@ -1180,7 +1665,6 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
     # ── Link row: 4 borderless NSButtons separated by " | " labels ──
     links: list[tuple[str, str]] = [
         ("GitHub", "https://github.com/mashb1t/susops"),
-        ("CLI", "https://github.com/mashb1t/susops#cli"),
         ("Sponsor", "https://github.com/sponsors/mashb1t"),
         ("Report a Bug", "https://github.com/mashb1t/susops/issues/new"),
     ]
@@ -1190,7 +1674,6 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
     except Exception:
         link_color = NSColor.blueColor()
 
-    # Measure widths so we can center the whole row.
     sep_attr = NSAttributedString.alloc().initWithString_attributes_(
         " | ", {NSFontAttributeName: link_font}
     )
@@ -1220,7 +1703,7 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
         )
         btn.setAttributedTitle_(attr_title)
         handler = _get_url_handler_cls().alloc().initWithURL_(url)
-        handlers.append(handler)
+        url_handlers.append(handler)
         btn.setTarget_(handler)
         btn.setAction_("openURL:")
         content.addSubview_(btn)
@@ -1243,33 +1726,65 @@ def _show_about_panel(version: str, *, icon_state: ProcessState = ProcessState.R
             x += sep_w
 
     # ── Copyright (dimmed footer) ──
-    copy_y = link_y - 28
-    _add_centered_label("Copyright © Manuel Schmid", copy_y, 14, NSFont.systemFontOfSize_(11), secondary)
+    # copy_y = link_y - 28
+    # _add_centered_label("GPLv3, by mashb1t", copy_y, 14, NSFont.systemFontOfSize_(11), secondary)
 
-    # Window-X delegate (no buttons inside the panel — close via title bar X).
-    delegate = _get_window_close_delegate_cls().alloc().init()
-    handlers.append(delegate)
+    # Reuse the WindowDelegateCls from the live-logs helper — same close-via-X
+    # semantics, callback-based, registered once at module scope (avoids the
+    # second-open-is-invisible PyObjC re-registration bug).
+    _TickTargetCls, _CloseHandlerCls, WindowDelegateCls = _get_live_window_classes()
+
+    teardown_box: dict = {"fn": None}
+
+    def _teardown_proxy():
+        fn = teardown_box["fn"]
+        if fn is not None:
+            fn()
+
+    delegate = WindowDelegateCls.alloc().initWithCallback_(_teardown_proxy)
     panel.setDelegate_(delegate)
 
-    with _RegularPolicyScope():
-        panel.center()
-        panel.makeKeyAndOrderFront_(None)
+    # Hold the activation-policy scope open across the window's lifetime —
+    # exit immediately would let accessory mode reassert 0.3 s later and hide
+    # the panel. See _open_live_text_window for the full rationale.
+    policy_scope = _RegularPolicyScope()
+    policy_scope.__enter__()
+
+    state = {"closed": False}
+
+    def _teardown():
+        if state["closed"]:
+            return
+        state["closed"] = True
         try:
-            NSApplication.sharedApplication().runModalForWindow_(panel)
-        finally:
-            try:
-                panel.setDelegate_(None)
-            except Exception:
-                pass
-            try:
-                panel.orderOut_(None)
-            except Exception:
-                pass
-            try:
-                panel.close()
-            except Exception:
-                pass
-    handlers.clear()
+            panel.orderOut_(None)
+        except Exception:
+            pass
+        try:
+            policy_scope.__exit__(None, None, None)
+        except Exception:
+            pass
+        _ABOUT_WINDOWS.pop(id(panel), None)
+
+    teardown_box["fn"] = _teardown
+
+    _ABOUT_WINDOWS[id(panel)] = {
+        "panel": panel,
+        "delegate": delegate,
+        "url_handlers": url_handlers,
+        "policy_scope": policy_scope,
+    }
+
+    panel.center()
+    panel.makeKeyAndOrderFront_(None)
+    try:
+        panel.orderFrontRegardless()
+    except Exception:
+        pass
+    try:
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1429,6 +1944,11 @@ class SusOpsMacTray(AbstractTrayApp):
     def show_output_dialog(self, title: str, output: str) -> None:
         _show_message(title, output, ok="Close")
 
+    def show_live_logs(self, get_text: Callable[[], str], *, title: str = "Logs",
+                       interval_ms: int = 1000) -> None:
+        """Open a non-modal, auto-refreshing logs panel on the main thread."""
+        _on_main(lambda: _open_live_text_window(title, get_text, interval_ms))
+
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
         """Run fn on a worker thread; marshal the callback back to the main thread.
 
@@ -1443,11 +1963,6 @@ class SusOpsMacTray(AbstractTrayApp):
                 _on_main(lambda: callback(result))
         threading.Thread(target=_worker, daemon=True).start()
 
-    def schedule_poll(self, interval_seconds: int) -> None:
-        @self._rumps.timer(interval_seconds)
-        def _poll(_sender):
-            self.do_poll()
-
     # ------------------------------------------------------------------ #
     # Browser launch overrides (macOS)
     # ------------------------------------------------------------------ #
@@ -1457,47 +1972,55 @@ class SusOpsMacTray(AbstractTrayApp):
         if not pac_url:
             self.show_alert("Proxy Not Running", "Start the proxy first so the PAC port is known.")
             return
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=True,
+            bundle=bundle_name,
+        )
         # Spawn in a background thread — `open -na` can block briefly on macOS
         # while LaunchServices coordinates with the new app instance, and we
         # don't want to freeze the menu bar app while that happens.
         def _spawn():
             try:
-                subprocess.Popen(
-                    ["open", "-na", bundle_name, "--args", f"--proxy-pac-url={pac_url}"]
-                )
+                launch_with_pac(browser, pac_url)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
     def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
+        """Open Chrome/Edge/Brave/... directly on chrome://net-internals/#proxy."""
+        from susops.core.browsers import Browser, open_proxy_settings
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=True,
+            bundle=bundle_name,
+        )
         def _spawn():
             try:
-                subprocess.Popen(["open", "-a", bundle_name])
-            except Exception:
-                pass
+                open_proxy_settings(browser)
+            except Exception as exc:
+                _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
-        _show_message(
-            "Open Proxy Settings",
-            f"Paste this URL into the {bundle_name} address bar:\n\nchrome://net-internals/#proxy",
-        )
 
     def _launch_firefox_app(self, bundle_name: str = "Firefox") -> None:
         pac_url = self.manager.get_pac_url()
         if not pac_url:
             self.show_alert("Proxy Not Running", "Start the proxy first.")
             return
-        profile_dir = self.manager.workspace / "firefox_profile"
-        profile_dir.mkdir(exist_ok=True)
-        (profile_dir / "user.js").write_text(
-            f'user_pref("network.proxy.type", 2);\n'
-            f'user_pref("network.proxy.autoconfig_url", "{pac_url}");\n'
-            f'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
+        from susops.core.browsers import Browser, launch_with_pac
+        browser = Browser(
+            name=bundle_name,
+            launch_cmd=["open", "-a", bundle_name],
+            is_chromium=False,
+            bundle=bundle_name,
         )
+        profile_dir = self.manager.workspace / "firefox_profile"
         def _spawn():
             try:
-                subprocess.Popen(
-                    ["open", "-na", bundle_name, "--args", "-profile", str(profile_dir), "-no-remote"]
-                )
+                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
@@ -1628,6 +2151,7 @@ class SusOpsMacTray(AbstractTrayApp):
             None,
             test_menu,
             rumps.MenuItem("Show Status", callback=lambda _: self.do_status()),
+            rumps.MenuItem("Show Logs", callback=lambda _: self.do_logs()),
             self._browser_menu,
             self._ft_menu,
             None,
@@ -1723,7 +2247,10 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _show_settings_dialog(self) -> None:
         ac = self.manager.app_config
-        pac_port = self.manager.config.pac_server_port
+        cfg = self.manager.config
+        pac_port = cfg.pac_server_port
+        rpc_port = cfg.rpc_server_port
+        sse_port = cfg.status_server_port
         saved_logo = ac.logo_style
         logo_styles = list(LogoStyle)
 
@@ -1750,6 +2277,8 @@ class SusOpsMacTray(AbstractTrayApp):
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
             "logo_style": logo_styles.index(saved_logo),
+            "rpc_port": str(rpc_port) if rpc_port else "",
+            "sse_port": str(sse_port) if sse_port else "",
             "pac_port": str(pac_port) if pac_port else "",
         }
 
@@ -1766,6 +2295,14 @@ class SusOpsMacTray(AbstractTrayApp):
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
+                # Server ports — RPC + SSE require a daemon restart to take
+                # effect; PAC is hot-restarted by the facade.
+                {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
+                 "default": defaults["rpc_port"],
+                 "hint": "auto (0) — restart daemon to apply"},
+                {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
+                 "default": defaults["sse_port"],
+                 "hint": "auto (0) — restart daemon to apply"},
                 {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
                  "default": defaults["pac_port"],
                  "hint": "auto (0)"},
@@ -1780,17 +2317,35 @@ class SusOpsMacTray(AbstractTrayApp):
             # Refresh defaults so a re-show on validation failure keeps user edits.
             defaults.update(result)
 
-            pac_text = (result.get("pac_port") or "").strip() or "0"
-            try:
-                pac_int = int(pac_text)
-            except ValueError:
-                _show_message("Invalid Port", f"'{pac_text}' is not a valid port number.")
-                continue
-            if not validate_port(pac_int, allow_zero=True):
-                _show_message("Invalid Port", "PAC port must be 0 (auto) or between 1 and 65535.")
-                continue
-            if pac_int != 0 and pac_int != pac_port and not is_port_free(pac_int):
-                _show_message("Port In Use", f"Port {pac_int} is already in use.")
+            # Validate all three port fields; the helper short-circuits to
+            # the inner loop on failure so the user re-edits the offending
+            # value without losing their other edits.
+            port_ints: dict[str, int] = {}
+            port_specs = [
+                ("rpc_port",  "RPC", rpc_port),
+                ("sse_port",  "SSE", sse_port),
+                ("pac_port",  "PAC", pac_port),
+            ]
+            invalid = False
+            for key, label, current in port_specs:
+                raw = (result.get(key) or "").strip() or "0"
+                try:
+                    n = int(raw)
+                except ValueError:
+                    _show_message("Invalid Port", f"'{raw}' is not a valid {label} port.")
+                    invalid = True
+                    break
+                if not validate_port(n, allow_zero=True):
+                    _show_message("Invalid Port",
+                                  f"{label} port must be 0 (auto) or between 1 and 65535.")
+                    invalid = True
+                    break
+                if n != 0 and n != current and not is_port_free(n):
+                    _show_message("Port In Use", f"Port {n} is already in use.")
+                    invalid = True
+                    break
+                port_ints[key] = n
+            if invalid:
                 continue
 
             new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
@@ -1801,7 +2356,11 @@ class SusOpsMacTray(AbstractTrayApp):
                 restore_shares_on_start=result["restore_shares"],
                 logo_style=new_logo,
             )
-            self.manager.update_config(pac_server_port=pac_int)
+            self.manager.update_config(
+                rpc_server_port=port_ints["rpc_port"],
+                status_server_port=port_ints["sse_port"],
+                pac_server_port=port_ints["pac_port"],
+            )
             # Apply Launch at Login off the main thread — osascript may block
             # for several seconds the first time (TCC prompt).
             desired_login = bool(result["launch_at_login"])
@@ -2226,7 +2785,7 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _show_about_dialog(self) -> None:
         import susops
-        _show_about_panel(susops.__version__, icon_state=self.state or ProcessState.RUNNING)
+        _show_about_panel(susops.__version__)
 
     def _on_quit(self, _sender) -> None:
         self.do_quit()
@@ -2248,7 +2807,17 @@ class SusOpsMacTray(AbstractTrayApp):
                     continue
                 try:
                     import urllib.request
-                    req = urllib.request.Request(status_url)
+                    import susops as _susops_pkg
+                    req = urllib.request.Request(status_url, headers={
+                        "X-Susops-Client": "tray-mac",
+                        "X-Susops-Client-Version": _susops_pkg.__version__,
+                        "X-Susops-Pid": str(os.getpid()),
+                        # Tray only reacts to state + share events. Filtering
+                        # out `bandwidth` (high-frequency) and `forward`
+                        # spares the daemon some serialisation work and us
+                        # some wakeups for events we never act on.
+                        "X-Susops-Events": "state,share",
+                    })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
                         buf = ""
@@ -2263,7 +2832,9 @@ class SusOpsMacTray(AbstractTrayApp):
                                 buf = ""
                 except Exception:
                     time.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
+                    # Cap at 5s — short enough that the user never sees more
+                    # than 5s of staleness, even when the daemon is bouncing.
+                    backoff = min(backoff * 2, 5.0)
 
         threading.Thread(target=_listen, daemon=True, name="susops-sse-mac").start()
 
@@ -2272,8 +2843,10 @@ class SusOpsMacTray(AbstractTrayApp):
     # ------------------------------------------------------------------ #
 
     def run(self) -> None:
+        # Initial state pull on startup; from then on the SSE listener drives
+        # every refresh. No periodic polling fallback — SSE reconnects with
+        # a small backoff cap on its own.
         self.do_poll()
-        self.schedule_poll(5)
         self._start_sse_listener()
         self._app.run()
 

@@ -8,8 +8,6 @@ Protocol (same as original):
 - File is gzip-compressed then AES-256-CTR encrypted with PBKDF2 key derivation
 - Original filename is AES-encrypted and base64-encoded in Content-Disposition
 - Served as application/octet-stream
-
-Requires: cryptography>=42, aiohttp>=3.9 (install with pip install susops[share])
 """
 from __future__ import annotations
 
@@ -21,34 +19,10 @@ import secrets
 import string
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from susops.core.types import ShareInfo
 
-if TYPE_CHECKING:
-    pass
-
 __all__ = ["ShareServer", "fetch_file", "generate_password", "ShareInfo"]
-
-
-def _require_crypto() -> None:
-    try:
-        import cryptography  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "File sharing requires the 'cryptography' package. "
-            "Install with: pip install 'susops[share]'"
-        ) from e
-
-
-def _require_aiohttp() -> None:
-    try:
-        import aiohttp  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "File sharing requires the 'aiohttp' package. "
-            "Install with: pip install 'susops[share]'"
-        ) from e
 
 
 def _derive_key(password: str, salt: bytes) -> bytes:
@@ -181,9 +155,6 @@ class ShareServer:
 
         Returns ShareInfo with the URL and credentials.
         """
-        _require_crypto()
-        _require_aiohttp()
-
         if self._runner is not None:
             raise RuntimeError("Share server is already running")
 
@@ -295,8 +266,6 @@ def fetch_file(
     Returns:
         Path to the saved decrypted file.
     """
-    _require_crypto()
-
     loop = _get_loop()
     future = asyncio.run_coroutine_threadsafe(
         _fetch_async(host, port, password, outfile), loop
@@ -310,7 +279,6 @@ async def _fetch_async(
     password: str,
     outfile: Path | None,
 ) -> Path:
-    _require_aiohttp()
     import aiohttp
 
     url = f"http://{host}:{port}"

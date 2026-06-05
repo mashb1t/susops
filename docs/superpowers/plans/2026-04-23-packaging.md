@@ -288,7 +288,7 @@ Replace the entire file with:
 ```
 # Maintainer: Manuel Schmid <manuel.schmid@odt.net>
 pkgname=susops
-pkgver=3.0.0
+pkgver=3.0.0-rc2
 pkgrel=1
 pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
 arch=('any')
@@ -369,7 +369,7 @@ class Susops < Formula
 
   desc "SSH SOCKS5 proxy manager — Python TUI + PAC server"
   homepage "https://github.com/mashb1t/susops"
-  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"
+  url "https://github.com/mashb1t/susops/archive/v3.0.0-rc2.tar.gz"
   sha256 "PLACEHOLDER"
   license "MIT"
 
@@ -706,7 +706,7 @@ app = BUNDLE(
     icon="assets/susops.icns",
     bundle_identifier="net.odt.susops",
     info_plist={
-        "CFBundleShortVersionString": "3.0.0",
+        "CFBundleShortVersionString": "3.0.0-rc2",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },
@@ -812,7 +812,7 @@ def test_compute_excludes_dev_packages():
     from compute_resource_shas import compute_resource_shas
 
     pip_out = json.dumps([
-        {"name": "susops", "version": "3.0.0"},
+        {"name": "susops", "version": "3.0.0-rc2"},
         {"name": "pytest", "version": "9.0.3"},
         {"name": "rich", "version": "14.3.3"},
     ]).encode()
@@ -1080,7 +1080,7 @@ git commit -m "feat: extend update_aur_pkgver.py with sha256 computation and tes
 def _formula_template() -> str:
     return (
         'class Susops < Formula\n'
-        '  url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"\n'
+        '  url "https://github.com/mashb1t/susops/archive/v3.0.0-rc2.tar.gz"\n'
         '  sha256 "PLACEHOLDER"\n\n'
         '  resource "rich" do\n'
         '    url "https://files.pythonhosted.org/packages/source/r/rich/rich-14.3.3.tar.gz"\n'
@@ -1287,10 +1287,10 @@ git commit -m "feat: extend update_homebrew_sha.py with resource/cask sha suppor
 - [ ] **Step 1: Run the script**
 
 ```bash
-uv run python scripts/update_homebrew_sha.py 3.0.0
+uv run python scripts/update_homebrew_sha.py 3.0.0-rc2
 ```
 
-This downloads the GitHub v3.0.0 tarball sha256, queries PyPI for all resource sha256s, and patches `packaging/homebrew/Formula/susops.rb`.
+This downloads the GitHub v3.0.0-rc2 tarball sha256, queries PyPI for all resource sha256s, and patches `packaging/homebrew/Formula/susops.rb`.
 
 If `v3.0.0` is not yet published on GitHub, compute the tarball sha locally:
 
