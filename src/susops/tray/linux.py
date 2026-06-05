@@ -220,7 +220,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
         def _show():
             dlg = Gtk.Dialog(title=title, transient_for=self._root, modal=False)
-            dlg.set_default_size(896, 504)
+            dlg.set_default_size(912, 513)
 
             # Scroll view fills the dialog edge-to-edge; dismissal is via the
             # titlebar close (X) only — no explicit Close button.

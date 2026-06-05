@@ -1287,8 +1287,8 @@ def _open_live_text_window(title: str, get_text: Callable[[], str],
     )
     from PyObjCTools import AppHelper  # noqa: F401  (ensures runloop available)
 
-    content_w = 896
-    content_h = 504
+    content_w = 912
+    content_h = 513
 
     style = (
             NSWindowStyleMaskTitled
@@ -2335,7 +2335,7 @@ class SusOpsMacTray(AbstractTrayApp):
         for style in logo_styles:
             img_path = _get_icon_path(self.state, style.value.lower())
             label_text = style.value.replace("_", " ").title()
-            seg_options.append((label_text, img_path))
+            seg_options.append(("", img_path))
 
         def _preview(idx: int) -> None:
             if 0 <= idx < len(logo_styles):
