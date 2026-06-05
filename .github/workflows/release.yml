@@ -15,8 +15,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -27,8 +27,8 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -42,7 +42,7 @@ jobs:
         run: uv run python tools/gen_openapi.py
       - run: uv build
       - name: Attach release artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*
@@ -56,8 +56,8 @@ jobs:
     needs: [test]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - name: Install deps
@@ -91,7 +91,7 @@ jobs:
           VER="${VERSION#v}"
           for i in $(seq 1 12); do gh release view "$VERSION" && break || sleep 10; done
           gh release upload "$VERSION" "SusOps-${VER}-arm64.dmg" --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dmg
           path: "SusOps-*-arm64.dmg"
@@ -101,18 +101,18 @@ jobs:
     needs: [build-pypi, build-dmg]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           path: main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: mashb1t/homebrew-susops
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dmg
           path: main
@@ -146,8 +146,8 @@ jobs:
     needs: [build-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Update PKGBUILD
@@ -162,7 +162,7 @@ jobs:
             -v "${{ github.workspace }}/packaging/aur:/pkg" \
             archlinux:base-devel \
             sh -c "useradd -m builder && chown builder /pkg && su builder -c 'cd /pkg && makepkg --printsrcinfo > .SRCINFO'"
-      - uses: webfactory/ssh-agent@v0.9.0
+      - uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
       - name: Add AUR host key
