@@ -46,6 +46,8 @@ _ALLOWED_METHODS: set[str] = {
     # Bandwidth
     "get_bandwidth", "get_bandwidth_totals", "get_bandwidth_global",
     "get_bandwidth_history",
+    # Frontend coordination
+    "sse_client_count",
     # Reconnect introspection
     "reconnect_monitor_info",
     # Process introspection

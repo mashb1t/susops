@@ -641,7 +641,15 @@ class AbstractTrayApp(ABC):
 
     def do_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            self.manager.stop()
+            # Skip the destructive stop when another frontend (e.g. TUI)
+            # is still attached, otherwise it ends up with its SSH
+            # masters / PAC / reconnect torn out from under it.
+            try:
+                other_clients = int(self.manager.sse_client_count()) - 1
+            except Exception:
+                other_clients = 0
+            if other_clients <= 0:
+                self.manager.stop()
         # else: the daemon is a separate process — it keeps running with
         # PAC server, status SSE, and reconnect monitor independent of the
         # tray's lifetime. No detach calls needed.

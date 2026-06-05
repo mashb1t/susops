@@ -38,8 +38,10 @@ paths:
         - `remove_pac_host`\n- `remove_remote_forward`\n- `reset`\n- `restart`\n- `set_connection_enabled`\n\
         - `set_forward_enabled` — Set the enabled flag on a forward and start/stop the live process accordingly.\n\
         - `set_pac_host_enabled`\n- `share` — Start serving an encrypted file share and persist it to
-        config.\n- `share_is_running`\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking
-        stop for TUI quit: signal all external processes immediately.\n- `stop_share` — Stop share server(s)
+        config.\n- `share_is_running`\n- `sse_client_count` — Live SSE subscriber count. Used by frontends
+        to decide whether\na stop-on-quit should actually stop, or skip because another\nfrontend is still
+        attached to the same daemon.\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking stop
+        for TUI quit: signal all external processes immediately.\n- `stop_share` — Stop share server(s)
         without removing from config (entry shows as stopped).\n- `test`\n- `test_all`\n- `test_connection`
         — Test SSH reachability for a specific connection.\n- `test_domain` — Test domain reachability
         via the specified connection's SOCKS proxy.\n- `test_forward` — Check if a port forward is active.\n\
@@ -1511,6 +1513,29 @@ components:
           additionalProperties: false
     ShareIsRunningResult:
       type: boolean
+    InvokeSseClientCount:
+      type: object
+      description: "Live SSE subscriber count. Used by frontends to decide whether\na stop-on-quit should
+        actually stop, or skip because another\nfrontend is still attached to the same daemon."
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: sse_client_count
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    SseClientCountResult:
+      type: integer
     InvokeStart:
       type: object
       description: Invoke `start` on SusOpsManager.
@@ -2156,6 +2181,7 @@ components:
       - $ref: '#/components/schemas/InvokeSetPacHostEnabled'
       - $ref: '#/components/schemas/InvokeShare'
       - $ref: '#/components/schemas/InvokeShareIsRunning'
+      - $ref: '#/components/schemas/InvokeSseClientCount'
       - $ref: '#/components/schemas/InvokeStart'
       - $ref: '#/components/schemas/InvokeStatus'
       - $ref: '#/components/schemas/InvokeStop'

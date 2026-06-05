@@ -2180,6 +2180,15 @@ class SusOpsManager:
         """Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest)."""
         return self._bw_sampler.get_history(tag)
 
+    def sse_client_count(self) -> int:
+        """Live SSE subscriber count. Used by frontends to decide whether
+        a stop-on-quit should actually stop, or skip because another
+        frontend is still attached to the same daemon."""
+        try:
+            return int(self._status_server.client_count())
+        except Exception:
+            return 0
+
     def get_bandwidth_global(self) -> tuple[float, float]:
         """Return (rx_bps, tx_bps) summed across every connection."""
         rx_total = 0.0
