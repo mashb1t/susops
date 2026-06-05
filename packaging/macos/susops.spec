@@ -1,15 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_all
+
+# PyInstaller 6 resolves Analysis() paths relative to the spec's directory,
+# not the cwd. Anchor everything to SPECPATH so the spec keeps working
+# regardless of where pyinstaller is invoked from.
+SPEC_DIR = os.path.abspath(SPECPATH)
+REPO_ROOT = os.path.abspath(os.path.join(SPEC_DIR, "..", ".."))
+ASSETS = os.path.join(REPO_ROOT, "src", "susops", "assets")
+ICNS = os.path.join(ASSETS, "susops.icns")
+
+import sys
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
+from susops import __version__ as SUSOPS_VERSION
 
 rumps_datas, rumps_binaries, rumps_hiddenimports = collect_all("rumps")
 
 a = Analysis(
-    ["packaging/macos/entry_tray.py"],
-    pathex=["."],
+    [os.path.join(SPEC_DIR, "entry_tray.py")],
+    pathex=[REPO_ROOT],
     binaries=rumps_binaries,
     # Bundle the package's assets at susops/assets/ inside the app so the
     # runtime Path(__file__).parent.parent / "assets" resolution lands them.
-    datas=rumps_datas + [("src/susops/assets", "susops/assets")],
+    datas=rumps_datas + [(ASSETS, "susops/assets")],
     hiddenimports=rumps_hiddenimports + [
         "objc",
         "Foundation",
@@ -49,7 +62,7 @@ exe = EXE(
     target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
-    icon="src/susops/assets/susops.icns",
+    icon=ICNS,
 )
 
 coll = COLLECT(
@@ -65,10 +78,10 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="SusOps.app",
-    icon="src/susops/assets/susops.icns",
+    icon=ICNS,
     bundle_identifier="net.odt.susops",
     info_plist={
-        "CFBundleShortVersionString": "3.0.0-rc2",
+        "CFBundleShortVersionString": SUSOPS_VERSION,
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },
