@@ -26,6 +26,10 @@ jobs:
   build-pypi:
     needs: [test]
     runs-on: ubuntu-latest
+    # Trusted-publisher OIDC: short-lived token minted per run, no secret.
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
@@ -48,9 +52,11 @@ jobs:
             dist/*
             docs/openapi.yaml
           generate_release_notes: true
-      - run: uv publish
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      # Publishing to TestPyPI until the pipeline is proven on a real tag.
+      # To switch to production PyPI, drop --publish-url. OIDC trusted-
+      # publisher config exists on both indexes already; uv auto-detects
+      # the matching mint-token endpoint from the publish URL.
+      - run: uv publish --publish-url https://test.pypi.org/legacy/
 
   build-dmg:
     needs: [test]
