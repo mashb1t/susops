@@ -9,7 +9,6 @@ sys.path.insert(0, str(_SCRIPTS))
 
 from update_homebrew_sha import update_cask_sha  # noqa: E402
 
-
 PINNED_CASK = """\
 cask "susops" do
   version "0.0.0"

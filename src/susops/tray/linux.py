@@ -46,7 +46,6 @@ def _is_valid_port(value: str, allow_zero: bool = False) -> bool:
     return validate_port(int(value), allow_zero=allow_zero)
 
 
-
 def _polish_dialog(Gtk, dlg) -> None:
     import warnings
     with warnings.catch_warnings():
@@ -148,6 +147,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if icon_path:
                 self._indicator.set_icon_full(icon_path, state.value)
             return False
+
         self._GLib.idle_add(_update)
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
@@ -175,6 +175,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         def _show():
             _alert(self._Gtk, self._root, title, msg)
             return False
+
         self._GLib.idle_add(_show)
 
     def show_output_dialog(self, title: str, output: str) -> None:
@@ -201,6 +202,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             _polish_dialog(Gtk, dlg)
             dlg.show_all()
             return False
+
         self._GLib.idle_add(_show)
 
     def show_live_logs(self, get_text, *, title: str = "Logs",
@@ -234,11 +236,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
             # Register color tags. GTK named foreground colors look reasonable
             # against both light and dark themes.
             tag_table = {
-                "tag":  {"foreground": "#3DB6C9", "weight": 700},
-                "ok":   {"foreground": "#2EA043"},
+                "tag": {"foreground": "#3DB6C9", "weight": 700},
+                "ok": {"foreground": "#2EA043"},
                 "warn": {"foreground": "#D29922"},
-                "err":  {"foreground": "#F85149", "weight": 700},
-                "dim":  {"foreground": "#7D8590"},
+                "err": {"foreground": "#F85149", "weight": 700},
+                "dim": {"foreground": "#7D8590"},
                 "info": {"foreground": "#58A6FF"},
             }
             tags: dict[str, object] = {}
@@ -299,6 +301,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             result = fn()
             if callback is not None:
                 self._GLib.idle_add(callback, result)
+
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------ #
@@ -496,6 +499,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
     def _make_chromium_launch(self, exe: str):
         from susops.core.browsers import Browser, launch_with_pac
         browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
+
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
@@ -508,21 +512,25 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 launch_with_pac(browser, pac_url)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
+
         return handler
 
     def _make_chromium_settings(self, exe: str):
         from susops.core.browsers import Browser, open_proxy_settings
         browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
+
         def handler(_item):
             try:
                 open_proxy_settings(browser)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
+
         return handler
 
     def _make_firefox_launch(self, exe: str):
         from susops.core.browsers import Browser, launch_with_pac
         browser = Browser(name=exe, launch_cmd=[exe], is_chromium=False)
+
         def handler(_item):
             pac_url = self.manager.get_pac_url()
             if not pac_url:
@@ -533,6 +541,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 self.show_alert("Launch Failed", str(exc))
+
         return handler
 
     def _rebuild_status_item(self, state: ProcessState) -> None:
@@ -945,7 +954,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
                 continue
             if not tcp and not udp:
-                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
+                       Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(src):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Local Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -957,7 +967,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Invalid Port", "To Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst), tag=tag or None, tcp=tcp, udp=udp)
+            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst),
+                             tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_local_forward(conn_tag, fw)
             return False
@@ -1029,7 +1040,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "No Connection", "Add a connection first.", Gtk.MessageType.ERROR)
                 continue
             if not tcp and not udp:
-                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).", Gtk.MessageType.ERROR)
+                _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
+                       Gtk.MessageType.ERROR)
                 continue
             if not _is_valid_port(rport):
                 _alert(Gtk, dlg, "Invalid Port", "Forward Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
@@ -1037,7 +1049,8 @@ class SusOpsLinuxTray(AbstractTrayApp):
             if not _is_valid_port(lport):
                 _alert(Gtk, dlg, "Invalid Port", "To Local Port must be 1–65535.", Gtk.MessageType.ERROR)
                 continue
-            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport), tag=tag or None, tcp=tcp, udp=udp)
+            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport),
+                             tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
             return False
@@ -1372,6 +1385,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
     def _make_share_info_handler(self, info):
         def handler(_item):
             self._GLib.idle_add(lambda: self._show_share_info_dialog(info))
+
         return handler
 
     def _show_share_info_dialog(self, info) -> bool:
@@ -1381,7 +1395,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         state = "running" if info.running else "stopped"
         dlg = Gtk.Dialog(title=f"Share: {name}", transient_for=self._root, modal=True)
         # Buttons: Stop/Start (context-sensitive), Delete, Close
-        _RESP_TOGGLE = 10   # Stop if running, Start if stopped
+        _RESP_TOGGLE = 10  # Stop if running, Start if stopped
         _RESP_DELETE = 11
         if info.running:
             dlg.add_button("_Stop", _RESP_TOGGLE)
@@ -1449,6 +1463,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                     lambda _: None,
                 )
             return False
+
         self._GLib.idle_add(_ask)
 
     def _on_about(self) -> None:
@@ -1507,6 +1522,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             dlg.connect("response", lambda d, _r: d.destroy())
             dlg.show_all()
             return False
+
         self._GLib.idle_add(_show)
 
     def _on_quit(self, _widget) -> None:

@@ -95,8 +95,8 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
             except Exception:
                 stderr = ""
             msg = (
-                f"Daemon exited during startup (rc={rc})"
-                + (f":\n{stderr}" if stderr else "")
+                    f"Daemon exited during startup (rc={rc})"
+                    + (f":\n{stderr}" if stderr else "")
             )
             raise DaemonUnavailableError(msg)
         time.sleep(0.1)

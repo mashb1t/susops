@@ -178,7 +178,7 @@ def main() -> int:
         from susops.facade import SusOpsManager
 
         mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
-        # CLI `--port` wins; fall back to the configured `rpc_server_port`,
+        # CLI `--port` wins. Fall back to the configured `rpc_server_port`,
         # then 0 (auto-allocate). When we auto-allocate, persist the bound
         # port back to config so subsequent spawns reuse it.
         requested_port = args.port or mgr.config.rpc_server_port or 0
@@ -291,6 +291,7 @@ def main() -> int:
             _t.sleep(5.0)
             log.error("Shutdown watchdog tripped, force-exiting")
             os._exit(1)
+
         threading.Thread(target=_watchdog, daemon=True, name="susops-services-watchdog").start()
 
         if mgr is not None:

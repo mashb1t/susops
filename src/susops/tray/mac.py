@@ -23,6 +23,7 @@ from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
 
 BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
 
+
 # ---------------------------------------------------------------------------
 # Appearance + icon helpers
 # ---------------------------------------------------------------------------
@@ -413,13 +414,13 @@ def _ensure_edit_menu() -> None:
         # (label, selector, key-equivalent). Nil target → walks responder
         # chain → reaches the text field's editor, which implements these.
         spec = [
-            ("Undo",       "undo:",      "z"),
-            ("Redo",       "redo:",      "Z"),  # Cmd+Shift+Z
-            (None,         None,         None),  # separator
-            ("Cut",        "cut:",       "x"),
-            ("Copy",       "copy:",      "c"),
-            ("Paste",      "paste:",     "v"),
-            (None,         None,         None),
+            ("Undo", "undo:", "z"),
+            ("Redo", "redo:", "Z"),  # Cmd+Shift+Z
+            (None, None, None),  # separator
+            ("Cut", "cut:", "x"),
+            ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"),
+            (None, None, None),
             ("Select All", "selectAll:", "a"),
         ]
         for label, selector, key in spec:
@@ -500,13 +501,13 @@ def _make_label(text: str, x: float, y: float, w: float, h: float, *, right: boo
 
 
 def _show_form_dialog(
-    title: str,
-    fields: list[dict],
-    *,
-    ok_title: str = "OK",
-    cancel_title: str = "Cancel",
-    informative: str | None = None,
-    icon_path: str | None = None,
+        title: str,
+        fields: list[dict],
+        *,
+        ok_title: str = "OK",
+        cancel_title: str = "Cancel",
+        informative: str | None = None,
+        icon_path: str | None = None,
 ) -> dict | None:
     """Show a multi-field modal NSPanel form.
 
@@ -811,7 +812,7 @@ def _show_form_dialog(
         widgets.get(f["key"])
         for f in fields
         if widgets.get(f["key"]) is not None
-        and f.get("kind", "text") in ("text", "secure", "combo", "popup", "switch", "segmented")
+           and f.get("kind", "text") in ("text", "secure", "combo", "popup", "switch", "segmented")
     ]
     for i in range(len(keyable) - 1):
         try:
@@ -890,12 +891,12 @@ def _show_form_dialog(
 
 
 def _show_pick_dialog(
-    title: str,
-    label: str,
-    items: list[str],
-    *,
-    ok_title: str = "Select",
-    cancel_title: str = "Cancel",
+        title: str,
+        label: str,
+        items: list[str],
+        *,
+        ok_title: str = "Select",
+        cancel_title: str = "Cancel",
 ) -> str | None:
     """Show an NSAlert with a single NSPopUpButton; returns selected item or None."""
     if not items:
@@ -913,12 +914,12 @@ def _show_pick_dialog(
 
 
 def _show_message_panel(
-    title: str,
-    message: str,
-    buttons: list[tuple[str, int]],
-    *,
-    default_index: int = 0,
-    cancel_index: int | None = None,
+        title: str,
+        message: str,
+        buttons: list[tuple[str, int]],
+        *,
+        default_index: int = 0,
+        cancel_index: int | None = None,
 ) -> int:
     """Show a modal message NSPanel with a multiline body and 1–3 buttons.
 
@@ -1256,10 +1257,10 @@ def _open_live_text_window(title: str, get_text: Callable[[], str],
     content_h = 504
 
     style = (
-        NSWindowStyleMaskTitled
-        | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskResizable
-        | NSWindowStyleMaskNonactivatingPanel
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskResizable
+            | NSWindowStyleMaskNonactivatingPanel
     )
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, content_w, content_h),
@@ -1584,9 +1585,9 @@ def _show_about_panel(version: str = "", *, icon_state=None) -> None:
     icon_size = 64
 
     style = (
-        NSWindowStyleMaskTitled
-        | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskNonactivatingPanel
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskNonactivatingPanel
     )
     panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(0, 0, win_w, win_h),
@@ -1874,6 +1875,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._launch_at_login_cached = _is_launch_at_login_enabled()
             except Exception:
                 self._launch_at_login_cached = False
+
         threading.Thread(target=_probe, daemon=True, name="susops-loginitem-probe").start()
 
     # ------------------------------------------------------------------ #
@@ -1957,10 +1959,12 @@ class SusOpsMacTray(AbstractTrayApp):
         so we dispatch them via _on_main rather than running them on the worker. Without
         this, AppKit raises NSInternalInconsistencyException and the app gets stuck.
         """
+
         def _worker():
             result = fn()
             if callback is not None:
                 _on_main(lambda: callback(result))
+
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------ #
@@ -1979,6 +1983,7 @@ class SusOpsMacTray(AbstractTrayApp):
             is_chromium=True,
             bundle=bundle_name,
         )
+
         # Spawn in a background thread — `open -na` can block briefly on macOS
         # while LaunchServices coordinates with the new app instance, and we
         # don't want to freeze the menu bar app while that happens.
@@ -1987,6 +1992,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 launch_with_pac(browser, pac_url)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
 
     def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
@@ -1998,11 +2004,13 @@ class SusOpsMacTray(AbstractTrayApp):
             is_chromium=True,
             bundle=bundle_name,
         )
+
         def _spawn():
             try:
                 open_proxy_settings(browser)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
 
     def _launch_firefox_app(self, bundle_name: str = "Firefox") -> None:
@@ -2018,11 +2026,13 @@ class SusOpsMacTray(AbstractTrayApp):
             bundle=bundle_name,
         )
         profile_dir = self.manager.workspace / "firefox_profile"
+
         def _spawn():
             try:
                 launch_with_pac(browser, pac_url, profile_dir=profile_dir)
             except Exception as exc:
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
+
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
 
     def do_launch_chrome(self) -> None:
@@ -2193,11 +2203,13 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._launch_chromium_app(bundle)
             else:
                 self._launch_firefox_app(bundle)
+
         return handler
 
     def _make_browser_settings(self, bundle: str):
         def handler(_sender):
             self._open_chromium_proxy_settings(bundle)
+
         return handler
 
     # ------------------------------------------------------------------ #
@@ -2322,9 +2334,9 @@ class SusOpsMacTray(AbstractTrayApp):
             # value without losing their other edits.
             port_ints: dict[str, int] = {}
             port_specs = [
-                ("rpc_port",  "RPC", rpc_port),
-                ("sse_port",  "SSE", sse_port),
-                ("pac_port",  "PAC", pac_port),
+                ("rpc_port", "RPC", rpc_port),
+                ("sse_port", "SSE", sse_port),
+                ("pac_port", "PAC", pac_port),
             ]
             invalid = False
             for key, label, current in port_specs:
@@ -2739,6 +2751,7 @@ class SusOpsMacTray(AbstractTrayApp):
     def _make_share_info_handler(self, info):
         def handler(_sender):
             self._show_share_info_dialog(info)
+
         return handler
 
     def _show_share_info_dialog(self, info) -> None:
@@ -2775,10 +2788,10 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _confirm_reset(self) -> None:
         if not _show_confirm(
-            "Reset All?",
-            "This will stop all tunnels and delete the workspace. This cannot be undone.",
-            ok="Reset",
-            cancel="Cancel",
+                "Reset All?",
+                "This will stop all tunnels and delete the workspace. This cannot be undone.",
+                ok="Reset",
+                cancel="Cancel",
         ):
             return
         self.run_in_background(lambda: self.do_reset(), lambda _: None)

@@ -26,14 +26,13 @@ from pathlib import Path
 @dataclasses.dataclass(frozen=True)
 class Browser:
     """A detected browser installation."""
-    name: str               # display name, e.g. "Chrome"
-    launch_cmd: list[str]   # base command — e.g. ["open", "-a", "Google Chrome"] or ["/usr/bin/google-chrome"]
-    is_chromium: bool       # True for Chrome/Brave/Edge/Vivaldi/Chromium/Arc; False for Firefox-family
+    name: str  # display name, e.g. "Chrome"
+    launch_cmd: list[str]  # base command, e.g. ["open", "-a", "Google Chrome"] or ["/usr/bin/google-chrome"]
+    is_chromium: bool  # True for Chrome/Brave/Edge/Vivaldi/Chromium/Arc; False for Firefox-family
     bundle: str | None = None  # macOS app-bundle name (None on Linux)
 
 
 _PROXY_SETTINGS_URL = "chrome://net-internals/#proxy"
-
 
 # Bundle-id substrings that mark a browser as chromium-family on macOS.
 # Match is case-insensitive `in` substring (so "google.chrome.beta" matches).
@@ -43,7 +42,7 @@ _MAC_CHROMIUM_BUNDLE_IDS = (
     "org.chromium",
     "com.microsoft.edgemac",
     "com.vivaldi",
-    "com.thebrowser.browser",      # Arc
+    "com.thebrowser.browser",  # Arc
     "company.thebrowser.browser",
     "com.operasoftware.opera",
 )
@@ -59,12 +58,11 @@ _MAC_FIREFOX_BUNDLE_IDS = (
     "org.torproject.torbrowser",
 )
 
-
 # Linux: executable basename substrings (case-insensitive).
 _LINUX_CHROMIUM_EXES = (
     "google-chrome", "chrome", "chromium",
     "brave", "vivaldi", "microsoft-edge", "edge", "opera",
-    "arc",  # speculative — Arc on Linux is in beta as of writing
+    "arc",  # speculative as Arc on Linux is in beta as of writing
 )
 _LINUX_FIREFOX_EXES = (
     "firefox", "librewolf", "waterfox", "torbrowser", "tor-browser",
@@ -74,7 +72,7 @@ _LINUX_FIREFOX_EXES = (
 def detect_browsers() -> list[Browser]:
     """Return browsers detected on the current platform.
 
-    Result is ordered: chromium-family first (alphabetised by display name),
+    Result is ordered: chromium-family first (alphabetized by display name),
     Firefox-family last. Order matters for UX — chromium-style PAC support
     is more reliable, so it goes first in pickers.
     """
@@ -117,14 +115,13 @@ def _detect_macos() -> list[Browser]:
             is_chromium = any(p in bundle_id for p in _MAC_CHROMIUM_BUNDLE_IDS)
             is_firefox = any(p in bundle_id for p in _MAC_FIREFOX_BUNDLE_IDS)
             if not (is_chromium or is_firefox):
-                # Surfacing Safari et al. would be pointless — they can't
-                # accept a PAC URL via the command line. Skip.
+                # Safari/Firefox can't accept a PAC URL via the command line
                 continue
             seen_bundles.add(bundle_name)
             display_name = (
-                info.get("CFBundleDisplayName")
-                or info.get("CFBundleName")
-                or bundle_name
+                    info.get("CFBundleDisplayName")
+                    or info.get("CFBundleName")
+                    or bundle_name
             )
             found.append(Browser(
                 name=str(display_name),
@@ -165,9 +162,9 @@ def _detect_linux() -> list[Browser]:
             desktop_dirs.append(p)
     # Flatpak / Snap exports often land here too.
     for extra in (
-        Path("/var/lib/flatpak/exports/share/applications"),
-        Path.home() / ".local" / "share" / "flatpak" / "exports" / "share" / "applications",
-        Path("/var/lib/snapd/desktop/applications"),
+            Path("/var/lib/flatpak/exports/share/applications"),
+            Path.home() / ".local" / "share" / "flatpak" / "exports" / "share" / "applications",
+            Path("/var/lib/snapd/desktop/applications"),
     ):
         if extra.is_dir():
             desktop_dirs.append(extra)
@@ -224,8 +221,7 @@ def _parse_desktop_entry(path: Path) -> dict | None:
         if not in_section or "=" not in line or line.startswith("#"):
             continue
         key, _, value = line.partition("=")
-        # Skip locale-specific variants (Name[de], etc.) — we want the
-        # default. Lookup is first-occurrence-wins.
+        # Skip locale-specific variants (Name[de], etc.)
         if "[" in key:
             continue
         entry.setdefault(key.strip(), value.strip())
@@ -253,8 +249,7 @@ def _linux_resolve_exec(exec_field: str) -> list[str]:
     """
     if not exec_field:
         return []
-    # Strip %X field codes — they're placeholders for URL/file args we
-    # don't pass.
+    # Strip %X field codes, they're placeholders for URL/file args
     tokens = [t for t in exec_field.split() if not (t.startswith("%") and len(t) == 2)]
     if not tokens:
         return []

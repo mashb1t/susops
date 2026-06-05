@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
-from textual import work
+
 from susops.core.ports import is_port_free, validate_port
 from susops.tui.screens import _CollapsingLabel, compose_footer, open_in_explorer, share_status_dot
 
@@ -295,6 +296,7 @@ class SharesScreen(Screen):
             if not data:
                 return
             self._do_share(data["path"], data["conn"], data["password"], data["port"])
+
         self.app.push_screen(_AddShareDialog(self._conn_hosts()), _on_result)
 
     def action_fetch_file(self) -> None:
@@ -304,6 +306,7 @@ class SharesScreen(Screen):
             self.query_one("#share-status", Label).update(
                 f"[green]Downloaded to: {result}[/green]"
             )
+
         self.app.push_screen(_FetchDialog(self._conn_hosts()), _on_result)
 
     def action_stop_share(self) -> None:
@@ -345,4 +348,3 @@ class SharesScreen(Screen):
             msg = f"[red]Error: {e}[/red]"
         self.app.call_from_thread(self.query_one("#share-status", Label).update, msg)
         self.app.call_from_thread(self._reload)
-

@@ -16,13 +16,13 @@ from susops.core.config import Connection, PortForward
 from susops.core.process import ProcessManager
 
 __all__ = [
-    "build_ssh_cmd",          # legacy alias — kept for CLI compat
+    "build_ssh_cmd",  # legacy alias — kept for CLI compat
     "build_master_cmd",
-    "start_tunnel",           # starts master (forwards bundled in cmd)
+    "start_tunnel",  # starts master (forwards bundled in cmd)
     "start_master",
-    "start_forward",          # ssh -O forward — registers live forward via socket
-    "cancel_forward",         # ssh -O cancel — releases master-held port
-    "stop_tunnel",            # stops master (and all its forwards)
+    "start_forward",  # ssh -O forward — registers live forward via socket
+    "cancel_forward",  # ssh -O cancel — releases master-held port
+    "stop_tunnel",  # stops master (and all its forwards)
     "is_tunnel_running",
     "is_socket_alive",
     "find_master_pid",
@@ -101,9 +101,9 @@ def build_ssh_cmd(conn: Connection) -> list[str]:
 
 
 def start_master(
-    conn: Connection,
-    process_mgr: ProcessManager,
-    workspace: Path,
+        conn: Connection,
+        process_mgr: ProcessManager,
+        workspace: Path,
 ) -> int:
     """Start the ControlMaster SSH process for a connection.
 
@@ -140,10 +140,10 @@ def start_master(
 
 
 def start_forward(
-    conn: Connection,
-    fw: PortForward,
-    direction: str,
-    workspace: Path,
+        conn: Connection,
+        fw: PortForward,
+        direction: str,
+        workspace: Path,
 ) -> None:
     """Register a TCP port forward with the running ControlMaster via ``ssh -O forward``.
 
@@ -175,10 +175,10 @@ def start_forward(
 
 
 def cancel_forward(
-    conn: Connection,
-    fw: PortForward,
-    direction: str,
-    workspace: Path,
+        conn: Connection,
+        fw: PortForward,
+        direction: str,
+        workspace: Path,
 ) -> None:
     """Release a master-held TCP port forward via ``ssh -O cancel``.
 
@@ -200,9 +200,9 @@ def cancel_forward(
 
 
 def start_tunnel(
-    conn: Connection,
-    process_mgr: ProcessManager,
-    workspace: Path,
+        conn: Connection,
+        process_mgr: ProcessManager,
+        workspace: Path,
 ) -> int:
     """Start the ControlMaster for a connection.
 
@@ -213,10 +213,10 @@ def start_tunnel(
 
 
 def stop_tunnel(
-    tag: str,
-    process_mgr: ProcessManager,
-    workspace: Path | None = None,
-    ssh_host: str | None = None,
+        tag: str,
+        process_mgr: ProcessManager,
+        workspace: Path | None = None,
+        ssh_host: str | None = None,
 ) -> bool:
     """Stop the ControlMaster for a connection.
 

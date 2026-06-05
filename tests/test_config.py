@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
-
 from pydantic import ValidationError
 
 from susops.core.config import (
-    AppConfig,
     Connection,
     Forwards,
     PortForward,
@@ -17,7 +14,6 @@ from susops.core.config import (
     load_config,
     save_config,
 )
-from susops.core.types import LogoStyle
 
 
 # ------------------------------------------------------------------ #

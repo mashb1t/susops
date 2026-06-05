@@ -1,8 +1,9 @@
 """Tests for susops.core.share — encrypted file sharing."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from susops.core.share import (
     ShareServer,

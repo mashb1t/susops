@@ -17,6 +17,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
 from susops.core.ssh_config import get_ssh_hosts
@@ -180,7 +181,7 @@ class _AddForwardDialog(ModalScreen):
         conn_options = [(tag, tag) for tag in self._connections]
         bind_options = [("localhost", "localhost"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "0.0.0.0")]
         with Static(classes="modal-dialog"):
-            yield Label( f"[bold]Add {d.capitalize()} Forward[/bold]")
+            yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
             with Horizontal(classes="modal-form-row"):
                 with Static(classes="modal-field"):
                     yield Label("Connection:")
@@ -245,7 +246,6 @@ class _AddForwardDialog(ModalScreen):
         })
 
 
-
 class ConnectionsScreen(Screen):
     """TabbedContent CRUD screen for connections, PAC hosts, and port forwards."""
 
@@ -275,7 +275,7 @@ class ConnectionsScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        #yield Header()
+        # yield Header()
         with TabbedContent(id="editor-tabs"):
             with TabPane("Connections", id="tab-connections"):
                 yield DataTable(id="tbl-connections", cursor_type="row")
@@ -302,10 +302,12 @@ class ConnectionsScreen(Screen):
         tbl.add_columns("Status", "Host", "Connection")
 
         tbl = self.query_one("#tbl-local", DataTable)
-        tbl.add_columns("Status", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol", "Label")
+        tbl.add_columns("Status", "Connection", "Local Port", "Local Bind", "Remote Port", "Remote Bind", "Protocol",
+                        "Label")
 
         tbl = self.query_one("#tbl-remote", DataTable)
-        tbl.add_columns("Status", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol", "Label")
+        tbl.add_columns("Status", "Connection", "Remote Port", "Remote Bind", "Local Port", "Local Bind", "Protocol",
+                        "Label")
 
     @staticmethod
     def _reload_table(tbl: DataTable, rows: list[tuple[tuple, "str | None"]]) -> None:
@@ -440,7 +442,8 @@ class ConnectionsScreen(Screen):
                 enabled_remote = sum(1 for f in conn.forwards.remote if f.enabled)
                 total_fwd = len(conn.forwards.local) + len(conn.forwards.remote)
                 enabled_fwd = enabled_local + enabled_remote
-                uptime_str = f"{int(uptime)}s" if uptime and uptime < 60 else (f"{int(uptime // 60)}m{int(uptime % 60)}s" if uptime else "—")
+                uptime_str = f"{int(uptime)}s" if uptime and uptime < 60 else (
+                    f"{int(uptime // 60)}m{int(uptime % 60)}s" if uptime else "—")
                 lines = [
                     f"[bold]{conn.ssh_host}[/bold]   SOCKS ::{port}   up {uptime_str}",
                     f"[green]↓[/green] {fmt_bps(rx):>8}  total [cyan]{fmt_bytes(rx_total)}[/cyan]   "

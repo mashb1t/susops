@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import Label, Sparkline, Static
 
@@ -95,7 +95,8 @@ class ConnectionCard(Static):
     def watch__tx_label(self, v: str) -> None:
         self._safe_update(f"#txlbl-{self.tag}", Label, v)
 
-    def refresh_status(self, status: ConnectionStatus, proc_info: dict | None = None, forwards: list | None = None) -> None:
+    def refresh_status(self, status: ConnectionStatus, proc_info: dict | None = None,
+                       forwards: list | None = None) -> None:
         dot_color = "green" if status.running else "red"
         dot = f"[{dot_color}]●[/{dot_color}]"
         port_str = f"  SOCKS {status.socks_port}" if status.socks_port else ""

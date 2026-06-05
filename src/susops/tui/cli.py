@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import susops
-
 from susops.core.types import ProcessState
 
 
@@ -648,7 +647,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # chrome / firefox
     sub.add_parser("chrome", help="Launch Chrome with PAC proxy").set_defaults(func=cmd_chrome)
-    sub.add_parser("chrome-proxy-settings", help="Open Chrome proxy settings").set_defaults(func=cmd_chrome_proxy_settings)
+    sub.add_parser("chrome-proxy-settings", help="Open Chrome proxy settings").set_defaults(
+        func=cmd_chrome_proxy_settings)
     sub.add_parser("firefox", help="Launch Firefox with PAC proxy").set_defaults(func=cmd_firefox)
 
     # guide

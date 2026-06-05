@@ -7,14 +7,12 @@ are also tested via mocks.
 """
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from susops.core.config import Connection, PortForward
 from susops.core.socat import (
-    UDP_PROCESS_PREFIX,
     _fw_tag,
     _udp_process_name,
     start_udp_forward,
@@ -59,7 +57,7 @@ def test_stop_udp_forward_stops_matching_processes():
     mgr.status_all.return_value = {
         "susops-udp-work-local-53-lsocat": True,
         "susops-udp-work-local-80-lsocat": True,  # different forward
-        "susops-fwd-work-local-53": True,          # not a UDP process
+        "susops-fwd-work-local-53": True,  # not a UDP process
     }
     mgr.stop.return_value = True
     result = stop_udp_forward("work", "local-53", mgr)

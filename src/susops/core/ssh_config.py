@@ -1,11 +1,13 @@
 """SSH config parser for hostname autocompletion."""
 from __future__ import annotations
-from pathlib import Path
+
 import re
+from pathlib import Path
 
 __all__ = ["get_ssh_hosts"]
 
 _SSH_CONFIG = Path.home() / ".ssh" / "config"
+
 
 def get_ssh_hosts(ssh_config_path: Path = _SSH_CONFIG) -> list[str]:
     """Parse ~/.ssh/config and return all non-wildcard Host entries.

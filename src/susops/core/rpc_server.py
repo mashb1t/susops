@@ -8,6 +8,7 @@ Anything outside the allowlist below is rejected too — deny-by-default.
 from __future__ import annotations
 
 import logging
+
 from aiohttp import web
 
 from susops.core.rpc_protocol import (
@@ -47,11 +48,11 @@ _ALLOWED_METHODS: set[str] = {
     # Reconnect introspection
     "reconnect_monitor_info",
     # Process introspection
-    "process_info",          # global — used by `susops ps`
-    "get_process_info",      # per-tag — used by TUI dashboard
-    "get_uptime",            # per-tag — used by TUI dashboard / connections panel
-    "get_logs",              # used by TUI logs panel
-    "log_message",           # frontends push operational notes into the daemon log buffer
+    "process_info",  # global — used by `susops ps`
+    "get_process_info",  # per-tag — used by TUI dashboard
+    "get_uptime",  # per-tag — used by TUI dashboard / connections panel
+    "get_logs",  # used by TUI logs panel
+    "log_message",  # frontends push operational notes into the daemon log buffer
 }
 
 
