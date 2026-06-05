@@ -61,7 +61,10 @@ def update_formula_resource_shas(
             rf'(\s*url ")[^"]*(")\s*\n'
             rf'(\s*sha256 ")[^"]*(")'
         )
-        replacement = rf'\1\2{info["url"]}\3\n\4{info["sha256"]}\5'
+        # \g<N> rather than \N because the injected sha256/url strings
+        # may start with a digit; \4 followed by "2..." would otherwise be
+        # parsed as group reference 42.
+        replacement = rf'\g<1>\g<2>{info["url"]}\g<3>\n\g<4>{info["sha256"]}\g<5>'
         content = re.sub(pattern, replacement, content)
     formula_path.write_text(content)
 
