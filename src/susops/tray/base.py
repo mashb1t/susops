@@ -116,8 +116,13 @@ class AbstractTrayApp(ABC):
 
     @staticmethod
     def _format_rate(bps: float) -> str:
+        # Tray rule: always render in KB/s or larger. Idle stays at 0 KB/s,
+        # anything below 1 KB/s rounds up to 1 KB/s so the unit doesn't
+        # flicker on SSH keepalive noise.
+        if bps <= 0:
+            return "0 KB/s"
         if bps < 1024:
-            return f"{int(bps)} B/s"
+            return "1 KB/s"
         if bps < 1024 ** 2:
             return f"{bps / 1024:.0f} KB/s"
         if bps < 1024 ** 3:
