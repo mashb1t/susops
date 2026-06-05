@@ -1500,7 +1500,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             box.add(vbox)
 
             # Static logo at the top, if available.
-            icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+            icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
             if icon_path.exists():
                 try:
                     from gi.repository import GdkPixbuf  # type: ignore[import]

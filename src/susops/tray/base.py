@@ -8,7 +8,7 @@ from typing import Callable
 
 from susops.core.types import ProcessState
 
-_ASSETS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons"
+_ASSETS_DIR = Path(__file__).parent.parent / "assets" / "icons"
 
 _STATE_FILENAMES = {
     ProcessState.RUNNING: "running",

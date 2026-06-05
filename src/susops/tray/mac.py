@@ -49,7 +49,7 @@ def _get_icon_path(state: ProcessState, logo_style: str = "colored_glasses") -> 
     return get_icon_path(state, logo_style=logo_style, variant=variant, prefer_png=True)
 
 
-_STATUS_ICONS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons" / "status"
+_STATUS_ICONS_DIR = Path(__file__).parent.parent / "assets" / "icons" / "status"
 
 _STATUS_ICON_NAMES = {
     ProcessState.RUNNING: "running",
@@ -1653,7 +1653,7 @@ def _show_about_panel(version: str = "", *, icon_state=None) -> None:
     url_handlers: list = []
 
     # ── App icon (centered at top) — static assets/icon.png ──
-    icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+    icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
     y_icon = win_h - icon_size - 14
     if icon_path.exists():
         try:

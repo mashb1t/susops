@@ -7,7 +7,9 @@ a = Analysis(
     ["packaging/macos/entry_tray.py"],
     pathex=["."],
     binaries=rumps_binaries,
-    datas=rumps_datas,
+    # Bundle the package's assets at susops/assets/ inside the app so the
+    # runtime Path(__file__).parent.parent / "assets" resolution lands them.
+    datas=rumps_datas + [("src/susops/assets", "susops/assets")],
     hiddenimports=rumps_hiddenimports + [
         "objc",
         "Foundation",
@@ -47,7 +49,7 @@ exe = EXE(
     target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
-    icon="assets/susops.icns",
+    icon="src/susops/assets/susops.icns",
 )
 
 coll = COLLECT(
@@ -63,7 +65,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="SusOps.app",
-    icon="assets/susops.icns",
+    icon="src/susops/assets/susops.icns",
     bundle_identifier="net.odt.susops",
     info_plist={
         "CFBundleShortVersionString": "3.0.0-rc2",

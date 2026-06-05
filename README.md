@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="assets/icon.png" alt="Menu" height="200" />
+    <img src="src/susops/assets/icon.png" alt="Menu" height="200" />
 </p>
 
 # SusOps - SSH Utilities & SOCKS5 Operations

@@ -50,6 +50,9 @@ susops-tray = "susops.tray:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+susops = ["assets/*.png", "assets/icons/**/*.svg", "assets/icons/**/*.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
