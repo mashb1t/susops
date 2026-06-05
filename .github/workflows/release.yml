@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - feature/release-flow-setup
 
 permissions:
   contents: write
@@ -14,10 +12,19 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  # Tests disabled while iterating on the release flow. Re-enable by
-  # restoring the test job and adding `needs: [test]` to build-pypi
-  # and build-dmg.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra dev --extra tui
+      - run: uv run pytest -x -q -m "not gui"
+
   build-pypi:
+    needs: [test]
     runs-on: ubuntu-latest
     # Trusted-publisher OIDC: short-lived token minted per run, no secret.
     permissions:
@@ -28,7 +35,7 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
-      - run: uv python install 3.12
+      - run: uv python install 3.14
       - name: Install dependencies for OpenAPI generation
         run: uv sync --extra dev
       - name: Regenerate OpenAPI spec
@@ -39,23 +46,16 @@ jobs:
         run: uv run python tools/gen_openapi.py
       - run: uv build
       - name: Attach release artifacts
-        # Tag-only: GitHub Releases require a tag. Branch pushes still
-        # build + upload to TestPyPI, they just don't create a Release page.
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*
             docs/openapi.yaml
           generate_release_notes: true
-      # Publishing to TestPyPI until the pipeline is proven on a real tag.
-      # To switch to production PyPI, drop --publish-url. OIDC trusted-
-      # publisher config exists on both indexes already; uv auto-detects
-      # the matching mint-token endpoint from the publish URL.
-      - run: uv publish --publish-url https://test.pypi.org/legacy/
+      - run: uv publish
 
   build-dmg:
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -100,7 +100,6 @@ jobs:
           retention-days: 1
 
   update-tap:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-pypi, build-dmg]
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +113,7 @@ jobs:
           path: tap
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - uses: actions/download-artifact@v8
         with:
           name: dmg
@@ -146,14 +145,13 @@ jobs:
           git push
 
   update-aur:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-pypi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Update PKGBUILD
         env:
           VERSION: ${{ env.VERSION }}
