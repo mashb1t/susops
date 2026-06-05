@@ -3012,7 +3012,15 @@ class SusOpsMacTray(AbstractTrayApp):
         # every refresh. No periodic polling fallback — SSE reconnects with
         # a small backoff cap on its own.
         self.do_poll()
-        self.refresh_bandwidth_title()
+        # rumps creates the NSStatusItem inside applicationDidFinishLaunching,
+        # which only fires once _app.run() starts the runloop. Schedule the
+        # bandwidth subview population for the first runloop tick so the
+        # status item never paints in its "icon-only, default width" state
+        # before we widen it.
+        from Foundation import NSTimer  # type: ignore[import]
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.0, False, lambda _t: self.refresh_bandwidth_title()
+        )
         self._start_sse_listener()
         self._bw_timer = self._rumps.Timer(self._tick_bandwidth, 1)
         self._bw_timer.start()
