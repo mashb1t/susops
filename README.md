@@ -184,33 +184,27 @@ flowchart TD
 ### pip
 
 ```bash
-# CLI only (no TUI, no tray)
+# CLI + daemon (no TUI, no tray)
 pip install susops
 
 # TUI
 pip install "susops[tui]"
 
-# TUI + encrypted file sharing
-pip install "susops[tui,share]"
-
-# Linux tray (system GTK3 packages must be installed separately)
-pip install "susops[tui,share,tray-linux]"
-
 # macOS tray
-pip install "susops[tui,share,tray-mac]"
+pip install "susops[tui,tray-mac]"
 ```
 
-UDP port forwarding has no Python dependencies, install `socat` via your system package manager:
+The Linux tray needs system packages (`python3-gi`, `gtk3`, `libayatana-appindicator`); see below. UDP port forwarding also needs a system package (`socat`).
 
 ```bash
-# macOS
+# macOS — socat for UDP forwarding
 brew install socat
 
-# Arch Linux
-sudo pacman -S socat
+# Arch Linux — Linux tray + socat
+sudo pacman -S python-gobject gtk3 libayatana-appindicator socat
 
-# Ubuntu / Debian
-sudo apt install socat
+# Ubuntu / Debian — Linux tray + socat
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1 socat
 ```
 
 ### Arch Linux (AUR)
