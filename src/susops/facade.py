@@ -625,25 +625,53 @@ class SusOpsManager:
             print(full, file=sys.stderr)
 
     def _notify(self, title: str, body: str) -> None:
-        """Send a desktop notification. Best-effort — fails silently."""
+        """Send a desktop notification with the SusOps icon. Best-effort."""
         import platform
-        import subprocess
+        from pathlib import Path
+        icon = Path(__file__).parent / "assets" / "icon.png"
         try:
             if platform.system() == "Darwin":
-                subprocess.Popen(
-                    ["osascript", "-e",
-                     f'display notification "{body}" with title "{title}"'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                self._notify_macos(title, body, icon)
             elif platform.system() == "Linux":
-                subprocess.Popen(
-                    ["notify-send", title, body],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                self._notify_linux(title, body, icon)
         except Exception:
             pass
+
+    @staticmethod
+    def _notify_macos(title: str, body: str, icon: "Path") -> None:
+        # NSUserNotification's setContentImage_ puts the SusOps icon on the
+        # right side of the banner. The source-app slot (left side) reflects
+        # the running process — bundled .app shows SusOps, raw pip install
+        # shows Python. osascript can't set either, so it loses both.
+        try:
+            from Foundation import NSUserNotification, NSUserNotificationCenter  # type: ignore
+            from AppKit import NSImage  # type: ignore
+            n = NSUserNotification.alloc().init()
+            n.setTitle_(title)
+            n.setInformativeText_(body)
+            if icon.exists():
+                img = NSImage.alloc().initWithContentsOfFile_(str(icon))
+                if img is not None:
+                    n.setContentImage_(img)
+            NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(n)
+            return
+        except Exception:
+            pass
+        # Fallback for non-PyObjC environments
+        import subprocess
+        subprocess.Popen(
+            ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    @staticmethod
+    def _notify_linux(title: str, body: str, icon: "Path") -> None:
+        import subprocess
+        cmd = ["notify-send"]
+        if icon.exists():
+            cmd += ["-i", str(icon)]
+        cmd += [title, body]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _emit(self, event: str, data: dict) -> None:
         """Emit an SSE event and log it when verbose (bandwidth excluded — too noisy)."""
