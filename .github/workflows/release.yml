@@ -39,6 +39,9 @@ jobs:
         run: uv run python tools/gen_openapi.py
       - run: uv build
       - name: Attach release artifacts
+        # Tag-only: GitHub Releases require a tag. Branch pushes still
+        # build + upload to TestPyPI, they just don't create a Release page.
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: |
