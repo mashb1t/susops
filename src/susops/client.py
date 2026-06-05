@@ -22,7 +22,12 @@ from typing import Any
 from susops.core.rpc_protocol import InvocationRequest, InvocationResponse
 
 _WORKSPACE_DEFAULT = Path.home() / ".susops"
-_DAEMON_SPAWN_TIMEOUT = 5.0
+# 15s rather than 5s gives headroom for slow init paths (ssh agent
+# prompts, network probes) on top of the daemon's "publish port first,
+# restore async" startup ordering. Frontends will still detect a truly
+# dead daemon quickly because they poll the port file every 100ms — the
+# timeout only fires for genuine hangs.
+_DAEMON_SPAWN_TIMEOUT = 15.0
 
 
 class DaemonUnavailableError(RuntimeError):

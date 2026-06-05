@@ -177,7 +177,17 @@ def main() -> int:
         from susops.core.rpc_server import serve
         from susops.facade import SusOpsManager
 
-        mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
+        # Defer the SSH/PAC/share probes (_restore_*) until AFTER the RPC
+        # port is bound and the port file is written. Those probes can
+        # block on the ssh agent (e.g. 1Password approval prompt) for
+        # several seconds, and frontends only give up after _DAEMON_SPAWN_TIMEOUT.
+        # By publishing the port first, the daemon is "alive" to frontends
+        # immediately regardless of how slow the agent decides to be.
+        mgr = SusOpsManager(
+            workspace=workspace,
+            _enable_background_threads=True,
+            _skip_restore=True,
+        )
         # CLI `--port` wins. Fall back to the configured `rpc_server_port`,
         # then 0 (auto-allocate). When we auto-allocate, persist the bound
         # port back to config so subsequent spawns reuse it.
@@ -197,6 +207,24 @@ def main() -> int:
         # first tunnel `start()` call), which left SSE listeners spinning in
         # backoff for several seconds after a fresh daemon spawn.
         sse_port = mgr.ensure_sse_status_server()
+
+        # Now that the daemon is reachable (RPC + SSE), run the deferred
+        # restore work in a background thread so slow ssh-agent prompts
+        # don't keep the daemon process pinned during startup.
+        def _restore_in_background() -> None:
+            try:
+                mgr._restore_pac()
+                if mgr.config.susops_app.restore_shares_on_start:
+                    mgr._restore_shares()
+                mgr._restore_reconnect_monitor()
+            except Exception:
+                log.exception("Background restore failed")
+
+        threading.Thread(
+            target=_restore_in_background,
+            daemon=True,
+            name="susops-restore",
+        ).start()
 
         # Surface daemon-startup details in the in-memory log buffer too so
         # they show up in the TUI Logs tab and the tray Logs window — the
