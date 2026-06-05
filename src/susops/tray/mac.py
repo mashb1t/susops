@@ -2957,7 +2957,7 @@ class SusOpsMacTray(AbstractTrayApp):
         iv = getattr(self, "_bw_icon_view", None)
         if iv is None:
             iv = NSImageView.alloc().init()
-            iv.setImageScaling_(2)  # NSImageScaleProportionallyDown
+            iv.setImageScaling_(0)  # NSImageScaleProportionallyDown
             button.addSubview_(iv)
             self._bw_icon_view = iv
 
