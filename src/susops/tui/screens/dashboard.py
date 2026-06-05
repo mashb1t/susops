@@ -10,6 +10,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Footer,
@@ -384,7 +385,13 @@ class DashboardScreen(Screen):
             # Same connections — update connection rows in-place (index 0 is the All row, skip it)
             items = list(conn_list.query(ListItem))
             for item, text in zip(items[1:], label_texts):
-                item.query_one(Label).update(text)
+                # ListItem.compose moves the Label from _pending_children to
+                # the DOM. If a recent rebuild's mount hasn't fired yet we
+                # land here with no Label child — skip; the next tick retries.
+                try:
+                    item.query_one(Label).update(text)
+                except NoMatches:
+                    pass
         else:
             # Tags changed — rebuild list, preserve whether All or a connection was selected
             prev_index = conn_list.index if conn_list.index is not None else 0

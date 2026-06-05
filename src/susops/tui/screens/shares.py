@@ -7,6 +7,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
 
@@ -193,7 +194,13 @@ class SharesScreen(Screen):
         if new_ports == old_ports:
             # Same shares — update labels in-place so selection is never disturbed
             for item, info in zip(lv.query(ListItem), new_shares):
-                item.query_one(Label).update(_label(info))
+                # ListItem.compose moves the Label from _pending_children to
+                # the DOM. If a recent rebuild's mount hasn't fired yet we
+                # land here with no Label child — skip; the next tick retries.
+                try:
+                    item.query_one(Label).update(_label(info))
+                except NoMatches:
+                    pass
         else:
             # Shares added/removed — rebuild and restore cursor
             cur = lv.index or 0
