@@ -51,7 +51,12 @@ susops-tray = "susops.tray:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-susops = ["assets/*.png", "assets/icons/**/*.svg", "assets/icons/**/*.png"]
+susops = [
+    "assets/*.png",
+    "assets/icons/**/*.svg",
+    "assets/icons/**/*.png",
+    "tui/**/*.tcss",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
