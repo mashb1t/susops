@@ -290,11 +290,19 @@ class DashboardScreen(Screen):
             bw: dict[str, tuple[float, float]] = {}
             bw_totals: dict[str, tuple[float, float]] = {}
             uptimes: dict[str, float | None] = {}
+            bw_history_seed: dict[str, list] = {}
             for cs in result.connection_statuses:
                 extras[cs.tag] = mgr.get_process_info(cs.tag)
                 bw[cs.tag] = mgr.get_bandwidth(cs.tag)
                 bw_totals[cs.tag] = mgr.get_bandwidth_totals(cs.tag)
                 uptimes[cs.tag] = mgr.get_uptime(cs.tag)
+                # Only fetch persisted history for tags we haven't seeded
+                # yet — saves an RPC per tick once the chart is rolling.
+                if cs.tag not in self._rx_history:
+                    try:
+                        bw_history_seed[cs.tag] = mgr.get_bandwidth_history(cs.tag) or []
+                    except Exception:
+                        bw_history_seed[cs.tag] = []
 
             shares = mgr.list_shares()
             config = mgr.list_config()
@@ -312,7 +320,8 @@ class DashboardScreen(Screen):
             )
             return
         self.app.call_from_thread(
-            self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config, reconnect
+            self._apply_status, result, extras, bw, bw_totals, uptimes, shares,
+            config, reconnect, bw_history_seed,
         )
 
     def _apply_status(
@@ -325,7 +334,9 @@ class DashboardScreen(Screen):
             shares: list,
             config,
             reconnect: dict,
+            bw_history_seed: dict | None = None,
     ) -> None:
+        bw_history_seed = bw_history_seed or {}
         self._last_config = config
         self._last_shares = shares
 
@@ -353,20 +364,17 @@ class DashboardScreen(Screen):
         self._conn_data = new_conn_data
 
         # Update rolling bandwidth history (60 samples). Seed from the
-        # daemon's persisted history on first encounter so reopening the
-        # TUI doesn't reset the chart to flatlined zeros.
+        # daemon's persisted history (pre-fetched by refresh_status) on
+        # first encounter so reopening the TUI doesn't reset the chart to
+        # flatlined zeros.
         for cs in result.connection_statuses:
             tag = cs.tag
             rx, tx = bw.get(tag, (0.0, 0.0))
             if tag not in self._rx_history:
                 rx_seed = [0.0] * 60
                 tx_seed = [0.0] * 60
-                try:
-                    persisted = mgr.get_bandwidth_history(tag) or []
-                except Exception:
-                    persisted = []
+                persisted = (bw_history_seed.get(tag) or [])[-60:]
                 if persisted:
-                    persisted = persisted[-60:]
                     rx_seed[-len(persisted):] = [s[0] for s in persisted]
                     tx_seed[-len(persisted):] = [s[1] for s in persisted]
                 self._rx_history[tag] = deque(rx_seed, maxlen=60)
