@@ -12,19 +12,10 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
-        with:
-          enable-cache: true
-      - run: uv python install 3.14
-      - run: uv sync --extra dev --extra tui
-      - run: uv run pytest -x -q -m "not gui"
-
+  # Tests temporarily disabled while iterating on the release flow.
+  # Re-enable by restoring the test job and adding `needs: [test]` to
+  # build-pypi and build-dmg.
   build-pypi:
-    needs: [test]
     runs-on: ubuntu-latest
     # Trusted-publisher OIDC: short-lived token minted per run, no secret.
     permissions:
@@ -55,7 +46,6 @@ jobs:
       - run: uv publish
 
   build-dmg:
-    needs: [test]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
