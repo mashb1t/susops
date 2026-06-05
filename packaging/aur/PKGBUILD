@@ -2,8 +2,8 @@
 pkgname=susops
 # AUR pkgver disallows hyphens. The git tag (and pyproject) use 3.0.0-rc2;
 # the URL below maps pkgver→tag via _tag.
-_tag=3.0.0-rc3.dev6
-pkgver=3.0.0rc3.dev6
+_tag=3.0.0-rc3.dev7
+pkgver=3.0.0rc3.dev7
 pkgrel=1
 pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
 arch=('any')
