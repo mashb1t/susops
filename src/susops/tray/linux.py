@@ -1614,7 +1614,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         self.do_poll()
         self.refresh_bandwidth_title()
         self._start_sse_listener()
-        self._GLib.timeout_add(2000, self._tick_bandwidth)
+        self._GLib.timeout_add(1000, self._tick_bandwidth)
         self._Gtk.main()
 
 

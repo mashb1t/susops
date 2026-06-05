@@ -1909,6 +1909,19 @@ class SusOpsMacTray(AbstractTrayApp):
         icon_path = _get_icon_path(state, logo_style)
         if icon_path:
             self._app.icon = icon_path
+        # When the bandwidth subview is active, divert the just-set icon
+        # from the button into our NSImageView so the button doesn't
+        # centre it on top of our text.
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is not None:
+            try:
+                button = self._app._nsapp.nsstatusitem.button()
+                img = button.image()
+                if img is not None:
+                    iv.setImage_(img)
+                    button.setImage_(None)
+            except Exception:
+                pass
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
@@ -2862,50 +2875,124 @@ class SusOpsMacTray(AbstractTrayApp):
 
     _BW_RATE_COL_WIDTH = 9  # widest expected rate, e.g. "99.9 MB/s"
 
+    def _clear_bw_views(self, button) -> None:
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is not None:
+            last_img = iv.image()
+            if last_img is not None and button is not None:
+                button.setImage_(last_img)
+            iv.removeFromSuperview()
+            self._bw_icon_view = None
+        tf = getattr(self, "_bw_text_view", None)
+        if tf is not None:
+            tf.removeFromSuperview()
+            self._bw_text_view = None
+        try:
+            self._app._nsapp.nsstatusitem.setLength_(-1.0)  # NSVariableStatusItemLength
+        except Exception:
+            pass
+
     def update_title(self, rx_bps: float | None, tx_bps: float | None) -> None:
         try:
-            button = self._app._nsapp.nsstatusitem.button()
+            status_item = self._app._nsapp.nsstatusitem
+            button = status_item.button()
         except Exception:
-            button = None
+            status_item, button = None, None
+
         if rx_bps is None or tx_bps is None:
-            if button is not None:
-                from AppKit import NSAttributedString  # type: ignore[import]
-                button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
+            self._clear_bw_views(button)
             self._app.title = ""
             return
+
         up = self._format_rate(tx_bps).rjust(self._BW_RATE_COL_WIDTH)
         down = self._format_rate(rx_bps).rjust(self._BW_RATE_COL_WIDTH)
-        text = f"↑ {up}\n↓ {down}"
+        text = f"{up}\n{down}"
         if button is None:
             self._app.title = text
             return
+
         from AppKit import (  # type: ignore[import]
             NSAttributedString,
-            NSBaselineOffsetAttributeName,
+            NSColor,
             NSFont,
             NSFontAttributeName,
             NSFontWeightRegular,
+            NSForegroundColorAttributeName,
+            NSImageView,
+            NSLineBreakByClipping,
             NSMutableParagraphStyle,
             NSParagraphStyleAttributeName,
             NSTextAlignmentRight,
+            NSTextField,
         )
-        font = NSFont.monospacedSystemFontOfSize_weight_(8, NSFontWeightRegular)
+        from Foundation import NSMakeRect  # type: ignore[import]
+
+        font = NSFont.systemFontOfSize_weight_(8, NSFontWeightRegular)
         para = NSMutableParagraphStyle.alloc().init()
-        para.setMinimumLineHeight_(9)
-        para.setMaximumLineHeight_(9)
+        para.setLineSpacing_(0)
         para.setAlignment_(NSTextAlignmentRight)
         attrs = {
             NSFontAttributeName: font,
             NSParagraphStyleAttributeName: para,
-            # NSButtonCell anchors a multi-line title near the top of the
-            # button frame, so the block reads top-heavy. Lower every glyph
-            # below its baseline to push the whole block down into the
-            # menu-bar centre. Negative = visually down.
-            NSBaselineOffsetAttributeName: -4.0,
+            NSForegroundColorAttributeName: NSColor.labelColor(),
         }
-        button.setAttributedTitle_(
-            NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+        attr = NSAttributedString.alloc().initWithString_attributes_(text, attrs)
+        # Lock text-view dimensions to the widest possible two-line block
+        # so the frame stays the same even as digits / units fluctuate.
+        max_text = (
+            f"↑ {'99.9 MB/s'.rjust(self._BW_RATE_COL_WIDTH)}\n"
+            f"↓ {'99.9 MB/s'.rjust(self._BW_RATE_COL_WIDTH)}"
         )
+        max_attr = NSAttributedString.alloc().initWithString_attributes_(max_text, attrs)
+        max_size = max_attr.size()
+        fixed_w = max_size.width
+        fixed_h = max_size.height
+
+        iv = getattr(self, "_bw_icon_view", None)
+        if iv is None:
+            iv = NSImageView.alloc().init()
+            iv.setImageScaling_(2)  # NSImageScaleProportionallyDown
+            button.addSubview_(iv)
+            self._bw_icon_view = iv
+
+        tf = getattr(self, "_bw_text_view", None)
+        if tf is None:
+            tf = NSTextField.alloc().init()
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(False)
+            tf.setSelectable_(False)
+            tf.setBordered_(False)
+            tf.setAlignment_(NSTextAlignmentRight)
+            tf.cell().setLineBreakMode_(NSLineBreakByClipping)
+            button.addSubview_(tf)
+            self._bw_text_view = tf
+
+        # Move rumps's icon into our own NSImageView so the button stops
+        # centring it inside the widened frame. update_icon() re-runs this
+        # transfer whenever rumps swaps the icon on state change.
+        img = button.image()
+        if img is not None:
+            iv.setImage_(img)
+            button.setImage_(None)
+        button.setAttributedTitle_(NSAttributedString.alloc().initWithString_(""))
+        tf.setAttributedStringValue_(attr)
+
+        icon_img = iv.image()
+        icon_w = icon_img.size().width if icon_img is not None else 18.0
+        gap = 6.0
+        right_pad = 4.0
+        total_w = icon_w + gap + fixed_w + right_pad
+
+        if status_item is not None:
+            status_item.setLength_(total_w)
+
+        btn_h = button.frame().size.height
+        icon_h = icon_img.size().height if icon_img is not None else btn_h
+        iv.setFrame_(NSMakeRect(0, (btn_h - icon_h) / 2.0, icon_w, icon_h))
+        y = (btn_h - fixed_h) / 2.0
+        x = icon_w + gap
+        tf.setFrame_(NSMakeRect(x, y, fixed_w, fixed_h))
 
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
@@ -2917,7 +3004,7 @@ class SusOpsMacTray(AbstractTrayApp):
         self.do_poll()
         self.refresh_bandwidth_title()
         self._start_sse_listener()
-        self._bw_timer = self._rumps.Timer(self._tick_bandwidth, 2)
+        self._bw_timer = self._rumps.Timer(self._tick_bandwidth, 1)
         self._bw_timer.start()
         self._app.run()
 
