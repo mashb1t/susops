@@ -1949,7 +1949,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._app.icon = icon_path
             return
         from AppKit import NSImage  # type: ignore[import]
-        img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+        img = NSImage.alloc().initByReferencingFile_(icon_path)
         if img is not None:
             iv.setImage_(img)
         try:
@@ -3037,11 +3037,14 @@ class SusOpsMacTray(AbstractTrayApp):
         # the view frame. Honour the last-previewed logo, not just the
         # saved one, so the Settings preview survives toggling Bandwidth.
         btn_h = button.frame().size.height
-        icon_box = btn_h
+        # macOS draws menu-bar item icons at 20pt with a small inset on a
+        # 22pt-tall button. Match that so the subview doesn't render the
+        # icon noticeably larger than rumps's bare-button path.
+        icon_box = 20.0
         icon_path = self._current_icon_path()
         if icon_path:
             from AppKit import NSImage as _NSImage  # type: ignore[import]
-            img = _NSImage.alloc().initWithContentsOfFile_(icon_path)
+            img = _NSImage.alloc().initByReferencingFile_(icon_path)
             if img is not None:
                 iv.setImage_(img)
         button.setImage_(None)
