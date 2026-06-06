@@ -258,13 +258,16 @@ def main() -> int:
             pass
 
         # Idle-shutdown. Exit when the last SSE client disconnects AND there's
-        # no in-flight work (no SSH masters, no shares, no PAC, no watched
-        # connections). Startup gets a small grace so a frontend that calls
-        # ensure_daemon_running() has time to make its first SSE connection
-        # before the periodic check fires.
+        # no in-flight work AND that state holds for _IDLE_CONSECUTIVE_TICKS
+        # consecutive checks. Requiring multiple ticks defends against the
+        # "SSE flap during reconnect → momentary client_count==0 → daemon
+        # exits → frontend respawns it" churn that bit us during heavy
+        # reconnect activity.
         _IDLE_STARTUP_GRACE_S = 3.0
         _IDLE_CHECK_INTERVAL_S = 5.0
+        _IDLE_CONSECUTIVE_TICKS = 3
         startup_time = _time.monotonic()
+        idle_streak = 0  # consecutive ticks where _should_exit() was True
 
         def _should_exit() -> bool:
             if _time.monotonic() - startup_time < _IDLE_STARTUP_GRACE_S:
@@ -276,19 +279,12 @@ def main() -> int:
             return mgr.is_idle()
 
         def _on_clients_changed(count: int) -> None:
-            # Fast path — react immediately when the last SSE client drops.
-            # The periodic check below handles the "no SSE was ever opened"
-            # case (e.g. `susops ps` fires one RPC and exits).
+            # No fast-path exit here anymore — the watcher's consecutive-tick
+            # requirement covers genuine quiescence and rejects flap events
+            # without us having to special-case them.
+            nonlocal idle_streak
             if count > 0:
-                return
-            if _should_exit():
-                msg = "Last client disconnected and no work pending — shutting down"
-                log.info(msg)
-                try:
-                    mgr._log(msg)
-                except Exception:
-                    pass
-                stop_event.set()
+                idle_streak = 0
 
         mgr._status_server.on_clients_changed = _on_clients_changed
         # Surface SSE connect/disconnect in the in-memory log buffer so the
@@ -296,19 +292,26 @@ def main() -> int:
         mgr._status_server.on_log = mgr._log
 
         def _idle_watcher() -> None:
+            nonlocal idle_streak
             while not stop_event.is_set():
                 if stop_event.wait(_IDLE_CHECK_INTERVAL_S):
                     return
                 if _should_exit():
-                    msg = (f"Idle for {_IDLE_CHECK_INTERVAL_S:.0f}s with "
-                           f"no clients — shutting down")
-                    log.info(msg)
-                    try:
-                        mgr._log(msg)
-                    except Exception:
-                        pass
-                    stop_event.set()
-                    return
+                    idle_streak += 1
+                    if idle_streak >= _IDLE_CONSECUTIVE_TICKS:
+                        msg = (
+                            f"Idle for {_IDLE_CHECK_INTERVAL_S * idle_streak:.0f}s "
+                            f"({idle_streak} consecutive checks) — shutting down"
+                        )
+                        log.info(msg)
+                        try:
+                            mgr._log(msg)
+                        except Exception:
+                            pass
+                        stop_event.set()
+                        return
+                else:
+                    idle_streak = 0
 
         threading.Thread(
             target=_idle_watcher, daemon=True, name="susops-idle-watcher",

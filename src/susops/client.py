@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,16 @@ _WORKSPACE_DEFAULT = Path.home() / ".susops"
 # dead daemon quickly because they poll the port file every 100ms — the
 # timeout only fires for genuine hangs.
 _DAEMON_SPAWN_TIMEOUT = 15.0
+
+# Backoff to avoid pegging CPU and filling logs when the daemon
+# repeatedly exits during startup (e.g. corrupt config, PAC port
+# squatted). On a fast-fail (daemon exits within FAST_FAIL_WINDOW_S of
+# spawn), the next ensure_daemon_running call within BACKOFF_S sleeps
+# until the window expires before retrying.
+_FAST_FAIL_WINDOW_S = 2.0
+_BACKOFF_S = 5.0
+_last_fast_fail: float = 0.0
+_last_fast_fail_lock = threading.Lock()
 
 
 class DaemonUnavailableError(RuntimeError):
@@ -70,6 +81,7 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
     (PAC port squatted, peer daemon alive, …) is surfaced to the caller
     instead of getting buried under a generic "didn't come up" message.
     """
+    global _last_fast_fail
     if _is_daemon_alive(workspace):
         port = _read_port(workspace)
         if port:
@@ -93,10 +105,20 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
                 "` and start again."
             )
 
+    # If we recently fast-failed a spawn (daemon exited within
+    # _FAST_FAIL_WINDOW_S of starting), wait out the backoff window
+    # before respawning. Prevents tight respawn loops when something is
+    # structurally broken (corrupt config, PAC port squatted, etc.).
+    with _last_fast_fail_lock:
+        since_last = time.monotonic() - _last_fast_fail
+    if since_last < _BACKOFF_S:
+        time.sleep(_BACKOFF_S - since_last)
+
     # DEVNULL (not PIPE) for stderr — the daemon writes its log to
     # ~/.susops/logs/susops-services.log directly. Capturing as a pipe
     # would back up once the daemon's log volume exceeded the kernel
     # buffer (~64 KB on macOS) and freeze every subsequent log call.
+    spawn_start = time.monotonic()
     proc = subprocess.Popen(
         [sys.executable, "-m", "susops.core.services_daemon",
          "--workspace", str(workspace)],
@@ -118,6 +140,12 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
         # reasons (stderr is no longer piped — see Popen above).
         rc = proc.poll()
         if rc is not None:
+            # Fast fail = structural problem. Record the timestamp so the
+            # next ensure_daemon_running call within _BACKOFF_S sleeps
+            # before retrying.
+            if time.monotonic() - spawn_start < _FAST_FAIL_WINDOW_S:
+                with _last_fast_fail_lock:
+                    _last_fast_fail = time.monotonic()
             log_path = workspace / "logs" / "susops-services.log"
             tail = ""
             try:

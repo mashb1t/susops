@@ -100,15 +100,19 @@ def test_preflight_rejects_when_another_daemon_alive(ws):
         second = subprocess.Popen(
             [sys.executable, "-m", "susops.core.services_daemon",
              "--workspace", str(ws), "--port", "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        out, err = second.communicate(timeout=5)
+        second.wait(timeout=5)
         assert second.returncode == 2, (
-            f"expected exit code 2 (another daemon alive), got {second.returncode}; "
-            f"stderr was: {err.decode()!r}"
+            f"expected exit code 2 (another daemon alive), got {second.returncode}"
         )
-        assert b"already running" in err
+        # Failure reason now lives in the workspace log file, not stderr.
+        log_path = ws / "logs" / "susops-services.log"
+        log_text = log_path.read_text() if log_path.exists() else ""
+        assert "already running" in log_text, (
+            f"expected 'already running' in log file; contents:\n{log_text}"
+        )
     finally:
         first.terminate()
         first.wait(timeout=3)
@@ -137,15 +141,19 @@ def test_preflight_rejects_when_pac_port_squatted(ws):
         proc = subprocess.Popen(
             [sys.executable, "-m", "susops.core.services_daemon",
              "--workspace", str(ws), "--port", "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        out, err = proc.communicate(timeout=5)
+        proc.wait(timeout=5)
         assert proc.returncode == 3, (
-            f"expected exit code 3 (PAC port squatted), got {proc.returncode}; "
-            f"stderr was: {err.decode()!r}"
+            f"expected exit code 3 (PAC port squatted), got {proc.returncode}"
         )
-        assert b"bound by another process" in err
+        # Failure reason now lives in the workspace log file, not stderr.
+        log_path = ws / "logs" / "susops-services.log"
+        log_text = log_path.read_text() if log_path.exists() else ""
+        assert "bound by another process" in log_text, (
+            f"expected 'bound by another process' in log file; contents:\n{log_text}"
+        )
     finally:
         squat.close()
 
