@@ -1575,7 +1575,15 @@ class SusOpsManager:
             self._reconnect_monitor.stop()
 
         self._save()
-        self._emit_state(self._compute_state())
+        final_state = self._compute_state()
+        self._emit_state(final_state)
+        # SSE event so cross-process frontends recompute their icon. The
+        # per-connection emit at stop_tunnel() time fired BEFORE PAC was
+        # stopped, so any status() racing with it would see PAC still
+        # running and return STOPPED_PARTIALLY. This second emit fires
+        # after PAC has been torn down so the recompute settles on the
+        # final aggregate.
+        self._emit("state", {"aggregate": final_state.value})
         return StopResult(
             success=not errors,
             message="; ".join(errors) if errors else "Stopped",
