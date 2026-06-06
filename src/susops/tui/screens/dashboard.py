@@ -177,6 +177,7 @@ class DashboardScreen(Screen):
         self._conn_data: dict = {}
         self._rx_history: dict = {}
         self._tx_history: dict = {}
+        self._last_history_append: dict[str, float] = {}
         self._idle_ticks: int = 0  # ticks since last active connection
         self._sse_active: bool = True
         self._last_config = None
@@ -368,6 +369,15 @@ class DashboardScreen(Screen):
         # daemon's persisted history (pre-fetched by refresh_status) on
         # first encounter so reopening the TUI doesn't reset the chart to
         # flatlined zeros.
+        #
+        # Throttle appends to once per ~second per tag. SSE events fire many
+        # times during connection start (state, forward, share) and each
+        # triggers a refresh — appending on every refresh makes the chart
+        # scroll several samples per second and the user sees the bandwidth
+        # "speed up". The sampler itself only updates once per second, so
+        # appending faster than that just duplicates the same rate.
+        import time as _time
+        now = _time.monotonic()
         for cs in result.connection_statuses:
             tag = cs.tag
             rx, tx = bw.get(tag, (0.0, 0.0))
@@ -380,8 +390,14 @@ class DashboardScreen(Screen):
                     tx_seed[-len(persisted):] = [s[1] for s in persisted]
                 self._rx_history[tag] = deque(rx_seed, maxlen=60)
                 self._tx_history[tag] = deque(tx_seed, maxlen=60)
-            self._rx_history[tag].append(rx)
-            self._tx_history[tag].append(tx)
+                self._last_history_append[tag] = now
+                self._rx_history[tag].append(rx)
+                self._tx_history[tag].append(tx)
+                continue
+            if now - self._last_history_append.get(tag, 0.0) >= 0.9:
+                self._rx_history[tag].append(rx)
+                self._tx_history[tag].append(tx)
+                self._last_history_append[tag] = now
 
         # Remove history for tags that no longer exist
         current_tags = {cs.tag for cs in result.connection_statuses}
