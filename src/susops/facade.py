@@ -575,6 +575,11 @@ class SusOpsManager:
         # because some mutators delegate to other mutators (e.g. via
         # set_connection_enabled → _update_pac path).
         self._config_lock = threading.RLock()
+        # Separate lock around the PAC server check-then-start. Otherwise
+        # parallel start() calls all see is_running() == False, each tries
+        # to bind the same port, one wins and the rest log spurious EADDRINUSE
+        # / "PAC server is already running" errors.
+        self._pac_start_lock = threading.Lock()
         self._process_mgr = ProcessManager(workspace)
         self._pac_server = PacServer()
         self._status_server = StatusServer()
@@ -1230,28 +1235,27 @@ class SusOpsManager:
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
                 self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
 
-        if not self._pac_server.is_running():
-            cross_port = self._read_pac_port_file()
-            if cross_port and self._probe_port(cross_port):
-                self._log(f"PAC server already running (cross-process) on port {cross_port}")
-                # Regenerate PAC file so cross-process server picks up the new connection
-                self._update_pac()
+        with self._pac_start_lock:
+            if not self._pac_server.is_running():
+                cross_port = self._read_pac_port_file()
+                if cross_port and self._probe_port(cross_port):
+                    self._log(f"PAC server already running (cross-process) on port {cross_port}")
+                    self._update_pac()
+                else:
+                    if cross_port:
+                        self._remove_pac_port_file()
+                    try:
+                        self._reload_config()
+                        pac_port = self._ensure_pac_port()
+                        pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
+                        self._pac_server.start(pac_port, pac_path)
+                        self._write_pac_port_file(self._pac_server.get_port())
+                        self._log(f"PAC server started on port {pac_port}")
+                    except Exception as exc:
+                        self._error(f"PAC server failed: {exc}")
+                        errors.append(f"PAC server failed: {exc}")
             else:
-                if cross_port:
-                    self._remove_pac_port_file()
-                try:
-                    self._reload_config()
-                    pac_port = self._ensure_pac_port()
-                    pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
-                    self._pac_server.start(pac_port, pac_path)
-                    self._write_pac_port_file(self._pac_server.get_port())
-                    self._log(f"PAC server started on port {pac_port}")
-                except Exception as exc:
-                    self._error(f"PAC server failed: {exc}")
-                    errors.append(f"PAC server failed: {exc}")
-        else:
-            # PAC already running in-process — regenerate to include new connection's hosts
-            self._update_pac()
+                self._update_pac()
 
         # Start status server if not already running
         self.ensure_sse_status_server()
