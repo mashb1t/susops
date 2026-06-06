@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SusOps Services Daemon RPC
-  version: 3.0.0rc3.dev9
+  version: 3.0.0rc4.dev2
   description: "Internal HTTP API exposed by the `susops-services` daemon. Frontends (CLI, TUI, tray)
     call into it via the `SusOpsClient` proxy — there is no expectation that this API be consumed by anything
     else, but documenting it makes the contract explicit and lets you build alternative clients.\n\n**Bind

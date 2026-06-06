@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "susops"
-version = "3.0.0-rc3.dev9"
+version = "3.0.0-rc4.dev2"
 description = "SusOps — SSH SOCKS5 proxy manager with PAC server, Textual TUI, and system tray apps"
 readme = "README.md"
 license = { text = "MIT" }
