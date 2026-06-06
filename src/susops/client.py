@@ -60,16 +60,38 @@ def _read_port(workspace: Path) -> int | None:
         return None
 
 
+def _pid_is_susops_daemon(pid: int) -> bool:
+    """True only if PID belongs to a live process whose cmdline matches a
+    services_daemon invocation. Defends against PID reuse: SIGKILLing the
+    daemon under load can let an ssh fork (or any other short-lived child)
+    inherit the freed PID, and a bare `os.kill(pid, 0)` liveness probe
+    would then falsely report the daemon as up.
+    """
+    try:
+        import psutil
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return "susops.core.services_daemon" in cmdline or "susops-services" in cmdline
+
+
 def _is_daemon_alive(workspace: Path) -> bool:
     pid_file = _pid_path(workspace)
     if not pid_file.exists():
         return False
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)  # signal 0 = liveness probe
-        return True
     except (OSError, ValueError):
         return False
+    return _pid_is_susops_daemon(pid)
 
 
 def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:

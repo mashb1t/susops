@@ -86,17 +86,21 @@ def _preflight(workspace: Path, log: "logging.Logger") -> None:
         # Won the race uncontested.
         pass
     else:
-        # File exists. Is the holder alive?
+        # File exists. Is the holder alive AND actually our daemon?
+        # PID reuse (an ssh fork inheriting the freed PID after we kill -9
+        # the daemon) would otherwise wedge us in a refusal loop until the
+        # impostor exits. Reuse the same identity check the client does.
         pid_file = _pid_path(workspace)
         try:
             existing_pid = int(pid_file.read_text().strip())
-            os.kill(existing_pid, 0)  # liveness probe
         except (OSError, ValueError):
-            # Stale PID file. Remove + retry the atomic claim once.
+            existing_pid = None
+        from susops.client import _pid_is_susops_daemon
+        if existing_pid is None or not _pid_is_susops_daemon(existing_pid):
+            # Stale (or impostor) PID file. Remove + retry the atomic claim.
             pid_file.unlink(missing_ok=True)
             _port_path(workspace).unlink(missing_ok=True)
             if not _claim_pid_file(workspace):
-                # Some other daemon claimed it between our cleanup and retry.
                 log.error(
                     "another susops-services daemon raced us to start. "
                     "Try again — or run "
