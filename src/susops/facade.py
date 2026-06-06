@@ -1670,8 +1670,14 @@ class SusOpsManager:
                 self._bw_sampler.reset_totals(tag)
                 self._start_times.pop(tag, None)
                 self._reconnect_monitor.mark_stopped(tag)
-                # Regenerate PAC after stopping so this connection's hosts are removed
-                self._update_pac()
+                if not self._active_tags():
+                    write_pac_file(self.config, self.workspace, active_tags=set())
+                    self._stop_pac_server(
+                        errors=[], keep_ports=True, ephemeral=False,
+                        context="last enabled connection disabled",
+                    )
+                else:
+                    self._update_pac()
         # Always emit a state event so frontends recompute their aggregate
         # icon — the enabled-set drives _compute_state's "partial vs running"
         # decision even when the per-connection running status didn't change.

@@ -1152,6 +1152,57 @@ def test_compute_state_partial_when_an_enabled_one_is_down(tmp_path):
     assert mgr._compute_state(statuses=statuses, pac_running=True) is ProcessState.STOPPED_PARTIALLY
 
 
+def test_set_connection_enabled_stops_pac_when_last_running(tmp_path):
+    """Disabling the last enabled+running connection must also stop PAC.
+
+    Without this, the aggregate state sticks at STOPPED_PARTIALLY (PAC up,
+    no connections enabled) and the tray icon never settles on stopped.
+    """
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("solo", "u@h", socks_port=0)
+
+    with patch("susops.facade.is_tunnel_running", return_value=True), \
+            patch("susops.facade.is_socket_alive", return_value=True), \
+            patch("susops.facade.stop_tunnel"), \
+            patch("susops.facade.stop_all_udp_forwards_for_connection"), \
+            patch.object(mgr, "_active_tags", return_value=set()), \
+            patch.object(mgr, "_stop_pac_server") as mock_stop_pac, \
+            patch.object(mgr, "_update_pac") as mock_update_pac:
+        mgr.set_connection_enabled("solo", False)
+
+    mock_stop_pac.assert_called_once()
+    mock_update_pac.assert_not_called()
+
+
+def test_set_connection_enabled_keeps_pac_when_other_still_active(tmp_path):
+    """Disabling one of several running connections must NOT stop PAC if
+    another enabled connection is still active."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("a", "u@h", socks_port=0)
+    mgr.add_connection("b", "u@h", socks_port=0)
+
+    def fake_active_tags():
+        return {"b"}
+
+    with patch("susops.facade.is_tunnel_running", return_value=True), \
+            patch("susops.facade.is_socket_alive", return_value=True), \
+            patch("susops.facade.stop_tunnel"), \
+            patch("susops.facade.stop_all_udp_forwards_for_connection"), \
+            patch.object(mgr, "_active_tags", side_effect=fake_active_tags), \
+            patch.object(mgr, "_stop_pac_server") as mock_stop_pac, \
+            patch.object(mgr, "_update_pac") as mock_update_pac:
+        mgr.set_connection_enabled("a", False)
+
+    mock_stop_pac.assert_not_called()
+    mock_update_pac.assert_called_once()
+
+
 def test_is_idle_fresh_workspace(tmp_path):
     """A brand-new workspace with no tracked processes is idle."""
     from susops.facade import SusOpsManager
