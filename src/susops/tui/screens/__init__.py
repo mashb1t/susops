@@ -65,18 +65,27 @@ def proto_label(fw: _PortForward) -> str:
     return "TCP"
 
 
-def status_dot(running: bool, enabled: bool = True, partial: bool = False) -> str:
+def status_dot(
+    running: bool, enabled: bool = True, partial: bool = False,
+    pending: bool = False,
+) -> str:
     """Return Rich markup for the status indicator dot.
 
-    partial=True (TCP+UDP where one protocol is down) → yellow ●
+    Matches the SVG icons in src/susops/assets/icons/*/stopped_partially.svg
+    which use #f80 — Rich's `orange1` (#ff8700) is the closest standard.
+
+    pending=True (ssh master spawned, waiting for agent prompt) → orange ◐
+    partial=True (TCP+UDP where one protocol is down) → orange ●
     running=True → green ●
     enabled=True, not running → red ○
     enabled=False → ─ (disabled)
     """
     if not enabled:
         return "─"
+    if pending:
+        return "[orange1]◐[/orange1]"
     if partial:
-        return "[yellow]●[/yellow]"
+        return "[orange1]●[/orange1]"
     if running:
         return "[green]●[/green]"
     return "[red]○[/red]"

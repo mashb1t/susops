@@ -845,6 +845,13 @@ class SusOpsManager:
             if recovered:
                 name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
                 self._process_mgr._pid_file(name).write_text(str(recovered))
+        # PID alive but ControlMaster socket not yet created → ssh is still
+        # mid-handshake, almost always waiting on the agent prompt. Cheap
+        # file stat — no subprocess, doesn't block the RPC event loop.
+        pending = False
+        if running:
+            sock = socket_path(conn.tag, self.workspace)
+            pending = not sock.exists()
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{conn.tag}")
         return ConnectionStatus(
             tag=conn.tag,
@@ -852,6 +859,7 @@ class SusOpsManager:
             pid=pid,
             socks_port=conn.socks_proxy_port,
             enabled=conn.enabled,
+            pending=pending,
         )
 
     def _ensure_socks_port(self, conn: Connection) -> Connection:

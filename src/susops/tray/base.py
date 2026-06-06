@@ -265,9 +265,13 @@ class AbstractTrayApp(ABC):
                 lines.append("   (no connections configured)")
             else:
                 for cs in statuses:
+                    pending = getattr(cs, "pending", False)
                     if not cs.enabled:
                         dot = "─"
                         detail = "disabled"
+                    elif pending:
+                        dot = "◐"
+                        detail = "waiting for ssh agent..."
                     elif cs.running:
                         dot = "●"
                         bits = []

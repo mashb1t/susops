@@ -7,6 +7,7 @@ Anything outside the allowlist below is rejected too — deny-by-default.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -87,7 +88,15 @@ async def _handle_rpc(request: web.Request) -> web.Response:
         return web.Response(text=resp.to_json(), status=404, content_type="application/json")
 
     try:
-        result = method(*req.args, **req.kwargs)
+        # Method handlers are synchronous — many touch the filesystem or spawn
+        # `ssh -O check` subprocesses (up to 3s each). Running them directly
+        # in the aiohttp event loop blocks every other RPC behind the slow one
+        # and eventually leads to "Daemon RPC failed: timed out". Offload to
+        # the default thread executor so the loop stays responsive.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, lambda: method(*req.args, **req.kwargs)
+        )
         resp = InvocationResponse(ok=True, result=result)
         return web.Response(text=resp.to_json(), content_type="application/json")
     except Exception as exc:

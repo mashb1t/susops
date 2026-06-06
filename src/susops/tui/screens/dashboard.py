@@ -396,7 +396,7 @@ class DashboardScreen(Screen):
 
         label_texts: list[str] = []
         for cs in result.connection_statuses:
-            dot = status_dot(cs.running, cs.enabled)
+            dot = status_dot(cs.running, cs.enabled, pending=getattr(cs, "pending", False))
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
             label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>7}↓")

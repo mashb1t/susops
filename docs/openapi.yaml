@@ -1281,6 +1281,10 @@ components:
               default: true
               title: Enabled
               type: boolean
+            pending:
+              default: false
+              title: Pending
+              type: boolean
           required:
           - tag
           - running
@@ -1589,6 +1593,10 @@ components:
               default: true
               title: Enabled
               type: boolean
+            pending:
+              default: false
+              title: Pending
+              type: boolean
           required:
           - tag
           - running
@@ -1662,6 +1670,10 @@ components:
             enabled:
               default: true
               title: Enabled
+              type: boolean
+            pending:
+              default: false
+              title: Pending
               type: boolean
           required:
           - tag
