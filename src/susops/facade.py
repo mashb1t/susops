@@ -1647,19 +1647,24 @@ class SusOpsManager:
             # Re-enabling clears any leftover "stopped" marker so reconnect
             # monitors will watch this tag again.
             _clear_stopped_marker(self.workspace, tag)
-            return
-        # Disabling = intentional stop. Write the marker BEFORE killing the
-        # tunnel so a parallel process's monitor doesn't try to revive it.
-        _write_stopped_marker(self.workspace, tag)
-        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
-            stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
-            stop_all_udp_forwards_for_connection(tag, self._process_mgr)
-            self._bw_sampler.reset_totals(tag)
-            self._start_times.pop(tag, None)
-            self._reconnect_monitor.mark_stopped(tag)
-            self._emit("state", {"tag": tag, "running": False, "pid": None})
-            # Regenerate PAC after stopping so this connection's hosts are removed
-            self._update_pac()
+        else:
+            # Disabling = intentional stop. Write the marker BEFORE killing the
+            # tunnel so a parallel process's monitor doesn't try to revive it.
+            _write_stopped_marker(self.workspace, tag)
+            if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
+                stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+                stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+                self._bw_sampler.reset_totals(tag)
+                self._start_times.pop(tag, None)
+                self._reconnect_monitor.mark_stopped(tag)
+                # Regenerate PAC after stopping so this connection's hosts are removed
+                self._update_pac()
+        # Always emit a state event so frontends recompute their aggregate
+        # icon — the enabled-set drives _compute_state's "partial vs running"
+        # decision even when the per-connection running status didn't change.
+        running = is_tunnel_running(tag, self._process_mgr)
+        pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}") if running else None
+        self._emit("state", {"tag": tag, "running": running, "pid": pid})
 
     def _update_pac(self) -> None:
         """Write the PAC file and reload the in-process server if running."""
