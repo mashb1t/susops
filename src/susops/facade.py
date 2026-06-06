@@ -950,6 +950,11 @@ class SusOpsManager:
             # stopped (PAC is irrelevant in this case but we don't actively
             # demote RUNNING → STOPPED if it happens to be up).
             return ProcessState.STOPPED if not pac_running else ProcessState.STOPPED_PARTIALLY
+        # Any pending connection (waiting on agent prompt, or between
+        # reconnect retries) means we're not fully up, even if the ssh PID
+        # is alive. Show STOPPED_PARTIALLY so the tray icon flips to orange.
+        if any(getattr(s, "pending", False) for s in enabled_statuses):
+            return ProcessState.STOPPED_PARTIALLY
         running_count = sum(1 for s in enabled_statuses if s.running)
         total = len(enabled_statuses)
         if running_count == total and pac_running:
