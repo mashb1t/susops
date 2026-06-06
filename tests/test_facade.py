@@ -1203,6 +1203,105 @@ def test_set_connection_enabled_keeps_pac_when_other_still_active(tmp_path):
     mock_update_pac.assert_called_once()
 
 
+def test_add_connection_rejects_invalid_tags(tmp_path):
+    """Tag validation: reject empty, traversal, slash, overlong, leading punctuation."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    bad_tags = [
+        "", " ", "../etc/passwd", "/abs", "a\\b", "..", ".", "-leading",
+        "x" * 100, "tag with space", "tag\nwith\nnewline",
+    ]
+    for tag in bad_tags:
+        with pytest.raises(ValueError, match="Invalid tag|Tag must"):
+            mgr.add_connection(tag, "u@h")
+
+
+def test_add_connection_accepts_safe_tags(tmp_path):
+    """Tag validation: accept reasonable identifiers."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    for tag in ["work", "my-host", "host_42", "a.b.c", "X9"]:
+        mgr.add_connection(tag, "u@h")
+        mgr.remove_connection(tag)
+
+
+def test_stopped_marker_path_rejects_traversal(tmp_path):
+    """Defense in depth: marker path constructor refuses traversal-bearing tags."""
+    import pytest
+    from susops.facade import _stopped_marker_path
+    for bad in ["../etc/passwd", "/abs", "a\\b", "", ".", ".."]:
+        with pytest.raises(ValueError, match="Unsafe tag"):
+            _stopped_marker_path(tmp_path, bad)
+
+
+def test_add_forward_validates_ports(tmp_path):
+    """Port validation: src/dst must be 1-65535."""
+    import pytest
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    for bad in [-1, 0, 65536, 99999]:
+        with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
+            mgr.add_local_forward("work", PortForward(src_port=bad, dst_port=80))
+        with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
+            mgr.add_local_forward("work", PortForward(src_port=8080, dst_port=bad))
+
+
+def test_start_raises_on_unknown_tag(tmp_path):
+    """start(tag='nonexistent') must raise, not silently return success=False."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    with pytest.raises(ValueError, match="Connection 'nope' not found"):
+        mgr.start(tag="nope")
+
+
+def test_stop_raises_on_unknown_tag(tmp_path):
+    """stop(tag='nonexistent') must raise, not silently no-op."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    with pytest.raises(ValueError, match="Connection 'nope' not found"):
+        mgr.stop(tag="nope")
+
+
+def test_concurrent_add_forward_does_not_lose_updates(tmp_path):
+    """Parallel add_local_forward calls each persist their forward.
+
+    Regression for chaos2 phaseA: 5 parallel adds, only 1 persisted because
+    read-modify-write on self.config wasn't serialized. The new _config_lock
+    around _add_forward must make all N concurrent adds succeed.
+    """
+    import threading
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+
+    errors: list[BaseException] = []
+    def worker(i):
+        try:
+            mgr.add_local_forward("work", PortForward(
+                src_port=40000 + i, dst_port=80, tag=f"fw-{i}"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert not errors, f"concurrent adds raised: {errors!r}"
+
+    conn = mgr.config.connections[0]
+    tags = sorted(fw.tag for fw in conn.forwards.local if fw.tag and fw.tag.startswith("fw-"))
+    assert tags == [f"fw-{i}" for i in range(8)], f"lost updates: only {tags} persisted"
+
+
 def test_is_idle_fresh_workspace(tmp_path):
     """A brand-new workspace with no tracked processes is idle."""
     from susops.facade import SusOpsManager
