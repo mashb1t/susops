@@ -282,7 +282,12 @@ def find_master_pid(tag: str, workspace: Path) -> int | None:
 def is_socket_alive(tag: str, workspace: Path) -> bool:
     """Return True if the ControlMaster socket is responsive.
 
-    Uses `ssh -O check` to verify the master is healthy.
+    Uses `ssh -O check` to verify the master is healthy. The 1s timeout
+    is tight on purpose: a healthy local control socket replies in <100ms,
+    and anything longer means the master is stuck (e.g. waiting on agent),
+    in which case we should return False quickly so callers move on. The
+    previous 3s timeout could saturate the daemon's executor pool when
+    multiple callers stalled simultaneously.
     """
     sock = socket_path(tag, workspace)
     if not sock.exists():
@@ -291,7 +296,7 @@ def is_socket_alive(tag: str, workspace: Path) -> bool:
         result = subprocess.run(
             ["ssh", "-O", "check", "-o", f"ControlPath={sock}", "placeholder"],
             capture_output=True,
-            timeout=3,
+            timeout=1,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):

@@ -718,7 +718,12 @@ class SusOpsManager:
                     )
                     self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
                     return
-                if sock.exists() and is_socket_alive(conn.tag, self.workspace):
+                # start_master() unlinks any stale socket before spawning,
+                # so socket file existence by itself means ssh authenticated
+                # and entered multiplex mode. Skip the ssh -O check
+                # subprocess here — it was hammering the daemon's executor
+                # pool 5x/sec while in pending state.
+                if sock.exists():
                     try:
                         self._finalize_connection_after_auth(conn, pid)
                     except Exception as exc:
