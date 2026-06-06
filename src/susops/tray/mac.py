@@ -2906,6 +2906,11 @@ class SusOpsMacTray(AbstractTrayApp):
                     })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
+                        # Refresh state on every (re)connect — without this the
+                        # tray keeps its last cached state after a daemon
+                        # restart and only updates when the new daemon happens
+                        # to emit a state event.
+                        _on_main(self.do_poll)
                         buf = ""
                         for raw in resp:
                             line = raw.decode("utf-8", errors="replace")
