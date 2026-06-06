@@ -112,12 +112,14 @@ class AppConfig(BaseModel):
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
     tray_show_bandwidth: bool = False
+    notifications_enabled: bool = True
 
     @field_validator(
         "stop_on_quit",
         "ephemeral_ports",
         "restore_shares_on_start",
         "tray_show_bandwidth",
+        "notifications_enabled",
         mode="before",
     )
     @classmethod

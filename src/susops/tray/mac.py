@@ -2353,6 +2353,7 @@ class SusOpsMacTray(AbstractTrayApp):
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
             "show_bandwidth": ac.tray_show_bandwidth,
+            "notifications": ac.notifications_enabled,
             "logo_style": logo_styles.index(saved_logo),
             "rpc_port": str(rpc_port) if rpc_port else "",
             "sse_port": str(sse_port) if sse_port else "",
@@ -2372,6 +2373,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
                  "default": defaults["show_bandwidth"],
                  "on_change": self._preview_bandwidth_visibility},
+                {"key": "notifications", "label": "Desktop Notifications:", "kind": "switch",
+                 "default": defaults["notifications"]},
                 {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
                  "options": seg_options, "default": defaults["logo_style"],
                  "on_change": _preview},
@@ -2436,6 +2439,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 ephemeral_ports=result["ephemeral_ports"],
                 restore_shares_on_start=result["restore_shares"],
                 tray_show_bandwidth=result["show_bandwidth"],
+                notifications_enabled=result["notifications"],
                 logo_style=new_logo,
             )
             # No refresh_bandwidth_title() here: preview already left the

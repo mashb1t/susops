@@ -793,6 +793,10 @@ components:
               default: false
               title: Tray Show Bandwidth
               type: boolean
+            notifications_enabled:
+              default: true
+              title: Notifications Enabled
+              type: boolean
           title: AppConfig
           type: object
         Connection:
@@ -949,6 +953,7 @@ components:
             logo_style: COLORED_GLASSES
             restore_shares_on_start: true
             tray_show_bandwidth: false
+            notifications_enabled: true
       title: SusOpsConfig
       type: object
     InvokeListShares:

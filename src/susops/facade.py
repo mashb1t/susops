@@ -659,7 +659,13 @@ class SusOpsManager:
             print(full, file=sys.stderr)
 
     def _notify(self, title: str, body: str) -> None:
-        """Send a desktop notification with the SusOps icon. Best-effort."""
+        """Send a desktop notification with the SusOps icon. Best-effort.
+
+        Suppressed entirely when susops_app.notifications_enabled is False
+        (tray Settings → Notifications toggle).
+        """
+        if not self.config.susops_app.notifications_enabled:
+            return
         import platform
         from pathlib import Path
         icon = Path(__file__).parent / "assets" / "icon.png"
@@ -2428,11 +2434,12 @@ class SusOpsManager:
         return self.config.susops_app
 
     def update_app_config(self, **kwargs) -> None:
-        self._reload_config()
-        self.config = self.config.model_copy(
-            update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
-        )
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            self.config = self.config.model_copy(
+                update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
+            )
+            self._save()
 
     def update_config(self, **kwargs) -> None:
         """Update top-level SusOpsConfig fields (e.g. pac_server_port).
@@ -2444,6 +2451,7 @@ class SusOpsManager:
         — needed by RPC clients that can't touch private methods or rebind
         the config attribute directly.
         """
-        self._reload_config()
-        self.config = self.config.model_copy(update=kwargs)
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            self.config = self.config.model_copy(update=kwargs)
+            self._save()

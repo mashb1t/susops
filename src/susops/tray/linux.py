@@ -664,6 +664,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(sw_bw, 1, row, 1, 1)
         row += 1
 
+        # Desktop Notifications
+        lbl = Gtk.Label(label="Desktop Notifications:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        sw_notif = Gtk.Switch(halign=Gtk.Align.START)
+        sw_notif.set_active(ac.notifications_enabled)
+        grid.attach(sw_notif, 1, row, 1, 1)
+        row += 1
+
         # Logo Style
         lbl = Gtk.Label(label="Logo Style:", xalign=1.0)
         lbl.set_width_chars(24)
@@ -753,6 +762,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 ephemeral_ports=sw_eph.get_active(),
                 restore_shares_on_start=sw_restore.get_active(),
                 tray_show_bandwidth=sw_bw.get_active(),
+                notifications_enabled=sw_notif.get_active(),
                 logo_style=new_logo,
             )
             self.refresh_bandwidth_title()
