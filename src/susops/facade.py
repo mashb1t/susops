@@ -845,13 +845,24 @@ class SusOpsManager:
             if recovered:
                 name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
                 self._process_mgr._pid_file(name).write_text(str(recovered))
-        # PID alive but ControlMaster socket not yet created → ssh is still
-        # mid-handshake, almost always waiting on the agent prompt. Cheap
-        # file stat — no subprocess, doesn't block the RPC event loop.
+        # Pending covers two scenarios:
+        #   1. ssh master alive but socket not yet up → waiting on agent prompt
+        #   2. ssh master not alive but the reconnect monitor still intends
+        #      this tag → previous attempt failed (bad key, host down, ...)
+        #      and we're between retry ticks. Without this the UI flips to
+        #      "stopped" between retries even though the monitor is actively
+        #      reconnecting every 5s.
         pending = False
         if running:
             sock = socket_path(conn.tag, self.workspace)
             pending = not sock.exists()
+        else:
+            try:
+                with self._reconnect_monitor._lock:
+                    if conn.tag in self._reconnect_monitor._intended:
+                        pending = True
+            except Exception:
+                pass
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{conn.tag}")
         return ConnectionStatus(
             tag=conn.tag,
