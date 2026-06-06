@@ -96,8 +96,9 @@ def _fmt_bw_line(
         tag_width: int = 25,
         show_dot: bool = True,
         enabled: bool = True,
+        pending: bool = False,
 ) -> str:
-    dot = status_dot(running, enabled)
+    dot = status_dot(running, enabled, pending=pending)
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
@@ -516,7 +517,8 @@ class DashboardScreen(Screen):
         # from the "running / total" count so the total reflects what the user
         # actually expects to be up.
         enabled_data = {t: d for t, d in self._conn_data.items() if d["cs"].enabled}
-        running = sum(1 for d in enabled_data.values() if d["cs"].running)
+        running = sum(1 for d in enabled_data.values() if d["cs"].running and not getattr(d["cs"], "pending", False))
+        pending = sum(1 for d in enabled_data.values() if getattr(d["cs"], "pending", False))
         total = len(enabled_data)
         if not self._conn_data:
             return "[dim]No connections configured.[/dim]"
@@ -533,7 +535,9 @@ class DashboardScreen(Screen):
         total_fwds = f"{total_fwds_l}L {total_fwds_r}R"
 
         lines = [
-            f"[bold]All Connections[/bold]  {running} running / {total} total",
+            f"[bold]All Connections[/bold]  {running} running"
+            + (f" / [#ff8800]{pending} pending[/#ff8800]" if pending else "")
+            + f" / {total} total",
             "",
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
@@ -548,6 +552,7 @@ class DashboardScreen(Screen):
             lines.append(_fmt_bw_line(
                 tag, data["cs"].running, *data["bw"], *data["bw_total"],
                 enabled=data["cs"].enabled,
+                pending=getattr(data["cs"], "pending", False),
             ))
         return "\n".join(lines)
 
@@ -627,10 +632,13 @@ class DashboardScreen(Screen):
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
-        if cs.running:
-            status_str = "[green]● running[/green]"
-        elif not cs.enabled:
+        pending = getattr(cs, "pending", False)
+        if not cs.enabled:
             status_str = "[dim]─ disabled[/dim]"
+        elif pending:
+            status_str = "[#ff8800]◐ pending[/#ff8800]"
+        elif cs.running:
+            status_str = "[green]● running[/green]"
         else:
             status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"
