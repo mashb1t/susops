@@ -153,9 +153,28 @@ def main() -> int:
     args = parser.parse_args()
     workspace = Path(args.workspace)
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [services] %(message)s")
+    # Route logging + raw stderr to a workspace-local file. With stderr
+    # piped from the spawner (client.py used stderr=PIPE) the kernel's
+    # 64 KB pipe buffer would fill within minutes of daemon logging,
+    # blocking every subsequent log call — including ones running on
+    # executor threads serving RPC requests. Result: freeze.
+    log_path = workspace / "logs" / "susops-services.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [services] %(message)s",
+        handlers=[logging.FileHandler(log_path, mode="a", encoding="utf-8")],
+        force=True,
+    )
     log = logging.getLogger("susops.services")
+    # Anything that bypasses logging (raw `print`, tracebacks) also goes
+    # to the log file rather than the spawner's pipe.
+    try:
+        _stderr_redirect = open(log_path, "a", buffering=1, encoding="utf-8")
+        sys.stderr = _stderr_redirect
+        sys.stdout = _stderr_redirect
+    except Exception:
+        pass
 
     # Install signal handlers BEFORE preflight: SIGTERM arriving in the
     # window between claiming the PID file and entering the try block

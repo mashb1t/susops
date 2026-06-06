@@ -93,12 +93,16 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
                 "` and start again."
             )
 
+    # DEVNULL (not PIPE) for stderr — the daemon writes its log to
+    # ~/.susops/logs/susops-services.log directly. Capturing as a pipe
+    # would back up once the daemon's log volume exceeded the kernel
+    # buffer (~64 KB on macOS) and freeze every subsequent log call.
     proc = subprocess.Popen(
         [sys.executable, "-m", "susops.core.services_daemon",
          "--workspace", str(workspace)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
@@ -109,17 +113,23 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
             if port:
                 return port
         # If the daemon exited (e.g. preflight rejected it), don't keep
-        # polling — surface the reason and bail out immediately.
+        # polling — surface the reason and bail out immediately. The
+        # daemon's log file is the new source of truth for failure
+        # reasons (stderr is no longer piped — see Popen above).
         rc = proc.poll()
         if rc is not None:
+            log_path = workspace / "logs" / "susops-services.log"
+            tail = ""
             try:
-                _, err = proc.communicate(timeout=0.5)
-                stderr = err.decode(errors="replace").strip() if err else ""
+                if log_path.exists():
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()[-15:]
+                        tail = "".join(lines).strip()
             except Exception:
-                stderr = ""
+                pass
             msg = (
                     f"Daemon exited during startup (rc={rc})"
-                    + (f":\n{stderr}" if stderr else "")
+                    + (f":\n{tail}" if tail else "")
             )
             raise DaemonUnavailableError(msg)
         time.sleep(0.1)
