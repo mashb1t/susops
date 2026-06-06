@@ -291,7 +291,7 @@ susops
 
 ### Screens
 
-**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot, SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
+**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `◐` orange pending, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
 - **Stats** — CPU%, memory, active connections, PID for the selected connection
 - **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
@@ -412,8 +412,10 @@ susops reset [--force]    # Kill all processes, wipe ~/.susops workspace
 |------|---------|
 | `0` | Success / all running |
 | `1` | Error |
-| `2` | Partial (some services stopped) |
+| `2` | Partial (some services stopped, or any connection pending) |
 | `3` | All stopped |
+
+A connection is **pending** when its SSH master is alive but the ControlMaster socket isn't up yet — typically while ssh-agent is waiting on a key unlock, or between reconnect attempts. `start` returns as soon as the master spawns; auth then completes asynchronously up to 60 s later. Slow agent prompts (Vaultwarden, 1Password, hardware keys) no longer freeze the UI.
 
 ---
 
@@ -437,7 +439,7 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running/partial/stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. Both tray implementations support the same feature set via native dialogs:
+The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected. Both tray implementations support the same feature set via native dialogs:
 
 - **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
 - **Start / Stop / Restart All** — bulk lifecycle operations across all connections
@@ -528,7 +530,11 @@ Both can be `true` simultaneously — susops will start an SSH slave for TCP and
 
 ### Port assignment
 
-Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config to pin it.
+Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config to pin it. Ports outside `1–65535` are rejected on `add`.
+
+### Tag format
+
+Connection tags must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (no slashes, no `..`, no leading punctuation). Tags appear in PID-file names, socket paths, log lines, and PAC keys, so the format is intentionally strict.
 
 ### Workspace
 
@@ -836,6 +842,12 @@ susops
 # Run the CLI
 susops ps
 susops ls
+
+# Build local pypi + brew artifacts (mirrors CI, no upload)
+scripts/build-local.sh pypi      # wheel + sdist
+scripts/build-local.sh brew      # SusOps.app + .dmg (macOS only)
+scripts/build-local.sh install-pypi   # install wheel into a throwaway venv
+scripts/build-local.sh install-brew   # copy SusOps.app to /Applications
 ```
 
 ### Project layout
@@ -913,7 +925,7 @@ brew tap mashb1t/susops
 brew install susops
 ```
 
-The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_with_resources` to create an isolated Python environment with all dependencies. The cask at `packaging/homebrew/Casks/susops.rb` is for a future `.dmg` distribution of `SusOps.app`.
+The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_with_resources` to create an isolated Python environment for the CLI + TUI. The cask at `packaging/homebrew/Casks/susops.rb` installs `SusOps.app` (PyInstaller bundle) for the macOS tray — `brew install --cask susops`.
 
 **Note:** Resource sha256 checksums in the formula must be updated for each release. Generate them with:
 
