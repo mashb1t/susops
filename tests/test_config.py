@@ -178,6 +178,43 @@ def test_load_missing_config_returns_defaults(tmp_path):
     assert cfg.pac_server_port == 0
 
 
+def test_save_config_concurrent_writes_do_not_raise(tmp_path):
+    """Concurrent saves must not raise FileNotFoundError on the rename.
+
+    Regression for: TUI rapid start/stop dispatches each RPC handler on its own
+    executor thread; with a shared tmp filename, writer A would replace tmp into
+    config.yaml while writer B still expected tmp to exist, raising
+    FileNotFoundError on tmp.replace(path).
+    """
+    import threading
+
+    cfg_a = SusOpsConfig(connections=[
+        Connection(tag="a", ssh_host="u@h", socks_proxy_port=1080)
+    ])
+    cfg_b = SusOpsConfig(connections=[
+        Connection(tag="b", ssh_host="u@h", socks_proxy_port=1081)
+    ])
+    save_config(cfg_a, tmp_path)
+
+    errors: list[BaseException] = []
+
+    def writer(cfg, n):
+        try:
+            for _ in range(n):
+                save_config(cfg, tmp_path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=writer, args=(cfg_a, 30))
+    t2 = threading.Thread(target=writer, args=(cfg_b, 30))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    assert not errors, f"concurrent saves raised: {errors!r}"
+    loaded = load_config(tmp_path)
+    assert loaded.connections[0].tag in {"a", "b"}
+
+
 def test_port_forward_enabled_defaults_true():
     fw = PortForward(src_port=80, dst_port=80)
     assert fw.enabled is True
