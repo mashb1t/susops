@@ -291,7 +291,7 @@ susops
 
 ### Screens
 
-**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `–` disabled, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
+**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `◐` orange pending, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
 - **Stats** — CPU%, memory, active connections, PID for the selected connection
 - **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
