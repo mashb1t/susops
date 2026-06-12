@@ -333,6 +333,76 @@ def _on_main(callable_) -> None:
             pass
 
 
+def _run_on_main(fn, timeout: float = 5.0) -> dict:
+    """Run fn on the main thread, wait for the result. For debug-server
+    handlers, which run on socket threads but must touch AppKit."""
+    import threading as _threading
+    box: dict = {}
+    done = _threading.Event()
+
+    def _wrap():
+        try:
+            box["value"] = fn()
+        except Exception as exc:
+            box["value"] = {"error": str(exc)}
+        finally:
+            done.set()
+
+    _on_main(_wrap)
+    if not done.wait(timeout):
+        return {"error": "main-thread timeout"}
+    value = box.get("value")
+    return value if isinstance(value, dict) else {"value": value}
+
+
+def _menu_tree(menu) -> list:
+    """Walk a rumps Menu/MenuItem mapping into a JSON-able tree."""
+    tree: list = []
+    try:
+        items = list(menu.values())
+    except Exception:
+        return tree
+    for item in items:
+        title = getattr(item, "title", None)
+        if item is None or title is None:
+            tree.append({"separator": True})
+            continue
+        node: dict = {"title": str(title)}
+        ns = getattr(item, "_menuitem", None)
+        if ns is not None:
+            try:
+                node["enabled"] = bool(ns.isEnabled())
+                key = str(ns.keyEquivalent() or "")
+                if key:
+                    node["key"] = key
+            except Exception:
+                pass
+        try:
+            children = _menu_tree(item)
+        except Exception:
+            children = []
+        if children:
+            node["children"] = children
+        tree.append(node)
+    return tree
+
+
+def _screenshot_window(window, path: str) -> dict:
+    """Render `window`'s content view to a PNG, in-process (no TCC needed)."""
+    from AppKit import NSBitmapImageFileTypePNG  # type: ignore[import]
+    view = window.contentView()
+    bounds = view.bounds()
+    rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+    if rep is None:
+        return {"error": "could not create bitmap rep"}
+    view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+    data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, None)
+    if data is None or not data.writeToFile_atomically_(path, True):
+        return {"error": f"could not write {path}"}
+    return {"ok": True, "path": path,
+            "width": int(rep.pixelsWide()), "height": int(rep.pixelsHigh())}
+
+
 # ---------------------------------------------------------------------------
 # Dialog helpers
 # ---------------------------------------------------------------------------
@@ -1902,6 +1972,15 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_launch_at_login_async()
         self._build_menu()
         self._register_appearance_observer()
+        self._config_window = None  # set in Phase 1
+        self._debug_server = None
+        debug_port = os.environ.get("SUSOPS_TRAY_DEBUG_PORT")
+        if debug_port:
+            from susops.tray.debug_server import TrayDebugServer
+            self._debug_server = TrayDebugServer(
+                self._debug_handlers(), port=int(debug_port),
+            )
+            self._debug_server.start()
 
     def _refresh_launch_at_login_async(self) -> None:
         def _probe():
@@ -1933,6 +2012,52 @@ class SusOpsMacTray(AbstractTrayApp):
             )
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ #
+    # Debug server (opt-in, SUSOPS_TRAY_DEBUG_PORT)
+    # ------------------------------------------------------------------ #
+
+    def _debug_handlers(self) -> dict:
+        """Debug-server command table. Every UI-touching handler marshals via
+        _run_on_main. Extended in Phase 1 with open-config/select/dump-window."""
+
+        def _screenshot(args):
+            if not args:
+                return {"error": "usage: screenshot <path>"}
+            path = args[0]
+
+            def _shot():
+                win = self._debug_target_window()
+                if win is None:
+                    return {"error": "no window open"}
+                return _screenshot_window(win, path)
+
+            return _run_on_main(_shot)
+
+        def _quit(args):
+            _on_main(lambda: self._rumps.quit_application())
+            return {"ok": True}
+
+        return {
+            "ping": lambda args: {"ok": True},
+            "dump-menu": lambda args: _run_on_main(
+                lambda: {"menu": _menu_tree(self._app.menu)}),
+            "open-about": lambda args: _run_on_main(
+                lambda: (_show_about_panel(), {"ok": True})[1]),
+            "screenshot": _screenshot,
+            "quit": _quit,
+        }
+
+    def _debug_target_window(self):
+        """Window the screenshot command captures: config window when open
+        (Phase 1), else any open About/live panel (Phase 0 verification)."""
+        cw = getattr(self, "_config_window", None)
+        if cw is not None and cw.is_open():
+            return cw.window
+        for store in (_ABOUT_WINDOWS, _LIVE_WINDOWS):
+            for entry in store.values():
+                return entry["panel"]
+        return None
 
     # ------------------------------------------------------------------ #
     # AbstractTrayApp implementation
