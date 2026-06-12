@@ -10,9 +10,6 @@ NSObject subclasses (PyObjC re-registration bug - see mac.py).
 """
 from __future__ import annotations
 
-import threading
-from typing import Callable
-
 from susops.tray.config_window_model import (
     DetailSpec,
     SidebarRow,
@@ -138,6 +135,7 @@ class ConfigWindow:
         self.current_tag: str | None = None
         self._policy_scope = None
         self._handlers: list = []
+        self._permanent_handler_count = 0
         self._cfg = None
         self._statuses: list = []
         self._shares: list = []
@@ -169,6 +167,8 @@ class ConfigWindow:
         self._on_closed()
 
     def refresh(self) -> None:
+        if self.window is None:
+            return
         mgr = self.tray.manager
         self._cfg = mgr.list_config()
         try:
@@ -238,16 +238,22 @@ class ConfigWindow:
         win.setReleasedWhenClosed_(False)
         win.setHidesOnDeactivate_(False)
         win.setLevel_(NSFloatingWindowLevel)
-        # Pin to a fixed (Aqua) appearance. The detail panel is a transparent
-        # NSView over the window's light content background; if the window
-        # inherits Dark Mode its controls draw light text → invisible on the
-        # light capture. Pinning keeps text legible and screenshots faithful.
+        # The window respects the system appearance (light/dark). Detail-panel
+        # text fields set an explicit NSColor.labelColor() so they resolve to a
+        # legible foreground in either mode (see _render_detail / _placeholder).
+        content = win.contentView()
+        # The detail panel is a plain (transparent) NSView; without an opaque
+        # backing it captures as white in screenshots and clashes with the
+        # dynamic labelColor() text in Dark Mode (light text on white). Make the
+        # content view layer-backed with the dynamic windowBackgroundColor so the
+        # backing tracks the effective appearance and text stays legible.
         try:
-            from AppKit import NSAppearance, NSAppearanceNameAqua  # type: ignore[import]
-            win.setAppearance_(NSAppearance.appearanceNamed_(NSAppearanceNameAqua))
+            from Cocoa import NSColor  # type: ignore[import]
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(
+                NSColor.windowBackgroundColor().CGColor())
         except Exception:
             pass
-        content = win.contentView()
 
         seg = NSSegmentedControl.alloc().initWithFrame_(
             NSMakeRect(12, WIN_H - TAB_H - 10, WIN_W - 24, TAB_H))
@@ -287,6 +293,7 @@ class ConfigWindow:
         content.addSubview_(scroll)
         self._sidebar_tv = tv
 
+        # Pull-down items + handler wired in Task 8 (per-group add actions).
         add_btn = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(12, 12, SIDEBAR_W, ADD_BTN_H), True)
         add_btn.addItemWithTitle_("Add…")
@@ -303,6 +310,10 @@ class ConfigWindow:
         self._handlers.append(delegate)
         win.setDelegate_(delegate)
         self.window = win
+        # Handlers added so far (seg, sidebar DS, window delegate) live for the
+        # window's lifetime. Per-render handlers are appended after this and
+        # trimmed back to this count in _clear_detail (see I1 review note).
+        self._permanent_handler_count = len(self._handlers)
 
     def _on_closed(self) -> None:
         if self._policy_scope is not None:
@@ -431,9 +442,12 @@ class ConfigWindow:
     def _clear_detail(self) -> None:
         for v in list(self._detail.subviews()):
             v.removeFromSuperview()
+        # Drop per-render button/toggle handlers so _handlers doesn't grow
+        # unbounded across refresh() calls (one per poll).
+        del self._handlers[self._permanent_handler_count:]
 
     def _render_placeholder(self, text: str) -> None:
-        from Cocoa import NSMakeRect, NSTextField  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
         self._clear_detail()
         self._current_detail_title = None
         h = self._detail.frame().size.height
@@ -442,6 +456,7 @@ class ConfigWindow:
         lbl.setBezeled_(False)
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
+        lbl.setTextColor_(NSColor.labelColor())
         self._detail.addSubview_(lbl)
 
     def _render_detail(self, spec: DetailSpec, identity: tuple) -> None:
@@ -451,7 +466,12 @@ class ConfigWindow:
             NSOnState,
             NSSwitchButton,
         )
-        from Cocoa import NSButton, NSMakeRect, NSTextField  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSButton,
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+        )
 
         self._clear_detail()
         self._current_detail_title = spec.title
@@ -465,6 +485,7 @@ class ConfigWindow:
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
+        title.setTextColor_(NSColor.labelColor())
         self._detail.addSubview_(title)
         y -= 40
 
@@ -476,12 +497,14 @@ class ConfigWindow:
             lab.setBezeled_(False)
             lab.setDrawsBackground_(False)
             lab.setEditable_(False)
+            lab.setTextColor_(NSColor.labelColor())
             val = NSTextField.alloc().initWithFrame_(NSMakeRect(148, y, w - 160, 20))
             val.setStringValue_(value)
             val.setBezeled_(False)
             val.setDrawsBackground_(False)
             val.setEditable_(False)
             val.setSelectable_(True)
+            val.setTextColor_(NSColor.labelColor())
             self._detail.addSubview_(lab)
             self._detail.addSubview_(val)
             y -= 26
@@ -497,6 +520,7 @@ class ConfigWindow:
             lab.setBezeled_(False)
             lab.setDrawsBackground_(False)
             lab.setEditable_(False)
+            lab.setTextColor_(NSColor.labelColor())
             self._detail.addSubview_(lab)
             sw = NSButton.alloc().initWithFrame_(NSMakeRect(148, y, 60, 20))
             sw.setButtonType_(NSSwitchButton)
