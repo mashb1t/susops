@@ -401,14 +401,19 @@ class AbstractTrayApp(ABC):
                 cfg = self.manager.list_config()
                 conn = next((c for c in cfg.connections if c.tag == tag), None)
                 if conn is None:
-                    return f"Connection '{tag}' not found."
+                    return f"Connection '{tag}' not found.", False
                 new_state = not conn.enabled
                 self.manager.set_connection_enabled(tag, new_state)
-                return f"Connection '{tag}' {'enabled' if new_state else 'disabled'}."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Connection", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Connection", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_start_connection(self, tag: str) -> None:
         def _run():
@@ -453,21 +458,31 @@ class AbstractTrayApp(ABC):
                 all_disabled = [h for c in cfg.connections for h in c.pac_hosts_disabled]
                 currently_disabled = host in all_disabled
                 self.manager.set_pac_host_enabled(host, currently_disabled)  # flip
-                return f"Domain '{host}' {'enabled' if currently_disabled else 'disabled'}."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Domain", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Domain", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
         def _run():
             try:
                 self.manager.toggle_forward_enabled(conn_tag, src_port, direction)
-                return f"Forward :{src_port} toggled."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Forward", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Forward", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_test_connection(self, conn_tag: str) -> None:
         def _run():

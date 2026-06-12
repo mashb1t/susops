@@ -42,12 +42,20 @@ def test_screenshot_of_about_panel(tray_proc, tmp_path):
 
 
 def test_config_window_opens_and_dumps(tray_proc):
+    import time
     from susops.client import SusOpsClient
     c = SusOpsClient(workspace=tray_proc.workspace)
     c.add_connection("work", "user@bastion")
     c.add_pac_host("blabla.de", conn_tag="work")
     assert tray_proc.send("open-config").get("ok")
-    dump = tray_proc.send("dump-window")
+    # Initial data loads asynchronously; allow up to 5 s for the first poll.
+    deadline = time.monotonic() + 5.0
+    dump = {}
+    while time.monotonic() < deadline:
+        dump = tray_proc.send("dump-window")
+        if dump.get("open") and any("work" in t for t in dump.get("tabs", [])):
+            break
+        time.sleep(0.5)
     assert dump["open"] is True
     assert any("work" in t for t in dump["tabs"])
     labels = [r["label"] for r in dump["sidebar"]]
@@ -55,3 +63,16 @@ def test_config_window_opens_and_dumps(tray_proc):
     assert any("blabla.de" in l for l in labels)
     sel = tray_proc.send("select work domains 0")
     assert sel.get("ok"), sel
+
+
+def test_window_reflects_external_changes(tray_proc):
+    """The poll-driven refresh must pick up daemon-side changes."""
+    import time
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config").get("ok")
+    c.add_pac_host("added-later.de", conn_tag="work")
+    time.sleep(4)  # > one poll interval
+    labels = [r["label"] for r in tray_proc.send("dump-window")["sidebar"]]
+    assert any("added-later.de" in l for l in labels)

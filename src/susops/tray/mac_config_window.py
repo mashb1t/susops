@@ -140,6 +140,7 @@ class ConfigWindow:
         self._statuses: list = []
         self._shares: list = []
         self._current_detail_title = None
+        self._suppress_selection_cb = False  # True while _reload_sidebar is rebuilding rows
 
     def is_open(self) -> bool:
         return self.window is not None and bool(self.window.isVisible())
@@ -147,7 +148,6 @@ class ConfigWindow:
     def open(self, tab: str | None = None) -> None:
         if self.window is None:
             self._build()
-        self.refresh()
         if tab:
             self._select_tab_by_tag(tab)
         from susops.tray.mac import _RegularPolicyScope
@@ -160,6 +160,9 @@ class ConfigWindow:
             self.window.orderFrontRegardless()
         except Exception:
             pass
+        # Trigger async refresh so the main run loop is never blocked
+        # while opening the window.
+        self.tray._refresh_config_window()
 
     def close(self) -> None:
         if self.window is not None:
@@ -167,21 +170,32 @@ class ConfigWindow:
         self._on_closed()
 
     def refresh(self) -> None:
+        """Fetch config + status from daemon, then repaint. Must be called on
+        the main thread (blocks briefly for RPC)."""
         if self.window is None:
             return
         mgr = self.tray.manager
-        self._cfg = mgr.list_config()
+        cfg = mgr.list_config()
         try:
-            self._statuses = list(mgr.status().connection_statuses)
+            statuses = list(mgr.status().connection_statuses)
         except Exception:
-            self._statuses = []
+            statuses = []
         try:
-            self._shares = list(mgr.list_shares())
+            shares = list(mgr.list_shares())
         except Exception:
-            self._shares = []
+            shares = []
+        self._apply_data(cfg, statuses, shares)
+
+    def _apply_data(self, cfg, statuses: list, shares: list) -> None:
+        """Apply freshly fetched data and repaint. Must be called on the main thread."""
+        if self.window is None:
+            return
+        self._cfg = cfg
+        self._statuses = statuses
+        self._shares = shares
         self._reload_tabs()
         self._reload_sidebar(preserve=True)
-        self._render_current_detail()
+        self._schedule_render()
 
     def dump(self) -> dict:
         return {
@@ -353,13 +367,17 @@ class ConfigWindow:
         if spec.kind == "connection":
             self.current_tag = spec.tag
             self._reload_sidebar(preserve=False)
-            self._render_current_detail()
+            self._schedule_render()
         elif spec.kind == "add":
             self._restore_segment_selection()
             self.tray.run_add_connection_from_window()
         elif spec.kind == "gear":
             self._restore_segment_selection()
-            self._render_placeholder("App settings move here in Task 9.")
+            from Foundation import NSTimer  # type: ignore[import]
+            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.0, False,
+                lambda _t: self._render_placeholder("App settings move here in Task 9.")
+            )
 
     def _restore_segment_selection(self) -> None:
         conn_tags = [t.tag for t in self.tabs if t.kind == "connection"]
@@ -381,16 +399,22 @@ class ConfigWindow:
             conn_shares = [s for s in self._shares
                            if getattr(s, "conn_tag", None) == conn.tag]
             self.sidebar_rows = build_sidebar_rows(conn, conn_shares)
-        self._sidebar_tv.reloadData()
-        target = None
-        if prev is not None:
-            target = next((i for i, r in enumerate(self.sidebar_rows)
-                           if r.identity == prev), None)
-        if target is None:
-            target = next((i for i, r in enumerate(self.sidebar_rows)
-                           if r.kind == "connection"), None)
-        if target is not None:
-            self._select_sidebar_row(target)
+        # Suppress selection callbacks during rebuild so _on_sidebar_selection
+        # doesn't call _render_current_detail in the middle of a table reload.
+        self._suppress_selection_cb = True
+        try:
+            self._sidebar_tv.reloadData()
+            target = None
+            if prev is not None:
+                target = next((i for i, r in enumerate(self.sidebar_rows)
+                               if r.identity == prev), None)
+            if target is None:
+                target = next((i for i, r in enumerate(self.sidebar_rows)
+                               if r.kind == "connection"), None)
+            if target is not None:
+                self._select_sidebar_row(target)
+        finally:
+            self._suppress_selection_cb = False
 
     def _select_sidebar_row(self, row: int) -> None:
         from Foundation import NSIndexSet  # type: ignore[import]
@@ -406,7 +430,22 @@ class ConfigWindow:
         return None
 
     def _on_sidebar_selection(self) -> None:
-        self._render_current_detail()
+        if not self._suppress_selection_cb:
+            self._schedule_render()
+
+    def _schedule_render(self) -> None:
+        """Defer _render_current_detail to the next run-loop iteration.
+
+        Calling _render_current_detail directly from within a
+        performSelectorOnMainThread dispatch (e.g. _run_on_main, or the
+        rumps timer callback) kills the rumps NSTimer. Scheduling through a
+        0-second one-shot NSTimer puts the work in a fresh run-loop pass and
+        avoids the interference.
+        """
+        from Foundation import NSTimer  # type: ignore[import]
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.0, False, lambda _t: self._render_current_detail()
+        )
 
     def _render_current_detail(self) -> None:
         identity = self._selected_identity()
@@ -427,7 +466,9 @@ class ConfigWindow:
             return build_connection_detail(conn, st)
         if kind == "domain":
             host = identity[1]
-            return build_domain_detail(conn, host) if host in conn.pac_hosts else None
+            disabled = set(getattr(conn, "pac_hosts_disabled", []) or [])
+            all_hosts = set(conn.pac_hosts) | disabled
+            return build_domain_detail(conn, host) if host in all_hosts else None
         if kind == "forward":
             _, direction, src_port = identity
             fws = (conn.forwards.local if direction == "local"

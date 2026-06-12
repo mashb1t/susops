@@ -78,7 +78,10 @@ def build_sidebar_rows(conn, shares) -> list[SidebarRow]:
     `shares` must already be filtered to this connection's tag."""
     rows: list[SidebarRow] = [SidebarRow("header", "DOMAINS", ("header", "domains"))]
     disabled = set(getattr(conn, "pac_hosts_disabled", []) or [])
-    for host in conn.pac_hosts:
+    # Show all hosts: enabled (pac_hosts) and disabled (pac_hosts_disabled).
+    # Ordering: enabled hosts first, then disabled, each in their original order.
+    all_hosts = list(conn.pac_hosts) + [h for h in disabled if h not in conn.pac_hosts]
+    for host in all_hosts:
         dot = DOT_OFF if host in disabled else DOT_ON
         rows.append(SidebarRow("domain", f"{dot} {host}", ("domain", host)))
 

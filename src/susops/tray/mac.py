@@ -2055,6 +2055,10 @@ class SusOpsMacTray(AbstractTrayApp):
                     int(args[2]) if len(args) > 2 else 0)),
             "dump-window": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().dump()),
+            "action": lambda args: _run_on_main(
+                lambda: (self.dispatch_window_action(
+                    args[0], tuple(self._config_window._selected_identity() or ())),
+                    {"ok": True})[1]) if args else {"error": "usage: action <action_id>"},
             "screenshot": _screenshot,
             "quit": _quit,
         }
@@ -2136,10 +2140,44 @@ class SusOpsMacTray(AbstractTrayApp):
                         self.do_remove_remote_forward(src_port)
         self._refresh_config_window()
 
+    _cw_refresh_gen: int = 0         # monotonic; incremented on each request
+    _cw_pending_data: tuple | None = None  # (cfg, statuses, shares) waiting to apply
+
     def _refresh_config_window(self) -> None:
+        """Refresh the config window in the background (non-blocking).
+
+        RPC I/O runs on a worker thread; the result is stored in
+        _cw_pending_data and picked up by the next _tick_bandwidth call
+        (which already runs on the main thread). This avoids any
+        performSelectorOnMainThread interaction with the NSTimer.
+        """
         cw = self._config_window
-        if cw is not None and cw.is_open():
-            _on_main(cw.refresh)
+        if cw is None or not cw.is_open():
+            return
+
+        self._cw_refresh_gen += 1
+        my_gen = self._cw_refresh_gen
+
+        def _fetch():
+            mgr = self.manager
+            try:
+                cfg = mgr.list_config()
+            except Exception:
+                return
+            try:
+                statuses = list(mgr.status().connection_statuses)
+            except Exception:
+                statuses = []
+            try:
+                shares = list(mgr.list_shares())
+            except Exception:
+                shares = []
+            # Only store if no newer refresh was requested while we were fetching.
+            if my_gen == self._cw_refresh_gen:
+                self._cw_pending_data = (cfg, statuses, shares)
+
+        threading.Thread(target=_fetch, daemon=True,
+                         name="susops-cw-refresh").start()
 
     # ------------------------------------------------------------------ #
     # AbstractTrayApp implementation
@@ -3282,8 +3320,24 @@ class SusOpsMacTray(AbstractTrayApp):
         x = icon_w + gap
         tf.setFrame_(NSMakeRect(x, y, fixed_w, fixed_h))
 
+    _cw_tick_count: int = 0
+
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
+        self._cw_tick_count += 1
+        # Apply any pending config-window data fetched in the background.
+        pending = self._cw_pending_data
+        if pending is not None:
+            self._cw_pending_data = None
+            cw = self._config_window
+            if cw is not None and cw.is_open():
+                try:
+                    cw._apply_data(*pending)
+                except Exception:
+                    pass
+        # Kick off the next background fetch every ~2 s (every other tick).
+        if self._cw_tick_count % 2 == 0:
+            self._refresh_config_window()
 
     def _preview_bandwidth_visibility(self, checked: bool) -> None:
         """Live-toggle the menu-bar bandwidth title from the Settings switch.
