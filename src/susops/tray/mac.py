@@ -2040,7 +2040,12 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().dump()),
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
-            "action": lambda args: {"error": "actions land in Task 3"},
+            "action": lambda args: (_run_on_main(
+                lambda: (self.dispatch_window_action(
+                    args[0],
+                    tuple(self._ensure_config_window().selected_identity or ())),
+                    {"ok": True})[1])
+                if args else {"error": "usage: action <action_id>"}),
             "screenshot": _screenshot,
             "quit": _quit,
         }
@@ -2078,32 +2083,43 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def dispatch_window_action(self, action_id: str, identity: tuple) -> None:
         """Map a detail-pane action id onto the corresponding do_* method.
-        Confirms destructive actions then refreshes the config window.
 
-        Stopgap until the Task 3 rewrite: the conn tag comes from the v2
-        identity tuple (("connection", tag) / ("domain", conn_tag, host) /
-        ("forward", conn_tag, direction, src_port)). Not called in Task 2."""
-        conn_tag = identity[1] if identity and len(identity) > 1 else None
-        if conn_tag is None:
-            return
+        v2: conn_tag is read from the identity tuple, never window state.
+          ("connection", tag)
+          ("domain", conn_tag, host)
+          ("forward", conn_tag, direction, src_port)
+          ("share", port)
+        Destructive actions confirm first. Task-4+ ids (*.save / *.create /
+        fetch.run) are not rendered yet and resolve to a quiet message."""
         kind = identity[0] if identity else None
-        if action_id == "conn.start":
-            self.do_start_connection(conn_tag)
-        elif action_id == "conn.stop":
-            self.do_stop_connection(conn_tag)
-        elif action_id == "conn.restart":
-            self.do_restart_connection(conn_tag)
-        elif action_id == "conn.test":
-            self.do_test_connection(conn_tag)
-        elif action_id == "conn.toggle":
-            self.do_toggle_connection_enabled(conn_tag)
-        elif action_id == "conn.remove":
-            if _show_confirm("Remove Connection",
-                             f"Remove connection '{conn_tag}' and all its "
-                             f"domains, forwards and shares?", ok="Remove"):
-                self.do_remove_connection(conn_tag)
+        if kind is None:
+            return
+
+        if action_id.endswith(".save") or action_id.endswith(".create") \
+                or action_id == "fetch.run":
+            _show_message("Not yet available",
+                          "This action is not available yet.")
+            return
+
+        if kind == "connection":
+            conn_tag = identity[1]
+            if action_id == "conn.start":
+                self.do_start_connection(conn_tag)
+            elif action_id == "conn.stop":
+                self.do_stop_connection(conn_tag)
+            elif action_id == "conn.restart":
+                self.do_restart_connection(conn_tag)
+            elif action_id == "conn.test":
+                self.do_test_connection(conn_tag)
+            elif action_id == "conn.toggle":
+                self.do_toggle_connection_enabled(conn_tag)
+            elif action_id == "conn.remove":
+                if _show_confirm("Remove Connection",
+                                 f"Remove connection '{conn_tag}' and all its "
+                                 f"domains, forwards and shares?", ok="Remove"):
+                    self.do_remove_connection(conn_tag)
         elif kind == "domain":
-            host = identity[2]
+            _, conn_tag, host = identity
             if action_id == "domain.test":
                 self.do_test_domain(host, conn_tag)
             elif action_id == "domain.toggle":
@@ -2112,26 +2128,24 @@ class SusOpsMacTray(AbstractTrayApp):
                 if _show_confirm("Remove Domain", f"Remove '{host}'?", ok="Remove"):
                     self.do_remove_pac_host(host)
         elif kind == "forward":
-            _, _conn_tag, direction, src_port = identity
+            _, conn_tag, direction, src_port = identity
             if action_id == "forward.test":
                 self.do_test_forward(conn_tag, src_port, direction)
             elif action_id == "forward.toggle":
                 self.do_toggle_forward_enabled(conn_tag, src_port, direction)
             elif action_id == "forward.remove":
-                if _show_confirm("Remove Forward", f"Remove :{src_port} ({direction})?",
-                                 ok="Remove"):
+                if _show_confirm("Remove Forward",
+                                 f"Remove :{src_port} ({direction})?", ok="Remove"):
                     if direction == "local":
                         self.do_remove_local_forward(src_port)
                     else:
                         self.do_remove_remote_forward(src_port)
         elif kind == "share":
             port = identity[1]
-            info = next((s for s in self.manager.list_shares() if s.port == port), None)
+            info = next((s for s in self.manager.list_shares()
+                         if s.port == port), None)
             if info is None:
                 pass  # vanished; refresh below handles it
-            elif action_id == "share.reveal":
-                _show_message("Share Password",
-                              f"{Path(info.file_path).name}\nPassword: {info.password}")
             elif action_id == "share.stop":
                 self.do_stop_share(port)
             elif action_id == "share.start":
@@ -2141,7 +2155,24 @@ class SusOpsMacTray(AbstractTrayApp):
                 if _show_confirm("Delete Share",
                                  f"Delete share on port {port}?", ok="Delete"):
                     self.do_delete_share(port)
+            elif action_id == "share.copy_url":
+                self._copy_to_pasteboard(f"http://localhost:{port}")
+            elif action_id == "share.copy_password":
+                self._copy_to_pasteboard(info.password or "")
         self._refresh_config_window()
+
+    def _copy_to_pasteboard(self, text: str) -> None:
+        """Put text on the general pasteboard. AppKit on the main thread; the
+        button-handler dispatch path already runs there and the debug `action`
+        path marshals via _run_on_main, so it is safe to call directly."""
+        from AppKit import NSPasteboard  # type: ignore[import]
+        try:
+            from AppKit import NSPasteboardTypeString  # type: ignore[import]
+        except Exception:
+            NSPasteboardTypeString = "public.utf8-plain-text"
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
 
     _cw_refresh_gen: int = 0         # monotonic; incremented on each request
     _cw_pending_data: tuple | None = None  # (cfg, statuses, shares) waiting to apply

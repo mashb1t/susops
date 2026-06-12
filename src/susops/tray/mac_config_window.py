@@ -15,10 +15,14 @@ from __future__ import annotations
 from susops.tray.config_window_model import (
     ListRow,
     NavItem,
+    build_connection_detail,
     build_connection_rows,
+    build_domain_form,
     build_domain_rows,
+    build_forward_form,
     build_forward_rows,
     build_nav,
+    build_share_detail,
     build_share_rows,
     filter_rows,
 )
@@ -174,6 +178,7 @@ class ConfigWindow:
         self._shares: list = []
         self._suppress_selection_cb = False
         self._pending_category = None  # category requested via open() pre-load
+        self._detail_spec = None       # last DetailSpec rendered in col 3
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -820,20 +825,386 @@ class ConfigWindow:
 
     def _render_selection_placeholder(self) -> None:
         if self.category == "settings":
+            self._detail_spec = None
             self._render_col3_placeholder("Settings pane lands in Task 7.")
             return
         if self.selected_identity is None:
+            self._detail_spec = None
             self._render_col3_placeholder("Select an item.")
             return
-        # Task 3 renders the real detail; for now show the identity tuple as
-        # text (useful for dump/tests).
-        self._render_col3_placeholder(
-            "Detail pane lands in Task 3.\n"
-            + " · ".join(str(p) for p in self.selected_identity))
+        spec = self._build_detail_spec(self.selected_identity)
+        if spec is None:
+            self._detail_spec = None
+            self._render_col3_placeholder("Item no longer exists.")
+            return
+        self._detail_spec = spec
+        self._render_detail(spec)
+
+    # ------------------------------------------------------------------ #
+    # Detail spec routing (identity -> builder)
+    # ------------------------------------------------------------------ #
+
+    def _conn_by_tag(self, tag):
+        if self._cfg is None:
+            return None
+        return next((c for c in self._cfg.connections if c.tag == tag), None)
+
+    def _build_detail_spec(self, identity: tuple):
+        """Route an identity tuple to its DetailSpec builder. Returns None when
+        the referenced item has vanished from config."""
+        if not identity:
+            return None
+        kind = identity[0]
+        conn_tags = [c.tag for c in self._cfg.connections] if self._cfg else []
+        if kind == "connection":
+            conn = self._conn_by_tag(identity[1])
+            if conn is None:
+                return None
+            st = self._status_for(identity[1])
+            return build_connection_detail(conn, st)
+        if kind == "domain":
+            _, conn_tag, host = identity
+            conn = self._conn_by_tag(conn_tag)
+            if conn is None:
+                return None
+            all_hosts = list(conn.pac_hosts) + list(
+                getattr(conn, "pac_hosts_disabled", []) or [])
+            if host not in all_hosts:
+                return None
+            st = self._status_for(conn_tag)
+            return build_domain_form(conn_tags, conn_tag=conn_tag, host=host,
+                                     status=st, conn=conn)
+        if kind == "forward":
+            _, conn_tag, direction, src_port = identity
+            conn = self._conn_by_tag(conn_tag)
+            if conn is None:
+                return None
+            fws = conn.forwards.local if direction == "local" \
+                else conn.forwards.remote
+            fw = next((f for f in fws if f.src_port == src_port), None)
+            if fw is None:
+                return None
+            return build_forward_form(conn_tags, fw=fw, direction=direction,
+                                      conn_tag=conn_tag, statuses=self._statuses)
+        if kind == "share":
+            port = identity[1]
+            info = next((s for s in self._shares if s.port == port), None)
+            if info is None:
+                return None
+            st = self._status_for(getattr(info, "conn_tag", None))
+            return build_share_detail(info, st)
+        return None
+
+    def _status_for(self, tag):
+        return next((s for s in self._statuses
+                     if getattr(s, "tag", None) == tag), None)
+
+    # ------------------------------------------------------------------ #
+    # Detail renderer (static presentation; editable controls land in T4)
+    # ------------------------------------------------------------------ #
+
+    def _render_detail(self, spec) -> None:
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+            NSView,
+        )
+        for v in list(self._col3.subviews()):
+            v.removeFromSuperview()
+        del self._handlers[self._permanent_handler_count:]
+
+        w = self._col3.frame().size.width
+        h = self._col3.frame().size.height
+        pad = 24
+        # Header sits just below the transparent titlebar inset.
+        header_top = h - TOP_INSET - 8
+
+        # --- Header: title (left) + status line + Enabled toggle (top-right) ---
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(pad, header_top - 24, w - 2 * pad - 120, 24))
+        title.setStringValue_(spec.title)
+        title.setFont_(NSFont.boldSystemFontOfSize_(16))
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setTextColor_(NSColor.labelColor())
+        self._col3.addSubview_(title)
+
+        # Status line: colored dot + status text.
+        status_y = header_top - 44
+        if spec.status_dot:
+            dot = NSView.alloc().initWithFrame_(
+                NSMakeRect(pad, status_y + 3, 10, 10))
+            try:
+                dot.setWantsLayer_(True)
+                dot.layer().setBackgroundColor_(
+                    _ns_dot_color(spec.status_dot).CGColor())
+                dot.layer().setCornerRadius_(5.0)
+            except Exception:
+                pass
+            self._col3.addSubview_(dot)
+        if spec.status_text:
+            stext = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(pad + 16, status_y, w - 2 * pad - 16, 16))
+            stext.setStringValue_(spec.status_text)
+            stext.setFont_(NSFont.systemFontOfSize_(11))
+            stext.setBezeled_(False)
+            stext.setDrawsBackground_(False)
+            stext.setEditable_(False)
+            stext.setTextColor_(NSColor.secondaryLabelColor())
+            self._col3.addSubview_(stext)
+
+        # Enabled toggle top-right.
+        if spec.toggle is not None:
+            self._render_header_toggle(spec, w, header_top, pad)
+
+        # --- Card with the static field grid ---
+        card_top = status_y - 16
+        card = self._render_field_card(spec, w, card_top, pad)
+
+        # --- Action row below the card ---
+        card_bottom = card.frame().origin.y
+        self._render_action_row(spec, w, card_bottom - 14, pad)
+
+    def _render_header_toggle(self, spec, w, header_top, pad) -> None:
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+        )
+        label, value, action_id = spec.toggle
+        toggle_w = 40
+        toggle_x = w - pad - toggle_w
+        toggle_y = header_top - 24
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s, aid=action_id: self._dispatch(aid))
+        self._handlers.append(handler)
+        try:
+            import AppKit  # type: ignore[import]
+            has_switch = hasattr(AppKit, "NSSwitch")
+        except Exception:
+            has_switch = False
+        if has_switch:
+            from AppKit import NSSwitch  # type: ignore[import]
+            sw = NSSwitch.alloc().initWithFrame_(
+                NSMakeRect(toggle_x, toggle_y, toggle_w, 22))
+            sw.setState_(1 if value else 0)
+            sw.setTarget_(handler)
+            sw.setAction_("fire:")
+            self._col3.addSubview_(sw)
+            ctrl_left = toggle_x
+        else:
+            from AppKit import NSButton  # type: ignore[import]
+            btn = NSButton.alloc().initWithFrame_(
+                NSMakeRect(toggle_x, toggle_y, toggle_w, 22))
+            try:
+                btn.setButtonType_(3)  # NSButtonTypeSwitch
+            except Exception:
+                pass
+            btn.setTitle_("")
+            btn.setState_(1 if value else 0)
+            btn.setTarget_(handler)
+            btn.setAction_("fire:")
+            self._col3.addSubview_(btn)
+            ctrl_left = toggle_x
+        # "Enabled" label to the LEFT of the control.
+        lbl = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(ctrl_left - 70, toggle_y + 3, 62, 16))
+        lbl.setStringValue_(label)
+        lbl.setFont_(NSFont.systemFontOfSize_(11))
+        lbl.setAlignment_(1)  # right
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setTextColor_(NSColor.secondaryLabelColor())
+        self._col3.addSubview_(lbl)
+        # toggle_note: tertiary line right-aligned under the toggle.
+        if spec.toggle_note:
+            note = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(w - pad - 320, toggle_y - 18, 320, 14))
+            note.setStringValue_(spec.toggle_note)
+            note.setFont_(NSFont.systemFontOfSize_(11))
+            note.setAlignment_(1)  # right
+            note.setBezeled_(False)
+            note.setDrawsBackground_(False)
+            note.setEditable_(False)
+            note.setTextColor_(NSColor.tertiaryLabelColor())
+            self._col3.addSubview_(note)
+
+    def _render_field_card(self, spec, w, card_top, pad):
+        """Layer-backed rounded card holding the static field grid. Returns the
+        card NSView so the caller can position the action row under it."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+            NSView,
+        )
+        fields = list(spec.fields)
+        row_h = 28
+        v_pad = 12
+        card_h = max(row_h, len(fields) * row_h) + 2 * v_pad
+        card_w = w - 2 * pad
+        card_y = card_top - card_h
+        card = NSView.alloc().initWithFrame_(
+            NSMakeRect(pad, card_y, card_w, card_h))
+        try:
+            card.setWantsLayer_(True)
+            base = NSColor.windowBackgroundColor()
+            fill = base.blendedColorWithFraction_ofColor_(
+                0.06, NSColor.whiteColor()) or base
+            card.layer().setBackgroundColor_(fill.CGColor())
+            card.layer().setCornerRadius_(8.0)
+            card.layer().setBorderWidth_(0.5)
+            card.layer().setBorderColor_(NSColor.separatorColor().CGColor())
+        except Exception:
+            pass
+        self._col3.addSubview_(card)
+
+        label_w = 110
+        inner_pad = 14
+        value_x = inner_pad + label_w + 10
+        for i, f in enumerate(fields):
+            # Rows top-down inside the card.
+            ry = card_h - v_pad - (i + 1) * row_h + 4
+            lbl = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(inner_pad, ry, label_w, 18))
+            lbl.setStringValue_(f.label)
+            lbl.setFont_(NSFont.systemFontOfSize_(11))
+            lbl.setAlignment_(1)  # right
+            lbl.setBezeled_(False)
+            lbl.setDrawsBackground_(False)
+            lbl.setEditable_(False)
+            lbl.setTextColor_(NSColor.secondaryLabelColor())
+            card.addSubview_(lbl)
+
+            val = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(value_x, ry, card_w - value_x - inner_pad, 18))
+            val.setStringValue_(self._static_value_text(f))
+            val.setFont_(NSFont.systemFontOfSize_(13))
+            val.setBezeled_(False)
+            val.setDrawsBackground_(False)
+            val.setEditable_(False)
+            val.setSelectable_(True)
+            val.setTextColor_(NSColor.labelColor())
+            card.addSubview_(val)
+
+            if f.note:
+                note = NSTextField.alloc().initWithFrame_(
+                    NSMakeRect(value_x, ry - 13, card_w - value_x - inner_pad, 12))
+                note.setStringValue_(f.note)
+                note.setFont_(NSFont.systemFontOfSize_(10))
+                note.setBezeled_(False)
+                note.setDrawsBackground_(False)
+                note.setEditable_(False)
+                note.setTextColor_(NSColor.tertiaryLabelColor())
+                card.addSubview_(note)
+        return card
+
+    def _static_value_text(self, f) -> str:
+        """Render any FormField as a static string (Task 3 is read-only)."""
+        kind = f.kind
+        if kind == "secure":
+            return "••••••••"
+        if kind == "check_pair":
+            tcp, udp = (f.value if isinstance(f.value, (tuple, list))
+                        else (False, False))
+            if tcp and udp:
+                return "TCP + UDP"
+            if tcp:
+                return "TCP"
+            if udp:
+                return "UDP"
+            return "—"
+        return str(f.value) if f.value not in (None, "") else "—"
+
+    def _render_action_row(self, spec, w, top_y, pad) -> None:
+        from Cocoa import NSButton, NSMakeRect  # type: ignore[import]
+        # Skip *.save in this static task (Save appears in Task 4).
+        actions = [a for a in spec.actions
+                   if not a.action_id.endswith(".save")]
+        btn_h = 26
+        row_y = top_y - btn_h
+
+        def _make_button(action):
+            from AppKit import NSFont  # type: ignore[import]
+            from Cocoa import (  # type: ignore[import]
+                NSAttributedString,
+                NSColor,
+                NSForegroundColorAttributeName,
+            )
+            title = action.title
+            bw = max(72, 28 + 8 * len(title))
+            btn = NSButton.alloc().initWithFrame_(
+                NSMakeRect(0, row_y, bw, btn_h))
+            btn.setTitle_(title)
+            btn.setBezelStyle_(1)  # NSBezelStyleRounded
+            btn.setEnabled_(bool(action.enabled))
+            if action.destructive:
+                try:
+                    btn.setBezelColor_(NSColor.systemRedColor())
+                except Exception:
+                    try:
+                        attrs = {NSForegroundColorAttributeName:
+                                 NSColor.systemRedColor()}
+                        btn.setAttributedTitle_(
+                            NSAttributedString.alloc()
+                            .initWithString_attributes_(title, attrs))
+                    except Exception:
+                        pass
+            handler = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s, aid=action.action_id: self._dispatch(aid))
+            self._handlers.append(handler)
+            btn.setTarget_(handler)
+            btn.setAction_("fire:")
+            return btn, bw
+
+        # Destructive actions on the LEFT.
+        x = pad
+        for a in actions:
+            if not a.destructive:
+                continue
+            btn, bw = _make_button(a)
+            frame = btn.frame()
+            frame.origin.x = x
+            btn.setFrame_(frame)
+            self._col3.addSubview_(btn)
+            x += bw + 8
+
+        # Non-destructive actions right-aligned, in order.
+        non_destr = [a for a in actions if not a.destructive]
+        # Lay out from the right edge keeping spec order left-to-right.
+        widths = []
+        for a in non_destr:
+            widths.append(max(72, 28 + 8 * len(a.title)))
+        total = sum(widths) + 8 * (len(non_destr) - 1 if non_destr else 0)
+        rx = w - pad - total
+        for a, bw in zip(non_destr, widths):
+            btn, _ = _make_button(a)
+            frame = btn.frame()
+            frame.origin.x = rx
+            frame.size.width = bw
+            btn.setFrame_(frame)
+            self._col3.addSubview_(btn)
+            rx += bw + 8
+
+    def _dispatch(self, action_id: str) -> None:
+        """Forward a detail-pane action to the tray dispatch with the current
+        identity. Runs on the main thread (button/switch handler)."""
+        try:
+            self.tray.dispatch_window_action(
+                action_id, tuple(self.selected_identity or ()))
+        except Exception:
+            pass
 
     def _render_col3_placeholder(self, text: str) -> None:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
+        self._detail_spec = None
         for v in list(self._col3.subviews()):
             v.removeFromSuperview()
         del self._handlers[self._permanent_handler_count:]
@@ -871,7 +1242,14 @@ class ConfigWindow:
                      for r in self.rows],
             "selected": list(self.selected_identity)
             if self.selected_identity else None,
-            "detail_title": None,
+            "detail_title": self._detail_spec.title
+            if self._detail_spec else None,
+            "detail_actions": [a.action_id for a in self._detail_spec.actions
+                               if not a.action_id.endswith(".save")]
+            if self._detail_spec else [],
+            "detail_toggle": (bool(self._detail_spec.toggle[1])
+                              if self._detail_spec.toggle else None)
+            if self._detail_spec else None,
             "dirty": False,
             # Debug: add-button targets must survive col-3 handler trims
             # (NSButton does not retain its target).

@@ -123,3 +123,57 @@ def test_unified_menu_structure(tray_proc):
         assert any(t.startswith(expected) for t in titles), f"missing {expected}"
     for removed in REMOVED_MENU:
         assert not any(t == removed for t in titles), f"should be gone: {removed}"
+
+
+def test_detail_renders_and_toggle_round_trip(tray_proc):
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_pac_host("blabla.de", conn_tag="work")
+    assert tray_proc.send("open-config").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            n["key"] == "domains" and n["count"] == 1 for n in d.get("nav", [])),
+    )
+    sel = tray_proc.send("select domains 0")
+    assert sel.get("ok"), sel
+    dump = tray_proc.send("dump-window")
+    assert dump["detail_title"] == "blabla.de"
+    assert dump["detail_toggle"] is True
+    assert "domain.test" in dump["detail_actions"]
+    assert "domain.remove" in dump["detail_actions"]
+
+    res = tray_proc.send("action domain.toggle")
+    assert res.get("ok") is True, res
+    dump2 = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("detail_toggle") is False,
+    )
+    assert dump2["detail_toggle"] is False
+    # Col-2 row dims when the host is disabled.
+    row = next((r for r in dump2["rows"] if r["title"] == "blabla.de"), None)
+    assert row is not None and row["dimmed"] is True
+
+    cfg = c.list_config()
+    assert "blabla.de" in cfg.connections[0].pac_hosts_disabled
+
+
+def test_connection_detail_renders(tray_proc):
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            n["key"] == "connections" and n["count"] == 1
+            for n in d.get("nav", [])),
+    )
+    sel = tray_proc.send("select connections 0")
+    assert sel.get("ok"), sel
+    dump = tray_proc.send("dump-window")
+    assert dump["detail_title"] == "work"
+    assert dump["detail_toggle"] is True
+    assert "conn.start" in dump["detail_actions"]
+    assert "conn.remove" in dump["detail_actions"]
