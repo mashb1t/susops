@@ -1,76 +1,74 @@
-"""Unified config window - raw AppKit (rumps has no window classes).
+"""3-column config window - raw AppKit (rumps has no window classes).
 
-Layout per docs/superpowers/specs/2026-06-12-mac-tray-config-window-design.md:
-tab strip (one segment per connection + "+" + gear), grouped sidebar
-(DOMAINS/FORWARDS/SHARES/CONNECTION), detail panel for the selection.
+Layout per docs/superpowers/specs/2026-06-13-mac-tray-3col-redesign-design.md:
+column 1 = nav (categories + Settings), column 2 = global list with search +
+add buttons, column 3 = detail/editor (placeholder in Task 2, real panes in
+Tasks 3-7).
 
 Lifecycle copies _open_live_text_window in mac.py: non-modal NSWindow,
 held-open _RegularPolicyScope, close via delegate, module-level cached
-NSObject subclasses (PyObjC re-registration bug - see mac.py).
+NSObject subclasses (PyObjC re-registration bug - see mac.py). Two table data
+sources share one cached class via a `role` attr ("nav" / "list").
 """
 from __future__ import annotations
 
-import os
-
 from susops.tray.config_window_model import (
-    SidebarRow,
-    TabSpec,
-    build_sidebar_rows,
-    build_tab_specs,
-)
-from susops.tray.config_window_model import _V1DetailSpec as DetailSpec
-from susops.tray.config_window_model import (
-    build_connection_detail_v1 as build_connection_detail,
-)
-from susops.tray.config_window_model import (
-    build_domain_detail_v1 as build_domain_detail,
-)
-from susops.tray.config_window_model import (
-    build_forward_detail_v1 as build_forward_detail,
-)
-from susops.tray.config_window_model import (
-    build_share_detail_v1 as build_share_detail,
+    ListRow,
+    NavItem,
+    build_connection_rows,
+    build_domain_rows,
+    build_forward_rows,
+    build_nav,
+    build_share_rows,
+    filter_rows,
 )
 
-_sidebar_ds_cls = None
+_table_ds_cls = None
 _window_delegate_cls = None
 _action_handler_cls = None
 
 
-def _get_sidebar_ds_cls():
-    global _sidebar_ds_cls
-    if _sidebar_ds_cls is not None:
-        return _sidebar_ds_cls
+def _get_table_ds_cls():
+    """Cached data-source/delegate class for both view-based NSTableViews.
+
+    One class, two instances distinguished by `role` ("nav" / "list"). The
+    owner builds the cell views; the DS just routes callbacks.
+    """
+    global _table_ds_cls
+    if _table_ds_cls is not None:
+        return _table_ds_cls
     import objc  # type: ignore[import]
     from Cocoa import NSObject  # type: ignore[import]
 
-    class _SusOpsSidebarDS(NSObject):
-        """Data source + delegate for the sidebar NSTableView."""
-
-        def initWithOwner_(self, owner):
-            self = objc.super(_SusOpsSidebarDS, self).init()
+    class _SusOpsTableDS(NSObject):
+        def initWithOwner_role_(self, owner, role):
+            self = objc.super(_SusOpsTableDS, self).init()
             if self is None:
                 return None
             self._owner = owner
+            self._role = role
             return self
 
         def numberOfRowsInTableView_(self, _tv):
-            return len(self._owner.sidebar_rows)
+            return self._owner._row_count(self._role)
 
-        def tableView_objectValueForTableColumn_row_(self, _tv, _col, row):
-            return self._owner.sidebar_rows[row].label
+        def tableView_viewForTableColumn_row_(self, _tv, _col, row):
+            return self._owner._make_cell(self._role, row)
+
+        def tableView_heightOfRow_(self, _tv, row):
+            return self._owner._row_height(self._role, row)
 
         def tableView_shouldSelectRow_(self, _tv, row):
-            return self._owner.sidebar_rows[row].kind != "header"
+            return self._owner._row_selectable(self._role, row)
 
         def tableView_isGroupRow_(self, _tv, row):
-            return self._owner.sidebar_rows[row].kind == "header"
+            return False
 
         def tableViewSelectionDidChange_(self, _note):
-            self._owner._on_sidebar_selection()
+            self._owner._on_selection(self._role)
 
-    _sidebar_ds_cls = _SusOpsSidebarDS
-    return _SusOpsSidebarDS
+    _table_ds_cls = _SusOpsTableDS
+    return _SusOpsTableDS
 
 
 def _get_window_delegate_cls():
@@ -107,7 +105,7 @@ def _get_action_handler_cls():
     from Cocoa import NSObject  # type: ignore[import]
 
     class _SusOpsActionHandler(NSObject):
-        """Generic target for buttons/controls; calls back with the sender."""
+        """Generic target for buttons/controls/search; calls back with sender."""
 
         def initWithCallback_(self, cb):
             self = objc.super(_SusOpsActionHandler, self).init()
@@ -126,50 +124,71 @@ def _get_action_handler_cls():
     return _SusOpsActionHandler
 
 
-SIDEBAR_W = 220
-TAB_H = 28
-ADD_BTN_H = 26
-WIN_W = 900
-WIN_H = 560
+# ---- geometry ----
+WIN_W = 1080
+WIN_H = 640
+MIN_W = 980
+MIN_H = 560
+COL1_W = 180
+COL2_W = 270
+TOP_INSET = 38          # traffic lights overlay col 1; start content below them
+SEARCH_H = 24
+ADDBAR_H = 40
+
+# ---- dot colors ----
+_DOT_SELECTORS = {
+    "green": "systemGreenColor",
+    "amber": "systemOrangeColor",
+    "gray": "systemGrayColor",
+    "red": "systemRedColor",
+}
+
+CATEGORIES = ("connections", "domains", "forwards", "shares", "settings")
+
+
+def _ns_dot_color(word: str):
+    from Cocoa import NSColor  # type: ignore[import]
+    sel = _DOT_SELECTORS.get(word, "systemGrayColor")
+    return getattr(NSColor, sel)()
 
 
 class ConfigWindow:
-    """Controller for the unified config window. All methods MUST be called
-    on the main thread (callers marshal via mac._on_main)."""
+    """Controller for the 3-column config window. All methods MUST be called
+    on the main thread (callers marshal via mac._on_main / _run_on_main)."""
 
     def __init__(self, tray) -> None:
         self.tray = tray
         self.window = None
-        self.tabs: list[TabSpec] = []
-        self.sidebar_rows: list[SidebarRow] = []
-        self.current_tag: str | None = None
+        self.category = "connections"
+        self.nav_items: list[NavItem] = []
+        self.rows: list[ListRow] = []          # filtered col-2 rows
+        self._all_rows: list[ListRow] = []      # unfiltered col-2 rows
+        self.selected_identity: tuple | None = None
+        self.search_text = ""
         self._policy_scope = None
         self._handlers: list = []
         self._permanent_handler_count = 0
         self._cfg = None
         self._statuses: list = []
         self._shares: list = []
-        self._current_detail_title = None
-        self._suppress_selection_cb = False  # True while _reload_sidebar is rebuilding rows
-        self._gear_mode = False  # True while the gear (app-settings) pane is shown
-        self._settings_ctx = None  # ctx from tray._settings_fields while gear pane open
-        self._settings_widgets = None  # {key: NSControl} for the gear pane
-        self._settings_fields_spec = None  # field spec list for the gear pane
-        self._pending_tab = None  # tab requested via open() before tabs loaded
+        self._suppress_selection_cb = False
+        self._pending_category = None  # category requested via open() pre-load
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
 
     def is_open(self) -> bool:
         return self.window is not None and bool(self.window.isVisible())
 
-    def open(self, tab: str | None = None) -> None:
+    def open(self, category: str | None = None) -> None:
         if self.window is None:
             self._build()
-        if tab:
-            # If tabs aren't built yet (first open before the async data load),
-            # defer the selection until _apply_data populates them.
-            if self.tabs:
-                self._select_tab_by_tag(tab)
+        if category in CATEGORIES:
+            if self._cfg is not None:
+                self._select_nav(category)
             else:
-                self._pending_tab = tab
+                self._pending_category = category
         from susops.tray.mac import _RegularPolicyScope
         if self._policy_scope is None:
             self._policy_scope = _RegularPolicyScope()
@@ -180,8 +199,6 @@ class ConfigWindow:
             self.window.orderFrontRegardless()
         except Exception:
             pass
-        # Trigger async refresh so the main run loop is never blocked
-        # while opening the window.
         self.tray._refresh_config_window()
 
     def close(self) -> None:
@@ -189,9 +206,235 @@ class ConfigWindow:
             self.window.orderOut_(None)
         self._on_closed()
 
+    def _on_closed(self) -> None:
+        if self._policy_scope is not None:
+            try:
+                self._policy_scope.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._policy_scope = None
+
+    # ------------------------------------------------------------------ #
+    # Build
+    # ------------------------------------------------------------------ #
+
+    def _build(self) -> None:
+        from AppKit import (  # type: ignore[import]
+            NSBackingStoreBuffered,
+            NSWindow,
+            NSWindowStyleMaskClosable,
+            NSWindowStyleMaskFullSizeContentView,
+            NSWindowStyleMaskResizable,
+            NSWindowStyleMaskTitled,
+            NSWindowTitleHidden,
+        )
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSView,
+        )
+
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                 | NSWindowStyleMaskResizable
+                 | NSWindowStyleMaskFullSizeContentView)
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
+        )
+        win.setTitle_("SusOps")
+        win.setReleasedWhenClosed_(False)
+        win.setHidesOnDeactivate_(False)
+        win.setTitlebarAppearsTransparent_(True)
+        try:
+            win.setTitleVisibility_(NSWindowTitleHidden)
+        except Exception:
+            pass
+        try:
+            win.setMinSize_(NSMakeRect(0, 0, MIN_W, MIN_H).size)
+            win.setContentMinSize_(NSMakeRect(0, 0, MIN_W, MIN_H).size)
+        except Exception:
+            pass
+        # Normal window level (no NSFloatingWindowLevel). System appearance, no pin.
+
+        content = win.contentView()
+        try:
+            content.setWantsLayer_(True)
+            content.layer().setBackgroundColor_(
+                NSColor.windowBackgroundColor().CGColor())
+        except Exception:
+            pass
+
+        ch = WIN_H
+
+        # --- Column 1 (nav band, darkest) ---
+        col1 = self._make_band(NSMakeRect(0, 0, COL1_W, ch), band="col1")
+        col1.setAutoresizingMask_(32)  # MinXMargin off; height tracks via subviews
+        col1.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxXMargin
+        content.addSubview_(col1)
+        self._col1 = col1
+
+        # --- Column 2 (list band, mid) ---
+        col2 = self._make_band(NSMakeRect(COL1_W, 0, COL2_W, ch), band="col2")
+        col2.setAutoresizingMask_(16)  # HeightSizable; fixed width, fixed left
+        content.addSubview_(col2)
+        self._col2 = col2
+
+        # --- Column 3 (detail band, flexible) ---
+        col3_x = COL1_W + COL2_W
+        col3 = NSView.alloc().initWithFrame_(
+            NSMakeRect(col3_x, 0, WIN_W - col3_x, ch))
+        try:
+            col3.setWantsLayer_(True)
+            col3.layer().setBackgroundColor_(
+                NSColor.windowBackgroundColor().CGColor())
+        except Exception:
+            pass
+        col3.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
+        content.addSubview_(col3)
+        self._col3 = col3
+
+        # --- thin separators between columns ---
+        self._add_separator(content, COL1_W, ch)
+        self._add_separator(content, COL1_W + COL2_W, ch)
+
+        self._build_nav_table(col1, ch)
+        self._build_list_column(col2, ch)
+
+        delegate = _get_window_delegate_cls().alloc().initWithCallback_(
+            self._on_closed)
+        self._handlers.append(delegate)
+        win.setDelegate_(delegate)
+        self.window = win
+        self._permanent_handler_count = len(self._handlers)
+        self._render_col3_placeholder("Select an item.")
+
+    def _make_band(self, frame, *, band: str):
+        """Layer-backed NSView with a distinct dynamic color so the three
+        columns read as layered. col1 darkest < col2 < col3 (windowBackground).
+
+        Blend the window background toward black by a per-band fraction so the
+        layering is visible in both light and dark mode (underPageBackground /
+        controlBackground resolve too close in dark mode)."""
+        from Cocoa import NSColor, NSView  # type: ignore[import]
+        view = NSView.alloc().initWithFrame_(frame)
+        try:
+            view.setWantsLayer_(True)
+            base = NSColor.windowBackgroundColor()
+            black = NSColor.blackColor()
+            frac = 0.22 if band == "col1" else 0.10  # col1 darkest
+            color = base.blendedColorWithFraction_ofColor_(frac, black) or base
+            view.layer().setBackgroundColor_(color.CGColor())
+        except Exception:
+            pass
+        return view
+
+    def _add_separator(self, content, x: float, ch: float) -> None:
+        from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
+        line = NSView.alloc().initWithFrame_(NSMakeRect(x - 0.5, 0, 1, ch))
+        try:
+            line.setWantsLayer_(True)
+            line.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
+        except Exception:
+            pass
+        line.setAutoresizingMask_(16)  # HeightSizable
+        content.addSubview_(line)
+
+    def _build_nav_table(self, col1, ch: float) -> None:
+        from Cocoa import (  # type: ignore[import]
+            NSMakeRect,
+            NSScrollView,
+            NSTableColumn,
+            NSTableView,
+        )
+        tv = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, COL1_W, ch - TOP_INSET))
+        col = NSTableColumn.alloc().initWithIdentifier_("nav")
+        col.setWidth_(COL1_W - 8)
+        tv.addTableColumn_(col)
+        tv.setHeaderView_(None)
+        tv.setBackgroundColor_(self._clear_color())
+        tv.setRowHeight_(30)
+        try:
+            if hasattr(tv, "setStyle_"):
+                tv.setStyle_(1)  # NSTableViewStyleSourceList
+        except Exception:
+            pass
+        ds = _get_table_ds_cls().alloc().initWithOwner_role_(self, "nav")
+        self._handlers.append(ds)
+        self._nav_ds = ds
+        tv.setDataSource_(ds)
+        tv.setDelegate_(ds)
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, COL1_W, ch - TOP_INSET))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setDocumentView_(tv)
+        scroll.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
+        col1.addSubview_(scroll)
+        self._nav_tv = tv
+
+    def _build_list_column(self, col2, ch: float) -> None:
+        from Cocoa import (  # type: ignore[import]
+            NSMakeRect,
+            NSScrollView,
+            NSSearchField,
+            NSTableColumn,
+            NSTableView,
+        )
+        # Search field at the top.
+        sf = NSSearchField.alloc().initWithFrame_(
+            NSMakeRect(8, ch - TOP_INSET - SEARCH_H, COL2_W - 16, SEARCH_H))
+        sf.setAutoresizingMask_(2 | 8)  # WidthSizable | MinYMargin
+        sf_handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda sender: self._on_search(str(sender.stringValue() or "")))
+        self._handlers.append(sf_handler)
+        sf.setTarget_(sf_handler)
+        sf.setAction_("fire:")
+        try:
+            sf.cell().setSendsSearchStringImmediately_(True)
+            sf.cell().setSendsWholeSearchString_(False)
+        except Exception:
+            pass
+        col2.addSubview_(sf)
+        self._search_field = sf
+
+        list_top = ch - TOP_INSET - SEARCH_H - 8
+        list_h = list_top - ADDBAR_H - 8
+        tv = NSTableView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, COL2_W, list_h))
+        col = NSTableColumn.alloc().initWithIdentifier_("list")
+        col.setWidth_(COL2_W - 4)
+        tv.addTableColumn_(col)
+        tv.setHeaderView_(None)
+        tv.setBackgroundColor_(self._clear_color())
+        ds = _get_table_ds_cls().alloc().initWithOwner_role_(self, "list")
+        self._handlers.append(ds)
+        self._list_ds = ds
+        tv.setDataSource_(ds)
+        tv.setDelegate_(ds)
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, ADDBAR_H + 8, COL2_W, list_h))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setDocumentView_(tv)
+        scroll.setAutoresizingMask_(2 | 16)
+        col2.addSubview_(scroll)
+        self._list_tv = tv
+
+        # Add-button bar at the bottom (rebuilt per category).
+        self._addbar = None
+        self._rebuild_add_buttons()
+
+    def _clear_color(self):
+        from Cocoa import NSColor  # type: ignore[import]
+        return NSColor.clearColor()
+
+    # ------------------------------------------------------------------ #
+    # Data application + render
+    # ------------------------------------------------------------------ #
+
     def refresh(self) -> None:
-        """Fetch config + status from daemon, then repaint. Must be called on
-        the main thread (blocks briefly for RPC)."""
         if self.window is None:
             return
         mgr = self.tray.manager
@@ -207,734 +450,447 @@ class ConfigWindow:
         self._apply_data(cfg, statuses, shares)
 
     def _apply_data(self, cfg, statuses: list, shares: list) -> None:
-        """Apply freshly fetched data and repaint. Must be called on the main thread."""
+        """Apply freshly fetched data and repaint, preserving nav + list
+        selection and the search text. Main thread only."""
         if self.window is None:
             return
         self._cfg = cfg
         self._statuses = statuses
         self._shares = shares
-        self._reload_tabs()
-        # Apply a tab requested via open() before tabs were built.
-        if self._pending_tab is not None and self.tabs:
-            pending = self._pending_tab
-            self._pending_tab = None
-            self._select_tab_by_tag(pending)
-            return
-        # While the gear pane is shown, a periodic refresh must not clobber the
-        # in-progress settings form (re-rendering would discard the user's
-        # edits) nor un-hide the sidebar. _reload_tabs already refreshed the tab
-        # labels; leave the gear pane and hidden sidebar untouched.
-        if self._gear_mode:
-            self._set_sidebar_visible(False)
-            return
-        self._reload_sidebar(preserve=True)
-        self._schedule_render()
+        if self._pending_category is not None:
+            cat = self._pending_category
+            self._pending_category = None
+            self.category = cat if cat in CATEGORIES else self.category
+        self._reload_nav()
+        self._reload_list(preserve=True)
 
-    def dump(self) -> dict:
-        sidebar_hidden = False
-        try:
-            sidebar_hidden = bool(self._sidebar_tv.enclosingScrollView().isHidden())
-        except Exception:
-            pass
-        return {
-            "open": self.is_open(),
-            "mode": "gear" if self._gear_mode else (self.current_tag or None),
-            "gear": self._gear_mode,
-            "sidebar_hidden": sidebar_hidden,
-            "tabs": [t.title for t in self.tabs],
-            "current_tag": self.current_tag,
-            "sidebar": [
-                {"kind": r.kind, "label": r.label} for r in self.sidebar_rows
-            ],
-            "selected": self._selected_identity(),
-            "detail_title": self._current_detail_title,
-            "add_menu": [str(self._add_btn.itemTitleAtIndex_(i))
-                         for i in range(self._add_btn.numberOfItems())],
-        }
-
-    def select(self, tag: str, group: str | None = None, index: int = 0) -> dict:
-        self._select_tab_by_tag(tag)
-        if group in (None, "", "connection"):
-            target_kinds = {"connection"}
-        else:
-            target_kinds = {{"domains": "domain", "forwards": "forward",
-                             "shares": "share"}.get(group, group)}
-        matches = [i for i, r in enumerate(self.sidebar_rows)
-                   if r.kind in target_kinds]
-        if not matches or index >= len(matches):
-            return {"error": f"no row for group={group} index={index}"}
-        self._select_sidebar_row(matches[index])
-        return {"ok": True, "selected": self._selected_identity()}
-
-    def _build(self) -> None:
-        from AppKit import (  # type: ignore[import]
-            NSBackingStoreBuffered,
-            NSFloatingWindowLevel,
-            NSSegmentSwitchTrackingSelectOne,
-            NSWindow,
-            NSWindowStyleMaskClosable,
-            NSWindowStyleMaskResizable,
-            NSWindowStyleMaskTitled,
-        )
-        from Cocoa import (  # type: ignore[import]
-            NSMakeRect,
-            NSScrollView,
-            NSSegmentedControl,
-            NSPopUpButton,
-            NSTableColumn,
-            NSTableView,
-            NSView,
-        )
-
-        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                 | NSWindowStyleMaskResizable)
-        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
-        )
-        win.setTitle_("SusOps Settings")
-        win.setReleasedWhenClosed_(False)
-        win.setHidesOnDeactivate_(False)
-        win.setLevel_(NSFloatingWindowLevel)
-        # The window respects the system appearance (light/dark). Detail-panel
-        # text fields set an explicit NSColor.labelColor() so they resolve to a
-        # legible foreground in either mode (see _render_detail / _placeholder).
-        content = win.contentView()
-        # The detail panel is a plain (transparent) NSView; without an opaque
-        # backing it captures as white in screenshots and clashes with the
-        # dynamic labelColor() text in Dark Mode (light text on white). Make the
-        # content view layer-backed with the dynamic windowBackgroundColor so the
-        # backing tracks the effective appearance and text stays legible.
-        try:
-            from Cocoa import NSColor  # type: ignore[import]
-            content.setWantsLayer_(True)
-            content.layer().setBackgroundColor_(
-                NSColor.windowBackgroundColor().CGColor())
-        except Exception:
-            pass
-
-        seg = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(12, WIN_H - TAB_H - 10, WIN_W - 24, TAB_H))
-        try:
-            from AppKit import NSSegmentStyleRounded  # type: ignore[import]
-            seg.setSegmentStyle_(NSSegmentStyleRounded)
-        except Exception:
-            pass
-        seg.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
-        seg.setAutoresizingMask_(2 | 8)  # WidthSizable | MinYMargin
-        seg_handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda sender: self._on_segment(int(sender.selectedSegment())))
-        self._handlers.append(seg_handler)
-        seg.setTarget_(seg_handler)
-        seg.setAction_("fire:")
-        content.addSubview_(seg)
-        self._seg = seg
-
-        body_h = WIN_H - TAB_H - 28
-
-        tv = NSTableView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, SIDEBAR_W, body_h - ADD_BTN_H - 16))
-        col = NSTableColumn.alloc().initWithIdentifier_("item")
-        col.setWidth_(SIDEBAR_W - 20)
-        tv.addTableColumn_(col)
-        tv.setHeaderView_(None)
-        ds = _get_sidebar_ds_cls().alloc().initWithOwner_(self)
-        self._handlers.append(ds)
-        tv.setDataSource_(ds)
-        tv.setDelegate_(ds)
-        scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(12, ADD_BTN_H + 20, SIDEBAR_W, body_h - ADD_BTN_H - 20))
-        scroll.setHasVerticalScroller_(True)
-        scroll.setAutohidesScrollers_(True)
-        scroll.setDocumentView_(tv)
-        scroll.setAutoresizingMask_(16)  # HeightSizable
-        content.addSubview_(scroll)
-        self._sidebar_tv = tv
-
-        # Pull-down: item 0 is the visible title, items 1+ are commands.
-        add_btn = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(12, 12, SIDEBAR_W, ADD_BTN_H), True)
-        add_btn.removeAllItems()
-        add_btn.addItemsWithTitles_([
-            "Add…",
-            "Add Domain / IP / CIDR…",
-            "Add Local Forward…",
-            "Add Remote Forward…",
-            "Share File…",
-            "Fetch File…",
-        ])
-        add_handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda sender: self._on_add_command(str(sender.titleOfSelectedItem() or "")))
-        self._handlers.append(add_handler)
-        add_btn.setTarget_(add_handler)
-        add_btn.setAction_("fire:")
-        content.addSubview_(add_btn)
-        self._add_btn = add_btn
-
-        detail = NSView.alloc().initWithFrame_(
-            NSMakeRect(SIDEBAR_W + 24, 12, WIN_W - SIDEBAR_W - 36, body_h))
-        detail.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
-        content.addSubview_(detail)
-        self._detail = detail
-
-        delegate = _get_window_delegate_cls().alloc().initWithCallback_(self._on_closed)
-        self._handlers.append(delegate)
-        win.setDelegate_(delegate)
-        self.window = win
-        # Handlers added so far (seg, sidebar DS, window delegate) live for the
-        # window's lifetime. Per-render handlers are appended after this and
-        # trimmed back to this count in _clear_detail (see I1 review note).
-        self._permanent_handler_count = len(self._handlers)
-
-    def _on_closed(self) -> None:
-        if self._gear_mode:
-            # Closing the window from the gear pane: discard any unsaved preview.
-            self._revert_settings_preview()
-            self._gear_mode = False
-            # Drop the gear widgets now so they don't briefly flash when the
-            # window is reopened on a connection tab.
-            if self.window is not None and getattr(self, "_detail", None) is not None:
-                try:
-                    self._clear_detail()
-                except Exception:
-                    pass
-        if self._policy_scope is not None:
-            try:
-                self._policy_scope.__exit__(None, None, None)
-            except Exception:
-                pass
-            self._policy_scope = None
-
-    def _reload_tabs(self) -> None:
-        self.tabs = build_tab_specs(self._cfg, self._statuses)
-        conn_tags = [t.tag for t in self.tabs if t.kind == "connection"]
-        if self.current_tag not in conn_tags:
-            self.current_tag = conn_tags[0] if conn_tags else None
-        seg = self._seg
-        seg.setSegmentCount_(len(self.tabs))
-        for i, t in enumerate(self.tabs):
-            seg.setLabel_forSegment_(t.title, i)
-            seg.setWidth_forSegment_(0, i)  # autosize
-        if self._gear_mode:
-            # Keep the gear segment (last) selected across periodic refreshes.
-            seg.setSelectedSegment_(len(self.tabs) - 1)
-        elif self.current_tag is not None:
-            seg.setSelectedSegment_(conn_tags.index(self.current_tag))
-
-    def _select_tab_by_tag(self, tag: str) -> None:
-        if tag == "gear":
-            self._on_segment(len(self.tabs) - 1)
-            return
-        for i, t in enumerate(self.tabs):
-            if t.kind == "connection" and t.tag == tag:
-                self._seg.setSelectedSegment_(i)
-                self._on_segment(i)
-                return
-
-    def _on_segment(self, idx: int) -> None:
-        if not (0 <= idx < len(self.tabs)):
-            return
-        spec = self.tabs[idx]
-        if spec.kind == "connection":
-            if self._gear_mode:
-                # Leaving the gear pane without saving: discard any live logo /
-                # bandwidth preview so an unsaved style does not stick.
-                self._revert_settings_preview()
-            self._gear_mode = False
-            self._set_sidebar_visible(True)
-            self.current_tag = spec.tag
-            self._reload_sidebar(preserve=False)
-            self._schedule_render()
-        elif spec.kind == "add":
-            self._restore_segment_selection()
-            self.tray.run_add_connection_from_window()
-        elif spec.kind == "gear":
-            # Gear is the last segment and has no underlying connection tab to
-            # restore to. App settings are app-level, so hide the per-connection
-            # sidebar + Add… control while the gear pane is shown.
-            self._seg.setSelectedSegment_(idx)
-            self._gear_mode = True
-            self._set_sidebar_visible(False)
-            from Foundation import NSTimer  # type: ignore[import]
-            NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.0, False, lambda _t: self._render_settings_pane()
-            )
-
-    def _set_sidebar_visible(self, visible: bool) -> None:
-        try:
-            self._sidebar_tv.enclosingScrollView().setHidden_(not visible)
-        except Exception:
-            pass
-        try:
-            self._add_btn.setHidden_(not visible)
-        except Exception:
-            pass
-
-    def _on_add_command(self, title: str) -> None:
-        tag = self.current_tag
-        if tag is None:
-            return
-        if title.startswith("Add Domain"):
-            self.tray._show_add_host_dialog(conn_tag=tag)
-        elif title.startswith("Add Local"):
-            self.tray._show_add_forward_dialog(remote=False, conn_tag=tag)
-        elif title.startswith("Add Remote"):
-            self.tray._show_add_forward_dialog(remote=True, conn_tag=tag)
-        elif title.startswith("Share File"):
-            self.tray._show_share_file_dialog(conn_tag=tag)
-        elif title.startswith("Fetch File"):
-            self.tray._show_fetch_file_dialog(conn_tag=tag)
-        self.tray._refresh_config_window()
-
-    def _restore_segment_selection(self) -> None:
-        conn_tags = [t.tag for t in self.tabs if t.kind == "connection"]
-        if self.current_tag in conn_tags:
-            self._seg.setSelectedSegment_(conn_tags.index(self.current_tag))
-
-    def _current_conn(self):
-        if self._cfg is None or self.current_tag is None:
-            return None
-        return next((c for c in self._cfg.connections
-                     if c.tag == self.current_tag), None)
-
-    def _reload_sidebar(self, *, preserve: bool) -> None:
-        prev = self._selected_identity() if preserve else None
-        conn = self._current_conn()
-        if conn is None:
-            self.sidebar_rows = []
-        else:
-            conn_shares = [s for s in self._shares
-                           if getattr(s, "conn_tag", None) == conn.tag]
-            self.sidebar_rows = build_sidebar_rows(conn, conn_shares)
-        # Suppress selection callbacks during rebuild so _on_sidebar_selection
-        # doesn't call _render_current_detail in the middle of a table reload.
+    def _reload_nav(self) -> None:
+        self.nav_items = build_nav(self._cfg, self._shares)
         self._suppress_selection_cb = True
         try:
-            self._sidebar_tv.reloadData()
-            target = None
-            if prev is not None:
-                target = next((i for i, r in enumerate(self.sidebar_rows)
-                               if r.identity == prev), None)
-            if target is None:
-                target = next((i for i, r in enumerate(self.sidebar_rows)
-                               if r.kind == "connection"), None)
-            if target is not None:
-                self._select_sidebar_row(target)
+            self._nav_tv.reloadData()
+            idx = next((i for i, n in enumerate(self.nav_items)
+                        if n.key == self.category), 0)
+            self._select_table_row(self._nav_tv, idx)
         finally:
             self._suppress_selection_cb = False
 
-    def _select_sidebar_row(self, row: int) -> None:
+    def _build_category_rows(self) -> list[ListRow]:
+        cfg, statuses, shares = self._cfg, self._statuses, self._shares
+        if cfg is None:
+            return []
+        if self.category == "connections":
+            return build_connection_rows(cfg, statuses)
+        if self.category == "domains":
+            return build_domain_rows(cfg, statuses)
+        if self.category == "forwards":
+            return build_forward_rows(cfg, statuses)
+        if self.category == "shares":
+            return build_share_rows(cfg, shares, statuses)
+        return []  # settings has no list
+
+    def _reload_list(self, *, preserve: bool) -> None:
+        prev = self.selected_identity if preserve else None
+        self._all_rows = self._build_category_rows()
+        self.rows = filter_rows(self._all_rows, self.search_text)
+        self._suppress_selection_cb = True
+        try:
+            self._list_tv.reloadData()
+            target = None
+            if prev is not None:
+                target = next((i for i, r in enumerate(self.rows)
+                               if r.identity == prev), None)
+            if target is None:
+                target = next((i for i, r in enumerate(self.rows)
+                               if r.kind == "item"), None)
+            if target is not None:
+                self._select_table_row(self._list_tv, target)
+                self.selected_identity = self.rows[target].identity
+            else:
+                self.selected_identity = None
+        finally:
+            self._suppress_selection_cb = False
+        self._rebuild_add_buttons()
+        self._render_selection_placeholder()
+
+    def _select_table_row(self, tv, row: int) -> None:
         from Foundation import NSIndexSet  # type: ignore[import]
-        self._sidebar_tv.selectRowIndexes_byExtendingSelection_(
+        tv.selectRowIndexes_byExtendingSelection_(
             NSIndexSet.indexSetWithIndex_(row), False)
 
-    def _selected_identity(self) -> tuple | None:
-        row = int(self._sidebar_tv.selectedRow()) if self.window else -1
-        if 0 <= row < len(self.sidebar_rows):
-            r = self.sidebar_rows[row]
-            if r.kind != "header":
-                return r.identity
-        return None
+    # ------------------------------------------------------------------ #
+    # Selection plumbing
+    # ------------------------------------------------------------------ #
 
-    def _on_sidebar_selection(self) -> None:
-        if not self._suppress_selection_cb:
-            self._schedule_render()
+    def _select_nav(self, category: str) -> None:
+        self.category = category
+        idx = next((i for i, n in enumerate(self.nav_items)
+                    if n.key == category), None)
+        if idx is not None:
+            self._suppress_selection_cb = True
+            try:
+                self._select_table_row(self._nav_tv, idx)
+            finally:
+                self._suppress_selection_cb = False
+        self.selected_identity = None
+        self._reload_list(preserve=False)
 
-    def _schedule_render(self) -> None:
-        """Defer _render_current_detail to the next run-loop iteration.
+    def _on_selection(self, role: str) -> None:
+        if self._suppress_selection_cb:
+            return
+        if role == "nav":
+            row = int(self._nav_tv.selectedRow())
+            if 0 <= row < len(self.nav_items):
+                self.category = self.nav_items[row].key
+                self.selected_identity = None
+                self.search_text = ""
+                try:
+                    self._search_field.setStringValue_("")
+                except Exception:
+                    pass
+                self._reload_list(preserve=False)
+        else:  # list
+            row = int(self._list_tv.selectedRow())
+            if 0 <= row < len(self.rows) and self.rows[row].kind == "item":
+                self.selected_identity = self.rows[row].identity
+                self._render_selection_placeholder()
 
-        Calling _render_current_detail directly from within a
-        performSelectorOnMainThread dispatch (e.g. _run_on_main, or the
-        rumps timer callback) kills the rumps NSTimer. Scheduling through a
-        0-second one-shot NSTimer puts the work in a fresh run-loop pass and
-        avoids the interference.
-        """
-        from Foundation import NSTimer  # type: ignore[import]
-        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.0, False, lambda _t: self._render_current_detail()
+    def _on_search(self, text: str) -> None:
+        self.search_text = text
+        self.rows = filter_rows(self._all_rows, self.search_text)
+        prev = self.selected_identity
+        self._suppress_selection_cb = True
+        try:
+            self._list_tv.reloadData()
+            target = next((i for i, r in enumerate(self.rows)
+                           if r.identity == prev and r.kind == "item"), None)
+            if target is None:
+                target = next((i for i, r in enumerate(self.rows)
+                               if r.kind == "item"), None)
+            if target is not None:
+                self._select_table_row(self._list_tv, target)
+                self.selected_identity = self.rows[target].identity
+            else:
+                self.selected_identity = None
+        finally:
+            self._suppress_selection_cb = False
+        self._render_selection_placeholder()
+
+    # ------------------------------------------------------------------ #
+    # Table data-source callbacks (owner side)
+    # ------------------------------------------------------------------ #
+
+    def _row_count(self, role: str) -> int:
+        return len(self.nav_items) if role == "nav" else len(self.rows)
+
+    def _row_height(self, role: str, row: int) -> float:
+        if role == "nav":
+            return 30.0
+        if 0 <= row < len(self.rows):
+            kind = self.rows[row].kind
+            if kind == "item":
+                return 38.0
+            if kind == "section":
+                return 24.0
+            return 18.0  # info
+        return 20.0
+
+    def _row_selectable(self, role: str, row: int) -> bool:
+        if role == "nav":
+            return True
+        return 0 <= row < len(self.rows) and self.rows[row].kind == "item"
+
+    def _make_cell(self, role: str, row: int):
+        if role == "nav":
+            return self._make_nav_cell(self.nav_items[row])
+        return self._make_list_cell(self.rows[row])
+
+    def _make_nav_cell(self, item: NavItem):
+        from AppKit import NSFont, NSImage  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSImageView,
+            NSMakeRect,
+            NSTextField,
+            NSView,
         )
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL1_W, 30))
+        x = 8
+        if item.icon:
+            img = self._sf_symbol(item.icon)
+            if img is not None:
+                iv = NSImageView.alloc().initWithFrame_(NSMakeRect(x, 6, 18, 18))
+                iv.setImage_(img)
+                cell.addSubview_(iv)
+                x += 24
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(x, 5, COL1_W - x - 44, 20))
+        title.setStringValue_(item.title)
+        title.setFont_(NSFont.systemFontOfSize_(13))
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setTextColor_(NSColor.labelColor())
+        cell.addSubview_(title)
+        if item.count is not None:
+            count = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(COL1_W - 40, 5, 32, 20))
+            count.setStringValue_(str(item.count))
+            count.setFont_(NSFont.systemFontOfSize_(12))
+            count.setAlignment_(1)  # right
+            count.setBezeled_(False)
+            count.setDrawsBackground_(False)
+            count.setEditable_(False)
+            count.setTextColor_(NSColor.secondaryLabelColor())
+            cell.addSubview_(count)
+        return cell
 
-    def _render_current_detail(self) -> None:
-        identity = self._selected_identity()
-        conn = self._current_conn()
-        if conn is None or identity is None:
-            self._render_placeholder("No selection.")
-            return
-        spec = self._detail_spec_for(conn, identity)
-        if spec is None:
-            self._render_placeholder("Item no longer exists.")
-            return
-        self._render_detail(spec, identity)
+    def _make_list_cell(self, r: ListRow):
+        if r.kind == "section":
+            return self._make_section_cell(r)
+        if r.kind == "info":
+            return self._make_info_cell(r)
+        return self._make_item_cell(r)
 
-    def _detail_spec_for(self, conn, identity: tuple) -> DetailSpec | None:
-        kind = identity[0]
-        if kind == "connection":
-            st = next((s for s in self._statuses if s.tag == conn.tag), None)
-            return build_connection_detail(conn, st)
-        if kind == "domain":
-            host = identity[1]
-            disabled = set(getattr(conn, "pac_hosts_disabled", []) or [])
-            all_hosts = set(conn.pac_hosts) | disabled
-            return build_domain_detail(conn, host) if host in all_hosts else None
-        if kind == "forward":
-            _, direction, src_port = identity
-            fws = (conn.forwards.local if direction == "local"
-                   else conn.forwards.remote)
-            fw = next((f for f in fws if f.src_port == src_port), None)
-            return build_forward_detail(conn, fw, direction) if fw else None
-        if kind == "share":
-            info = next((s for s in self._shares if s.port == identity[1]), None)
-            return build_share_detail(info) if info else None
-        return None
-
-    def _clear_detail(self) -> None:
-        for v in list(self._detail.subviews()):
-            v.removeFromSuperview()
-        # Drop per-render button/toggle handlers so _handlers doesn't grow
-        # unbounded across refresh() calls (one per poll).
-        del self._handlers[self._permanent_handler_count:]
-
-    def _render_placeholder(self, text: str) -> None:
-        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
-        self._clear_detail()
-        self._current_detail_title = None
-        h = self._detail.frame().size.height
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(8, h - 40, 400, 24))
-        lbl.setStringValue_(text)
+    def _make_section_cell(self, r: ListRow):
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 24))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, COL2_W - 20, 16))
+        lbl.setStringValue_(r.title.upper())
+        lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
         lbl.setBezeled_(False)
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
-        lbl.setTextColor_(NSColor.labelColor())
-        self._detail.addSubview_(lbl)
+        lbl.setTextColor_(NSColor.secondaryLabelColor())
+        cell.addSubview_(lbl)
+        return cell
 
-    def _render_detail(self, spec: DetailSpec, identity: tuple) -> None:
-        from AppKit import (  # type: ignore[import]
-            NSFont,
-            NSOffState,
-            NSOnState,
-            NSSwitchButton,
-        )
-        from Cocoa import (  # type: ignore[import]
-            NSButton,
-            NSColor,
-            NSMakeRect,
-            NSTextField,
-        )
+    def _make_info_cell(self, r: ListRow):
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 18))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, COL2_W - 20, 16))
+        lbl.setStringValue_(r.title)
+        lbl.setFont_(NSFont.systemFontOfSize_(11))
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setTextColor_(NSColor.tertiaryLabelColor())
+        cell.addSubview_(lbl)
+        return cell
 
-        self._clear_detail()
-        self._current_detail_title = spec.title
-        w = self._detail.frame().size.width
-        h = self._detail.frame().size.height
-        y = h - 36
+    def _make_item_cell(self, r: ListRow):
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 38))
+        title_color = (NSColor.secondaryLabelColor() if r.dimmed
+                       else NSColor.labelColor())
 
-        title = NSTextField.alloc().initWithFrame_(NSMakeRect(8, y, w - 16, 24))
-        title.setStringValue_(f"Config for {spec.title}")
-        title.setFont_(NSFont.boldSystemFontOfSize_(16))
+        # Colored dot (10px circle, layer-backed).
+        if r.dot:
+            dot = NSView.alloc().initWithFrame_(NSMakeRect(12, 20, 10, 10))
+            try:
+                dot.setWantsLayer_(True)
+                color = _ns_dot_color(r.dot)
+                if r.dimmed:
+                    color = color.colorWithAlphaComponent_(0.5)
+                dot.layer().setBackgroundColor_(color.CGColor())
+                dot.layer().setCornerRadius_(5.0)
+            except Exception:
+                pass
+            cell.addSubview_(dot)
+        text_x = 30
+
+        # Badge pill on the right (rounded layer-backed text field).
+        badge_w = 0
+        if r.badge:
+            badge_w = max(34, 14 + 7 * len(r.badge))
+            badge = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(COL2_W - badge_w - 10, 18, badge_w, 16))
+            badge.setStringValue_(r.badge)
+            badge.setFont_(NSFont.systemFontOfSize_(10))
+            badge.setAlignment_(1)  # center
+            badge.setBezeled_(False)
+            badge.setEditable_(False)
+            badge.setSelectable_(False)
+            badge.setTextColor_(NSColor.secondaryLabelColor())
+            try:
+                badge.setWantsLayer_(True)
+                badge.setDrawsBackground_(False)
+                badge.layer().setBackgroundColor_(
+                    NSColor.quaternaryLabelColor().CGColor())
+                badge.layer().setCornerRadius_(7.0)
+            except Exception:
+                pass
+            cell.addSubview_(badge)
+
+        title_w = COL2_W - text_x - (badge_w + 16 if badge_w else 12)
+        title = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(text_x, 18, max(40, title_w), 18))
+        title.setStringValue_(r.title)
+        title.setFont_(NSFont.systemFontOfSize_(13))
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
-        title.setTextColor_(NSColor.labelColor())
-        self._detail.addSubview_(title)
-        y -= 40
+        title.setTextColor_(title_color)
+        cell.addSubview_(title)
 
-        def _row(label: str, value: str) -> None:
-            nonlocal y
-            lab = NSTextField.alloc().initWithFrame_(NSMakeRect(8, y, 130, 20))
-            lab.setStringValue_(label)
-            lab.setAlignment_(2)
-            lab.setBezeled_(False)
-            lab.setDrawsBackground_(False)
-            lab.setEditable_(False)
-            lab.setTextColor_(NSColor.labelColor())
-            val = NSTextField.alloc().initWithFrame_(NSMakeRect(148, y, w - 160, 20))
-            val.setStringValue_(value)
-            val.setBezeled_(False)
-            val.setDrawsBackground_(False)
-            val.setEditable_(False)
-            val.setSelectable_(True)
-            val.setTextColor_(NSColor.labelColor())
-            self._detail.addSubview_(lab)
-            self._detail.addSubview_(val)
-            y -= 26
+        if r.subtitle:
+            sub = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(text_x, 2, COL2_W - text_x - 12, 14))
+            sub.setStringValue_(r.subtitle)
+            sub.setFont_(NSFont.systemFontOfSize_(11))
+            sub.setBezeled_(False)
+            sub.setDrawsBackground_(False)
+            sub.setEditable_(False)
+            sub.setTextColor_(NSColor.secondaryLabelColor())
+            cell.addSubview_(sub)
+        return cell
 
-        for label, value in spec.rows:
-            _row(label, str(value))
+    def _sf_symbol(self, name: str):
+        from AppKit import NSImage  # type: ignore[import]
+        try:
+            if hasattr(NSImage, "imageWithSystemSymbolName_accessibilityDescription_"):
+                return NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                    name, None)
+        except Exception:
+            pass
+        return None
 
-        if spec.toggle is not None:
-            t_label, t_value, t_action = spec.toggle
-            lab = NSTextField.alloc().initWithFrame_(NSMakeRect(8, y, 130, 20))
-            lab.setStringValue_(t_label)
-            lab.setAlignment_(2)
-            lab.setBezeled_(False)
-            lab.setDrawsBackground_(False)
-            lab.setEditable_(False)
-            lab.setTextColor_(NSColor.labelColor())
-            self._detail.addSubview_(lab)
-            sw = NSButton.alloc().initWithFrame_(NSMakeRect(148, y, 60, 20))
-            sw.setButtonType_(NSSwitchButton)
-            sw.setTitle_("")
-            sw.setState_(NSOnState if t_value else NSOffState)
-            handler = _get_action_handler_cls().alloc().initWithCallback_(
-                lambda _s, aid=t_action, ident=identity: self.tray.dispatch_window_action(aid, ident))
-            self._handlers.append(handler)
-            sw.setTarget_(handler)
-            sw.setAction_("fire:")
-            self._detail.addSubview_(sw)
-            y -= 32
+    # ------------------------------------------------------------------ #
+    # Add buttons (column 2 bottom)
+    # ------------------------------------------------------------------ #
 
-        x = 8
-        for action in spec.actions:
-            bw = max(80, 24 + 9 * len(action.title))
-            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, y - 6, bw, 28))
-            btn.setTitle_(action.title)
+    def _rebuild_add_buttons(self) -> None:
+        from Cocoa import NSButton, NSMakeRect, NSView  # type: ignore[import]
+        # Tear down the previous bar.
+        if self._addbar is not None:
+            try:
+                self._addbar.removeFromSuperview()
+            except Exception:
+                pass
+            self._addbar = None
+        specs = self._add_button_specs()
+        if not specs:
+            return
+        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, ADDBAR_H))
+        bar.setAutoresizingMask_(2 | 32)  # WidthSizable | MaxYMargin
+        n = len(specs)
+        gap = 8
+        bw = (COL2_W - gap * (n + 1)) / n
+        x = gap
+        for label, kind in specs:
+            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 6, bw, 26))
+            btn.setTitle_(label)
             btn.setBezelStyle_(1)
-            btn.setEnabled_(action.enabled)
             handler = _get_action_handler_cls().alloc().initWithCallback_(
-                lambda _s, aid=action.action_id, ident=identity: self.tray.dispatch_window_action(aid, ident))
+                lambda _s, k=kind: self._on_add_clicked(k))
             self._handlers.append(handler)
             btn.setTarget_(handler)
             btn.setAction_("fire:")
-            self._detail.addSubview_(btn)
-            x += bw + 8
+            bar.addSubview_(btn)
+            x += bw + gap
+        self._col2.addSubview_(bar)
+        self._addbar = bar
+
+    def _add_button_specs(self) -> list[tuple[str, str]]:
+        if self.category == "connections":
+            return [("＋ Add Connection", "connection")]
+        if self.category == "domains":
+            return [("＋ Add Domain / IP / CIDR", "domain")]
+        if self.category == "forwards":
+            return [("＋ Add Forward", "forward")]
+        if self.category == "shares":
+            return [("＋ Share File…", "share"),
+                    ("Fetch…", "fetch")]
+        return []  # settings
+
+    def _on_add_clicked(self, kind: str) -> None:
+        # Task 2: no-op placeholder; real create forms land in Tasks 5/6.
+        self._render_col3_placeholder("Create forms land in Task 5/6.")
 
     # ------------------------------------------------------------------ #
-    # Gear (app settings) pane
+    # Column 3 (placeholder in Task 2)
     # ------------------------------------------------------------------ #
 
-    def _render_settings_pane(self, defaults: dict | None = None) -> None:
-        """Render the app-settings form into the detail panel.
-
-        The field spec + validation/persist live on the tray
-        (_settings_fields / _apply_settings) so this pane and the modal
-        Settings dialog share one source of truth. This renderer only handles
-        the field kinds the settings form uses: switch, segmented, text.
-        """
-        if self.window is None or not self._gear_mode:
+    def _render_selection_placeholder(self) -> None:
+        if self.category == "settings":
+            self._render_col3_placeholder("Settings pane lands in Task 7.")
             return
-        from AppKit import (  # type: ignore[import]
-            NSFont,
-            NSImage,
-            NSImageScaleProportionallyDown,
-            NSOffState,
-            NSOnState,
-            NSRegularControlSize,
-            NSSegmentSwitchTrackingSelectOne,
-            NSSwitchButton,
-        )
-        from Cocoa import (  # type: ignore[import]
-            NSButton,
-            NSColor,
-            NSMakeRect,
-            NSSegmentedControl,
-            NSTextField,
-        )
-
-        fields, ctx = self.tray._settings_fields(defaults)
-        self._settings_ctx = ctx
-        self._settings_fields_spec = fields
-
-        self._clear_detail()
-        self._current_detail_title = "App Settings"
-
-        w = self._detail.frame().size.width
-        h = self._detail.frame().size.height
-        y = h - 36
-
-        title = NSTextField.alloc().initWithFrame_(NSMakeRect(8, y, w - 16, 24))
-        title.setStringValue_("App Settings")
-        title.setFont_(NSFont.boldSystemFontOfSize_(16))
-        title.setBezeled_(False)
-        title.setDrawsBackground_(False)
-        title.setEditable_(False)
-        title.setTextColor_(NSColor.labelColor())
-        self._detail.addSubview_(title)
-        y -= 36
-
-        label_w = 200
-        input_x = 8 + label_w + 10
-        input_w = min(220, w - input_x - 8)
-        row_h = 22
-        row_gap = 12
-
-        widgets: dict[str, object] = {}
-
-        def _label(text: str, ly: float) -> None:
-            lab = NSTextField.alloc().initWithFrame_(NSMakeRect(8, ly, label_w, row_h))
-            lab.setStringValue_(text)
-            lab.setAlignment_(2)  # right
-            lab.setBezeled_(False)
-            lab.setDrawsBackground_(False)
-            lab.setEditable_(False)
-            lab.setTextColor_(NSColor.labelColor())
-            self._detail.addSubview_(lab)
-
-        for f in fields:
-            key = f["key"]
-            kind = f.get("kind", "text")
-            default = f.get("default")
-            on_change = f.get("on_change")
-            _label(f.get("label", ""), y)
-
-            if kind == "switch":
-                sw = NSButton.alloc().initWithFrame_(NSMakeRect(input_x, y, input_w, row_h))
-                sw.setButtonType_(NSSwitchButton)
-                sw.setTitle_("")
-                sw.setState_(NSOnState if default else NSOffState)
-                if on_change is not None:
-                    handler = _get_action_handler_cls().alloc().initWithCallback_(
-                        lambda sender, cb=on_change: cb(bool(sender.state())))
-                    self._handlers.append(handler)
-                    sw.setTarget_(handler)
-                    sw.setAction_("fire:")
-                self._detail.addSubview_(sw)
-                widgets[key] = sw
-
-            elif kind == "segmented":
-                options = f.get("options") or []
-                seg = NSSegmentedControl.alloc().initWithFrame_(
-                    NSMakeRect(input_x, y, input_w, row_h))
-                seg.setSegmentCount_(len(options))
-                seg.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
-                seg.setControlSize_(NSRegularControlSize)
-                for idx, opt in enumerate(options):
-                    if isinstance(opt, tuple):
-                        label_text, image_path = opt
-                    else:
-                        label_text, image_path = str(opt), None
-                    if image_path and os.path.exists(image_path):
-                        try:
-                            img = NSImage.alloc().initWithContentsOfFile_(image_path)
-                            if img is not None:
-                                # 20px: tighter vertical room in the gear pane than the modal's 24px
-                                img.setSize_((20, 20))
-                                seg.setImage_forSegment_(img, idx)
-                                try:
-                                    seg.cell().setImageScaling_forSegment_(
-                                        NSImageScaleProportionallyDown, idx)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                    try:
-                        seg.setLabel_forSegment_(label_text, idx)
-                    except Exception:
-                        pass
-                try:
-                    seg.setSelectedSegment_(int(default) if default is not None else 0)
-                except Exception:
-                    pass
-                if on_change is not None:
-                    handler = _get_action_handler_cls().alloc().initWithCallback_(
-                        lambda sender, cb=on_change: cb(int(sender.selectedSegment())))
-                    self._handlers.append(handler)
-                    seg.setTarget_(handler)
-                    seg.setAction_("fire:")
-                self._detail.addSubview_(seg)
-                widgets[key] = seg
-
-            else:  # text
-                field = NSTextField.alloc().initWithFrame_(
-                    NSMakeRect(input_x, y, input_w, row_h))
-                field.setStringValue_(str(default) if default is not None else "")
-                field.setEditable_(True)
-                field.setSelectable_(True)
-                field.setBezeled_(True)
-                field.setTextColor_(NSColor.labelColor())
-                hint = f.get("hint")
-                if hint:
-                    try:
-                        field.cell().setPlaceholderString_(hint)
-                    except Exception:
-                        pass
-                self._detail.addSubview_(field)
-                widgets[key] = field
-                # Show the hint to the right of the port field too (the modal
-                # uses a placeholder; here the field often already has a value
-                # so surface the hint as a trailing note).
-                note_x = input_x + input_w + 10
-                if hint and note_x < w - 8:
-                    note = NSTextField.alloc().initWithFrame_(
-                        NSMakeRect(note_x, y, w - note_x - 8, row_h))
-                    note.setStringValue_(str(hint))
-                    note.setBezeled_(False)
-                    note.setDrawsBackground_(False)
-                    note.setEditable_(False)
-                    note.setFont_(NSFont.systemFontOfSize_(10))
-                    note.setTextColor_(NSColor.secondaryLabelColor())
-                    self._detail.addSubview_(note)
-
-            y -= row_h + row_gap
-
-        self._settings_widgets = widgets
-
-        # Buttons: Save / Revert / Open Config File
-        y -= 6
-        x = 8
-        for btn_title, cb in (
-            ("Save", self._on_settings_save),
-            ("Revert", self._on_settings_revert),
-            ("Open Config File", lambda: self.tray.do_open_config_file()),
-        ):
-            bw = max(80, 24 + 9 * len(btn_title))
-            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, bw, 28))
-            btn.setTitle_(btn_title)
-            btn.setBezelStyle_(1)
-            handler = _get_action_handler_cls().alloc().initWithCallback_(
-                lambda _s, fn=cb: fn())
-            self._handlers.append(handler)
-            btn.setTarget_(handler)
-            btn.setAction_("fire:")
-            self._detail.addSubview_(btn)
-            x += bw + 8
-
-    def _read_settings_widgets(self) -> dict:
-        """Read the gear-pane widget values into a result dict keyed like the
-        field spec (same keys _apply_settings expects)."""
-        result: dict = {}
-        widgets = self._settings_widgets or {}
-        for f in self._settings_fields_spec or []:
-            key = f["key"]
-            kind = f.get("kind", "text")
-            w = widgets.get(key)
-            if w is None:
-                continue
-            if kind == "switch":
-                result[key] = bool(w.state())
-            elif kind == "segmented":
-                result[key] = int(w.selectedSegment())
-            else:
-                result[key] = str(w.stringValue()).strip()
-        return result
-
-    def _on_settings_save(self) -> None:
-        if self._settings_ctx is None:
+        if self.selected_identity is None:
+            self._render_col3_placeholder("Select an item.")
             return
-        result = self._read_settings_widgets()
-        err = self.tray._apply_settings(result, self._settings_ctx)
-        if err is not None:
-            from susops.tray.mac import _show_message
-            _show_message(err[0], err[1])
-            # Keep the pane open with the user's edits.
-            self._render_settings_pane(defaults=result)
-            return
-        # Saved: re-render from the now-persisted config (resets ctx so a
-        # follow-up unchanged-port check uses the new saved values).
-        self._render_settings_pane()
+        # Task 3 renders the real detail; for now show the identity tuple as
+        # text (useful for dump/tests).
+        self._render_col3_placeholder(
+            "Detail pane lands in Task 3.\n"
+            + " · ".join(str(p) for p in self.selected_identity))
 
-    def _on_settings_revert(self) -> None:
-        # Discard edits + any live logo / bandwidth preview, then re-render
-        # from the current saved config.
-        self._revert_settings_preview()
-        self._render_settings_pane()
-
-    def _revert_settings_preview(self) -> None:
-        """Restore the menu-bar icon + bandwidth title to the saved config so a
-        previewed-but-unsaved logo style does not stick. Mirrors the modal
-        dialog's Cancel path."""
+    def _render_col3_placeholder(self, text: str) -> None:
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
+        for v in list(self._col3.subviews()):
+            v.removeFromSuperview()
+        del self._handlers[self._permanent_handler_count:]
+        w = self._col3.frame().size.width
+        h = self._col3.frame().size.height
+        lbl = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(24, h - TOP_INSET - 80, w - 48, 80))
+        lbl.setStringValue_(text)
+        lbl.setFont_(NSFont.systemFontOfSize_(13))
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setSelectable_(True)
+        lbl.setTextColor_(NSColor.secondaryLabelColor())
         try:
-            self.tray.update_icon(self.tray.state)
+            lbl.cell().setWraps_(True)
         except Exception:
             pass
+        self._col3.addSubview_(lbl)
+        self._col3_text = text
+
+    # ------------------------------------------------------------------ #
+    # Debug surface
+    # ------------------------------------------------------------------ #
+
+    def dump(self) -> dict:
+        return {
+            "open": self.is_open(),
+            "nav": [{"key": n.key, "title": n.title, "count": n.count}
+                    for n in self.nav_items],
+            "category": self.category,
+            "search": self.search_text,
+            "rows": [{"kind": r.kind, "title": r.title, "subtitle": r.subtitle,
+                      "dot": r.dot, "badge": r.badge, "dimmed": r.dimmed}
+                     for r in self.rows],
+            "selected": list(self.selected_identity)
+            if self.selected_identity else None,
+            "detail_title": None,
+            "dirty": False,
+        }
+
+    def select(self, category: str, index: int | None = None) -> dict:
+        if category not in CATEGORIES:
+            return {"error": f"unknown category: {category}"}
+        self._select_nav(category)
+        if index is None:
+            return {"ok": True, "selected": None, "category": category}
+        item_rows = [i for i, r in enumerate(self.rows) if r.kind == "item"]
+        if index < 0 or index >= len(item_rows):
+            return {"error": f"no item row at index {index} in {category}"}
+        target = item_rows[index]
+        self._select_table_row(self._list_tv, target)
+        self.selected_identity = self.rows[target].identity
+        self._render_selection_placeholder()
+        return {"ok": True, "selected": list(self.selected_identity)}
+
+    def set_search(self, text: str) -> dict:
         try:
-            self.tray.refresh_bandwidth_title()
+            self._search_field.setStringValue_(text)
         except Exception:
             pass
+        self._on_search(text)
+        return {"ok": True, "search": self.search_text,
+                "rows": len([r for r in self.rows if r.kind == "item"])}

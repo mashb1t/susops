@@ -1995,8 +1995,15 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _debug_handlers(self) -> dict:
         """Debug-server command table (ping, dump-menu, open-about, open-config,
-        select, dump-window, action, screenshot, quit). Every UI-touching handler
-        marshals via _run_on_main."""
+        select, dump-window, search, action, screenshot, quit). Every
+        UI-touching handler marshals via _run_on_main.
+
+        open-config [category] — category key (connections/domains/forwards/
+            shares/settings) or omitted.
+        select <category> [index] — switch nav, then select the index-th
+            selectable item row in column 2.
+        search [text…] — set the search field string (empty clears) + filter.
+        """
 
         def _screenshot(args):
             if not args:
@@ -2024,20 +2031,16 @@ class SusOpsMacTray(AbstractTrayApp):
             "open-config": lambda args: _run_on_main(
                 lambda: (self._ensure_config_window().open(args[0] if args else None),
                          {"ok": True})[1]),
-            "select": lambda args: _run_on_main(
+            "select": lambda args: (_run_on_main(
                 lambda: self._ensure_config_window().select(
                     args[0],
-                    args[1] if len(args) > 1 else None,
-                    int(args[2]) if len(args) > 2 else 0)),
+                    int(args[1]) if len(args) > 1 else None))
+                if args else {"error": "usage: select <category> [index]"}),
             "dump-window": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().dump()),
-            "action": lambda args: (_run_on_main(
-                lambda: (self.dispatch_window_action(
-                    args[0],
-                    tuple((getattr(self, "_config_window", None)
-                           and self._config_window._selected_identity()) or ())),
-                    {"ok": True})[1]) if args
-                else {"error": "usage: action <action_id>"}),
+            "search": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().set_search(" ".join(args))),
+            "action": lambda args: {"error": "actions land in Task 3"},
             "screenshot": _screenshot,
             "quit": _quit,
         }
