@@ -1,6 +1,7 @@
 """AbstractTrayApp — shared tray app logic for Linux and macOS."""
 from __future__ import annotations
 
+import os
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -66,6 +67,15 @@ from susops.client import SusOpsClient
 from susops.core.config import PortForward
 
 
+def _resolve_workspace() -> Path:
+    """Workspace dir for the tray. SUSOPS_TRAY_WORKSPACE overrides ~/.susops
+    so a dev/test instance can run alongside the user's real tray."""
+    env = os.environ.get("SUSOPS_TRAY_WORKSPACE")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".susops"
+
+
 class AbstractTrayApp(ABC):
     """Base class for tray apps. Subclasses implement the platform-specific UI layer.
 
@@ -78,7 +88,7 @@ class AbstractTrayApp(ABC):
     """
 
     def __init__(self) -> None:
-        workspace = Path.home() / ".susops"
+        workspace = _resolve_workspace()
         self.manager = SusOpsClient(workspace=workspace, process_name="susops-tray")
         self.state = ProcessState.INITIAL
 
