@@ -10,7 +10,6 @@ file-open panel for share, and a custom About panel.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import threading
 from pathlib import Path
@@ -2217,13 +2216,13 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
-        #   RUNNING            → Start off,  Stop on,  Restart on,  TestAll on
-        #   STOPPED_PARTIALLY  → Start on,   Stop on,  Restart on,  TestAll on
-        #   STOPPED  / INITIAL → Start on,   Stop off, Restart off, TestAll off
+        #   RUNNING            → Start off,  Stop on,  Restart on
+        #   STOPPED_PARTIALLY  → Start on,   Stop on,  Restart on
+        #   STOPPED  / INITIAL → Start on,   Stop off, Restart off
         #   ERROR              → all off (recovery is via Reset)
         running_like = state in (ProcessState.RUNNING, ProcessState.STOPPED_PARTIALLY)
         start_on = state in (ProcessState.STOPPED, ProcessState.STOPPED_PARTIALLY, ProcessState.INITIAL)
-        action_on = running_like  # Stop / Restart / Test All
+        action_on = running_like  # Stop / Restart
 
         if hasattr(self, "_item_start"):
             self._item_start._menuitem.setEnabled_(start_on)  # type: ignore[attr-defined]
