@@ -900,7 +900,7 @@ class ConfigWindow:
                      if getattr(s, "tag", None) == tag), None)
 
     # ------------------------------------------------------------------ #
-    # Detail renderer (static presentation; editable controls land in T4)
+    # Detail renderer (static presentation, editable controls land in T4)
     # ------------------------------------------------------------------ #
 
     def _render_detail(self, spec) -> None:

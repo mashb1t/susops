@@ -2149,8 +2149,12 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "share.stop":
                 self.do_stop_share(port)
             elif action_id == "share.start":
-                self.do_share(info.conn_tag, info.file_path,
-                              password=info.password, port=info.port)
+                if not info.conn_tag:
+                    self.show_alert("Cannot Start Share",
+                                    "This share has no connection configured.")
+                else:
+                    self.do_share(info.conn_tag, info.file_path,
+                                  password=info.password, port=info.port)
             elif action_id == "share.delete":
                 if _show_confirm("Delete Share",
                                  f"Delete share on port {port}?", ok="Delete"):
@@ -2162,9 +2166,10 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_config_window()
 
     def _copy_to_pasteboard(self, text: str) -> None:
-        """Put text on the general pasteboard. AppKit on the main thread; the
-        button-handler dispatch path already runs there and the debug `action`
-        path marshals via _run_on_main, so it is safe to call directly."""
+        """Put text on the general pasteboard. AppKit on the main thread.
+        The button-handler dispatch path already runs there and the debug
+        `action` path marshals via _run_on_main, so it is safe to call
+        directly."""
         from AppKit import NSPasteboard  # type: ignore[import]
         try:
             from AppKit import NSPasteboardTypeString  # type: ignore[import]
