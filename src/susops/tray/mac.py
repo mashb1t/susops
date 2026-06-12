@@ -2772,14 +2772,15 @@ class SusOpsMacTray(AbstractTrayApp):
             self.do_add_connection(tag, host, port_int)
             return
 
-    def _show_add_host_dialog(self) -> None:
+    def _show_add_host_dialog(self, conn_tag: str | None = None) -> None:
         cfg = self.manager.list_config()
         tags = [c.tag for c in cfg.connections]
         if not tags:
             _show_message("No Connections", "Add a connection first.")
             return
         fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
+            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags,
+             "default": conn_tag if (conn_tag and conn_tag in tags) else tags[0]},
             {"key": "host", "label": "Host / IP / CIDR *:", "kind": "text",
              "hint": "domain, IP address, or CIDR"},
             {"key": "_info", "label": "", "kind": "info",
@@ -2800,7 +2801,7 @@ class SusOpsMacTray(AbstractTrayApp):
             self.do_add_pac_host(host, conn_tag=conn_tag)
             return
 
-    def _show_add_forward_dialog(self, *, remote: bool) -> None:
+    def _show_add_forward_dialog(self, *, remote: bool, conn_tag: str | None = None) -> None:
         cfg = self.manager.list_config()
         tags = [c.tag for c in cfg.connections]
         if not tags:
@@ -2814,7 +2815,8 @@ class SusOpsMacTray(AbstractTrayApp):
         dst_bind_label = "Local Bind (optional):" if remote else "Remote Bind (optional):"
 
         fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
+            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags,
+             "default": conn_tag if (conn_tag and conn_tag in tags) else tags[0]},
             {"key": "tag", "label": "Tag (optional):", "kind": "text", "hint": "optional label"},
             {"key": "src", "label": src_label, "kind": "text", "hint": "e.g. 8080"},
             {"key": "dst", "label": dst_label, "kind": "text", "hint": "e.g. 80"},

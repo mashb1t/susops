@@ -76,3 +76,17 @@ def test_window_reflects_external_changes(tray_proc):
     time.sleep(4)  # > one poll interval
     labels = [r["label"] for r in tray_proc.send("dump-window")["sidebar"]]
     assert any("added-later.de" in l for l in labels)
+
+
+def test_add_menu_populated(tray_proc):
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config").get("ok")
+    dump = tray_proc.send("dump-window")
+    menu = dump.get("add_menu", [])
+    assert any("Add Domain" in m for m in menu)
+    assert any("Add Local Forward" in m for m in menu)
+    assert any("Add Remote Forward" in m for m in menu)
+    assert any("Share File" in m for m in menu)
+    assert any("Fetch File" in m for m in menu)

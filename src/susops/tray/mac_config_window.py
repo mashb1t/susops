@@ -207,6 +207,8 @@ class ConfigWindow:
             ],
             "selected": self._selected_identity(),
             "detail_title": self._current_detail_title,
+            "add_menu": [str(self._add_btn.itemTitleAtIndex_(i))
+                         for i in range(self._add_btn.numberOfItems())],
         }
 
     def select(self, tag: str, group: str | None = None, index: int = 0) -> dict:
@@ -307,10 +309,23 @@ class ConfigWindow:
         content.addSubview_(scroll)
         self._sidebar_tv = tv
 
-        # Pull-down items + handler wired in Task 8 (per-group add actions).
+        # Pull-down: item 0 is the visible title, items 1+ are commands.
         add_btn = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(12, 12, SIDEBAR_W, ADD_BTN_H), True)
-        add_btn.addItemWithTitle_("Add…")
+        add_btn.removeAllItems()
+        add_btn.addItemsWithTitles_([
+            "Add…",
+            "Add Domain / IP / CIDR…",
+            "Add Local Forward…",
+            "Add Remote Forward…",
+            "Share File…",
+            "Fetch File…",
+        ])
+        add_handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda sender: self._on_add_command(str(sender.titleOfSelectedItem() or "")))
+        self._handlers.append(add_handler)
+        add_btn.setTarget_(add_handler)
+        add_btn.setAction_("fire:")
         content.addSubview_(add_btn)
         self._add_btn = add_btn
 
@@ -378,6 +393,22 @@ class ConfigWindow:
                 0.0, False,
                 lambda _t: self._render_placeholder("App settings move here in Task 9.")
             )
+
+    def _on_add_command(self, title: str) -> None:
+        tag = self.current_tag
+        if tag is None:
+            return
+        if title.startswith("Add Domain"):
+            self.tray._show_add_host_dialog(conn_tag=tag)
+        elif title.startswith("Add Local"):
+            self.tray._show_add_forward_dialog(remote=False, conn_tag=tag)
+        elif title.startswith("Add Remote"):
+            self.tray._show_add_forward_dialog(remote=True, conn_tag=tag)
+        elif title.startswith("Share File"):
+            self.tray._show_share_file_dialog(conn_tag=tag)
+        elif title.startswith("Fetch File"):
+            self.tray._show_fetch_file_dialog(conn_tag=tag)
+        self.tray._refresh_config_window()
 
     def _restore_segment_selection(self) -> None:
         conn_tags = [t.tag for t in self.tabs if t.kind == "connection"]
