@@ -13,15 +13,23 @@ from __future__ import annotations
 import os
 
 from susops.tray.config_window_model import (
-    DetailSpec,
     SidebarRow,
     TabSpec,
-    build_connection_detail,
-    build_domain_detail,
-    build_forward_detail,
-    build_share_detail,
     build_sidebar_rows,
     build_tab_specs,
+)
+from susops.tray.config_window_model import _V1DetailSpec as DetailSpec
+from susops.tray.config_window_model import (
+    build_connection_detail_v1 as build_connection_detail,
+)
+from susops.tray.config_window_model import (
+    build_domain_detail_v1 as build_domain_detail,
+)
+from susops.tray.config_window_model import (
+    build_forward_detail_v1 as build_forward_detail,
+)
+from susops.tray.config_window_model import (
+    build_share_detail_v1 as build_share_detail,
 )
 
 _sidebar_ds_cls = None
