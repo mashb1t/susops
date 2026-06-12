@@ -2141,6 +2141,23 @@ class SusOpsMacTray(AbstractTrayApp):
                         self.do_remove_local_forward(src_port)
                     else:
                         self.do_remove_remote_forward(src_port)
+        elif kind == "share":
+            port = identity[1]
+            info = next((s for s in self.manager.list_shares() if s.port == port), None)
+            if info is None:
+                pass  # vanished; refresh below handles it
+            elif action_id == "share.reveal":
+                _show_message("Share Password",
+                              f"{Path(info.file_path).name}\nPassword: {info.password}")
+            elif action_id == "share.stop":
+                self.do_stop_share(port)
+            elif action_id == "share.start":
+                self.do_share(info.conn_tag, info.file_path,
+                              password=info.password, port=info.port)
+            elif action_id == "share.delete":
+                if _show_confirm("Delete Share",
+                                 f"Delete share on port {port}?", ok="Delete"):
+                    self.do_delete_share(port)
         self._refresh_config_window()
 
     _cw_refresh_gen: int = 0         # monotonic; incremented on each request
@@ -2996,7 +3013,7 @@ class SusOpsMacTray(AbstractTrayApp):
     # File transfer dialogs
     # ------------------------------------------------------------------ #
 
-    def _show_share_file_dialog(self) -> None:
+    def _show_share_file_dialog(self, conn_tag: str | None = None) -> None:
         tags = [c.tag for c in self.manager.list_config().connections]
         if not tags:
             _show_message("No Connections", "Add a connection first.")
@@ -3007,7 +3024,8 @@ class SusOpsMacTray(AbstractTrayApp):
             return
 
         fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
+            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags,
+             "default": conn_tag if (conn_tag and conn_tag in tags) else tags[0]},
             {"key": "file", "label": "File:", "kind": "text", "default": file_path},
             {"key": "pw", "label": "Password (optional):", "kind": "text", "hint": "auto-generate if blank"},
             {"key": "port", "label": "Port:", "kind": "text", "default": "0", "hint": "0 = auto"},
@@ -3040,14 +3058,15 @@ class SusOpsMacTray(AbstractTrayApp):
             self.do_share(conn_tag, fp, password=pw, port=port_int)
             return
 
-    def _show_fetch_file_dialog(self) -> None:
+    def _show_fetch_file_dialog(self, conn_tag: str | None = None) -> None:
         tags = [c.tag for c in self.manager.list_config().connections]
         if not tags:
             _show_message("No Connections", "Add a connection first.")
             return
 
         fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
+            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags,
+             "default": conn_tag if (conn_tag and conn_tag in tags) else tags[0]},
             {"key": "port", "label": "Port *:", "kind": "text", "hint": "e.g. 52100"},
             {"key": "pw", "label": "Password *:", "kind": "text"},
             {"key": "out", "label": "Save to (optional):", "kind": "text",
