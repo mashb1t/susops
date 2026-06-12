@@ -995,29 +995,6 @@ def _show_form_dialog(
     return result
 
 
-def _show_pick_dialog(
-        title: str,
-        label: str,
-        items: list[str],
-        *,
-        ok_title: str = "Select",
-        cancel_title: str = "Cancel",
-) -> str | None:
-    """Show an NSAlert with a single NSPopUpButton; returns selected item or None."""
-    if not items:
-        _show_message("Nothing to Select", "The list is empty.")
-        return None
-    result = _show_form_dialog(
-        title,
-        [{"key": "value", "label": label, "kind": "popup", "options": items, "default": items[0]}],
-        ok_title=ok_title,
-        cancel_title=cancel_title,
-    )
-    if result is None:
-        return None
-    return result.get("value") or None
-
-
 def _show_message_panel(
         title: str,
         message: str,
@@ -1965,7 +1942,6 @@ class SusOpsMacTray(AbstractTrayApp):
             template=False,
             quit_button=None,
         )
-        self._active_shares: list = []
         # Tri-state cache for launch-at-login: None until the background probe finishes.
         # Synchronous osascript would block the main thread (and can trigger a TCC prompt
         # the first time), so we never query it from the menu callback.
@@ -2255,8 +2231,6 @@ class SusOpsMacTray(AbstractTrayApp):
             self._item_stop._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
         if hasattr(self, "_item_restart"):
             self._item_restart._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
-        if hasattr(self, "_item_test_all"):
-            self._item_test_all._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
         if hasattr(self, "_item_status"):
             # SVG status indicator (green / orange / grey / red) shown as the
             # menu item's icon — matches susops-mac's status-icon pattern.
@@ -2392,108 +2366,22 @@ class SusOpsMacTray(AbstractTrayApp):
         self._item_stop = rumps.MenuItem("Stop Proxy", callback=lambda _: self.do_stop())
         self._item_restart = rumps.MenuItem("Restart Proxy", callback=lambda _: self.do_restart(), key="r")
 
-        # Add submenu
-        add_menu = rumps.MenuItem("Add")
-        add_menu["Add Connection"] = rumps.MenuItem(
-            "Add Connection", callback=lambda _: self._show_add_connection_dialog()
-        )
-        add_menu["Add Domain / IP / CIDR"] = rumps.MenuItem(
-            "Add Domain / IP / CIDR", callback=lambda _: self._show_add_host_dialog()
-        )
-        add_menu["Add Local Forward"] = rumps.MenuItem(
-            "Add Local Forward", callback=lambda _: self._show_add_forward_dialog(remote=False)
-        )
-        add_menu["Add Remote Forward"] = rumps.MenuItem(
-            "Add Remote Forward", callback=lambda _: self._show_add_forward_dialog(remote=True)
-        )
-
-        # Remove submenu
-        rm_menu = rumps.MenuItem("Remove")
-        rm_menu["Remove Connection"] = rumps.MenuItem(
-            "Remove Connection", callback=lambda _: self._show_rm_connection_dialog()
-        )
-        rm_menu["Remove Domain / IP / CIDR"] = rumps.MenuItem(
-            "Remove Domain / IP / CIDR", callback=lambda _: self._show_rm_host_dialog()
-        )
-        rm_menu["Remove Local Forward"] = rumps.MenuItem(
-            "Remove Local Forward", callback=lambda _: self._show_rm_local_dialog()
-        )
-        rm_menu["Remove Remote Forward"] = rumps.MenuItem(
-            "Remove Remote Forward", callback=lambda _: self._show_rm_remote_dialog()
-        )
-
-        # Manage submenu
-        manage_menu = rumps.MenuItem("Manage")
-        manage_menu["Toggle Connection Enabled…"] = rumps.MenuItem(
-            "Toggle Connection Enabled…", callback=lambda _: self._show_toggle_connection_dialog()
-        )
-        manage_menu["Toggle Domain Enabled…"] = rumps.MenuItem(
-            "Toggle Domain Enabled…", callback=lambda _: self._show_toggle_domain_dialog()
-        )
-        manage_menu["Toggle Forward Enabled…"] = rumps.MenuItem(
-            "Toggle Forward Enabled…", callback=lambda _: self._show_toggle_forward_dialog()
-        )
-        manage_menu["---1"] = None
-        manage_menu["Start Connection…"] = rumps.MenuItem(
-            "Start Connection…", callback=lambda _: self._show_start_connection_dialog()
-        )
-        manage_menu["Stop Connection…"] = rumps.MenuItem(
-            "Stop Connection…", callback=lambda _: self._show_stop_connection_dialog()
-        )
-        manage_menu["Restart Connection…"] = rumps.MenuItem(
-            "Restart Connection…", callback=lambda _: self._show_restart_connection_dialog()
-        )
-
-        # Test submenu
-        self._item_test_all = rumps.MenuItem(
-            "Test All PAC Hosts", callback=lambda _: self.do_test()
-        )
-        test_menu = rumps.MenuItem("Test")
-        test_menu["Test Connection…"] = rumps.MenuItem(
-            "Test Connection…", callback=lambda _: self._show_test_connection_dialog()
-        )
-        test_menu["Test Domain…"] = rumps.MenuItem(
-            "Test Domain…", callback=lambda _: self._show_test_domain_dialog()
-        )
-        test_menu["Test Forward…"] = rumps.MenuItem(
-            "Test Forward…", callback=lambda _: self._show_test_forward_dialog()
-        )
-        test_menu["---"] = None
-        test_menu["Test All PAC Hosts"] = self._item_test_all
-
         # Launch Browser submenu — built dynamically from installed apps
         self._browser_menu = rumps.MenuItem("Launch Browser")
         self._rebuild_browser_submenu()
 
-        # File Transfer submenu
-        self._ft_menu = rumps.MenuItem("File Transfer")
-        self._ft_menu["Share File…"] = rumps.MenuItem(
-            "Share File…", callback=lambda _: self._show_share_file_dialog()
-        )
-        self._ft_menu["Fetch File…"] = rumps.MenuItem(
-            "Fetch File…", callback=lambda _: self._show_fetch_file_dialog()
-        )
-
         self._app.menu = [
             self._item_status,
             None,
-            rumps.MenuItem("Settings…", callback=lambda _: self._show_settings_dialog(), key=","),
-            rumps.MenuItem("Config Window…", callback=lambda _: self._show_config_window()),
-            None,
-            add_menu,
-            rm_menu,
-            manage_menu,
-            rumps.MenuItem("Open Config File", callback=lambda _: self.do_open_config_file()),
+            rumps.MenuItem("Settings…", callback=lambda _: self._show_config_window(), key=","),
             None,
             self._item_start,
             self._item_stop,
             self._item_restart,
             None,
-            test_menu,
             rumps.MenuItem("Show Status", callback=lambda _: self.do_status()),
             rumps.MenuItem("Show Logs", callback=lambda _: self.do_logs()),
             self._browser_menu,
-            self._ft_menu,
             None,
             rumps.MenuItem("Reset All", callback=lambda _: self._confirm_reset()),
             None,
@@ -2542,46 +2430,8 @@ class SusOpsMacTray(AbstractTrayApp):
 
         return handler
 
-    # ------------------------------------------------------------------ #
-    # File-transfer share submenu refresh (optimized — only on change)
-    # ------------------------------------------------------------------ #
-
-    def _refresh_share_submenu(self) -> None:
-        import pathlib
-        rumps = self._rumps
-        new_shares = self.manager.list_shares()
-
-        def _share_key(info):
-            return (info.port, info.running, info.file_path)
-
-        old_keys = [_share_key(s) for s in self._active_shares]
-        new_keys = [_share_key(s) for s in new_shares]
-        if old_keys == new_keys:
-            return
-
-        self._active_shares = new_shares
-
-        # Remove old dynamic entries (everything except Share File… and Fetch File…)
-        for key in list(self._ft_menu.keys()):
-            if key not in ("Share File…", "Fetch File…"):
-                del self._ft_menu[key]
-
-        if not self._active_shares:
-            return
-
-        self._ft_menu["---"] = None
-        for info in self._active_shares:
-            name = pathlib.Path(info.file_path).name
-            dot = "●" if info.running else "○"
-            label = f"{dot} {name} ({info.port})"
-            self._ft_menu[label] = rumps.MenuItem(
-                label,
-                callback=self._make_share_info_handler(info),
-            )
-
     def do_poll(self) -> None:
         super().do_poll()
-        self._refresh_share_submenu()
         self._refresh_config_window()
 
     # ------------------------------------------------------------------ #
@@ -2591,9 +2441,9 @@ class SusOpsMacTray(AbstractTrayApp):
     def _settings_fields(self, defaults: dict | None = None) -> tuple[list[dict], dict]:
         """Build the app-settings field spec + a context dict.
 
-        Single source of truth for the settings form, shared by the modal
-        _show_settings_dialog and the config-window gear pane. Returns
-        (fields, ctx). ctx carries the current saved port values, the logo
+        Single source of truth for the settings form used by the config-window
+        gear pane. Returns (fields, ctx). ctx carries the current saved port
+        values, the logo
         style list, and the saved logo so _apply_settings can validate
         "unchanged" ports and resolve the segmented selection back to a
         LogoStyle.
@@ -2744,28 +2594,6 @@ class SusOpsMacTray(AbstractTrayApp):
         self.update_icon(self.state)
         return None
 
-    def _show_settings_dialog(self) -> None:
-        # Thin loop over the shared field spec + validation/persist. Behavior
-        # identical to the pre-extraction version: build fields, show modal,
-        # on Cancel revert any logo/bandwidth preview, on Save validate; if
-        # invalid show the message and re-show the form keeping edits.
-        defaults: dict | None = None
-        while True:
-            fields, ctx = self._settings_fields(defaults)
-            result = _show_form_dialog("Settings", fields, ok_title="Save", cancel_title="Cancel")
-            if result is None:
-                # Revert any preview
-                self.update_icon(self.state)
-                self.refresh_bandwidth_title()
-                return
-            # Keep edits if validation fails.
-            defaults = dict(result)
-            err = self._apply_settings(result, ctx)
-            if err is not None:
-                _show_message(err[0], err[1])
-                continue
-            return
-
     # ------------------------------------------------------------------ #
     # Add dialogs
     # ------------------------------------------------------------------ #
@@ -2911,144 +2739,6 @@ class SusOpsMacTray(AbstractTrayApp):
             return
 
     # ------------------------------------------------------------------ #
-    # Remove dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_rm_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Remove Connection", "Connection:", tags, ok_title="Remove")
-        if selected:
-            self.do_remove_connection(selected)
-
-    def _show_rm_host_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        hosts = [h for c in cfg.connections for h in c.pac_hosts]
-        selected = _show_pick_dialog("Remove Domain / IP / CIDR", "Host:", hosts, ok_title="Remove")
-        if selected:
-            self.do_remove_pac_host(selected)
-
-    def _show_rm_local_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        port_map: dict[str, int] = {}
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                label = f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}"
-                items.append(label)
-                port_map[label] = fw.src_port
-        selected = _show_pick_dialog("Remove Local Forward", "Local Forward:", items, ok_title="Remove")
-        if selected and selected in port_map:
-            self.do_remove_local_forward(port_map[selected])
-
-    def _show_rm_remote_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        port_map: dict[str, int] = {}
-        for c in cfg.connections:
-            for fw in c.forwards.remote:
-                label = f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}"
-                items.append(label)
-                port_map[label] = fw.src_port
-        selected = _show_pick_dialog("Remove Remote Forward", "Remote Forward:", items, ok_title="Remove")
-        if selected and selected in port_map:
-            self.do_remove_remote_forward(port_map[selected])
-
-    # ------------------------------------------------------------------ #
-    # Manage / toggle dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_toggle_connection_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items = [f"[{'✓' if c.enabled else '✗'}] {c.tag}" for c in cfg.connections]
-        selected = _show_pick_dialog("Toggle Connection Enabled", "Connection:", items, ok_title="Toggle")
-        if selected:
-            tag = selected.split("] ", 1)[-1]
-            self.do_toggle_connection_enabled(tag)
-
-    def _show_toggle_domain_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for h in c.pac_hosts:
-                enabled = h not in c.pac_hosts_disabled
-                items.append(f"[{'✓' if enabled else '✗'}] {h}")
-        selected = _show_pick_dialog("Toggle Domain Enabled", "Domain:", items, ok_title="Toggle")
-        if selected:
-            host = selected.split("] ", 1)[-1]
-            self.do_toggle_pac_host_enabled(host)
-
-    def _show_toggle_forward_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-        selected = _show_pick_dialog("Toggle Forward Enabled", "Forward:", items, ok_title="Toggle")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
-                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
-
-    def _show_start_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Start Connection", "Connection:", tags, ok_title="Start")
-        if selected:
-            self.do_start_connection(selected)
-
-    def _show_stop_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Stop Connection", "Connection:", tags, ok_title="Stop")
-        if selected:
-            self.do_stop_connection(selected)
-
-    def _show_restart_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Restart Connection", "Connection:", tags, ok_title="Restart")
-        if selected:
-            self.do_restart_connection(selected)
-
-    # ------------------------------------------------------------------ #
-    # Test dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_test_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Test Connection", "Connection:", tags, ok_title="Test")
-        if selected:
-            self.do_test_connection(selected)
-
-    def _show_test_domain_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for h in c.pac_hosts:
-                items.append(f"[{c.tag}] {h}")
-        selected = _show_pick_dialog("Test Domain", "Domain (via connection):", items, ok_title="Test")
-        if selected:
-            m = re.match(r"\[([^\]]+)\] (.+)", selected)
-            if m:
-                self.do_test_domain(m.group(2), m.group(1))
-
-    def _show_test_forward_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-        selected = _show_pick_dialog("Test Forward", "Forward:", items, ok_title="Test")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
-
-    # ------------------------------------------------------------------ #
     # File transfer dialogs
     # ------------------------------------------------------------------ #
 
@@ -3133,40 +2823,6 @@ class SusOpsMacTray(AbstractTrayApp):
             self.do_fetch(conn_tag, port_int, pw, outfile=outfile)
             return
 
-    def _make_share_info_handler(self, info):
-        def handler(_sender):
-            self._show_share_info_dialog(info)
-
-        return handler
-
-    def _show_share_info_dialog(self, info) -> None:
-        name = Path(info.file_path).name
-        state = "running" if info.running else "stopped"
-        toggle_label = "Stop" if info.running else "Start"
-        message = (
-            f"File: {info.file_path}\n"
-            f"Port: {info.port}\n"
-            f"Password: {info.password}\n"
-            f"Connection: {info.conn_tag or '—'}\n"
-            f"State: {state}"
-        )
-        choice = _show_three_way(
-            f"Share: {name}",
-            message,
-            primary=toggle_label,
-            secondary="Delete",
-            cancel="Close",
-        )
-        if choice == 1:
-            if info.running:
-                self.do_stop_share(info.port)
-            else:
-                self.do_share(info.conn_tag or "", info.file_path, info.password, info.port)
-            self._refresh_share_submenu()
-        elif choice == 2:
-            self.do_delete_share(info.port)
-            self._refresh_share_submenu()
-
     # ------------------------------------------------------------------ #
     # Reset / About / Quit
     # ------------------------------------------------------------------ #
@@ -3231,7 +2887,7 @@ class SusOpsMacTray(AbstractTrayApp):
                                 if "event: state" in buf:
                                     _on_main(self.do_poll)
                                 if "event: share" in buf:
-                                    _on_main(self._refresh_share_submenu)
+                                    _on_main(self._refresh_config_window)
                                 buf = ""
                 except Exception:
                     time.sleep(backoff)

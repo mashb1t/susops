@@ -135,3 +135,30 @@ def test_gear_tab_shows_settings_and_hides_sidebar(tray_proc):
         time.sleep(0.25)
     assert dump.get("gear") is False
     assert dump.get("sidebar_hidden") is False
+
+
+EXPECTED_MENU = [
+    "SusOps:",        # status item (prefix match)
+    "Settings…",
+    "Start Proxy",
+    "Stop Proxy",
+    "Restart Proxy",
+    "Show Status",
+    "Show Logs",
+    "Launch Browser",
+    "Reset All",
+    "About SusOps",
+    "Quit",
+]
+
+REMOVED_MENU = ["Add", "Remove", "Manage", "Test", "File Transfer",
+                "Open Config File", "Config Window…"]
+
+
+def test_unified_menu_structure(tray_proc):
+    menu = tray_proc.send("dump-menu")["menu"]
+    titles = [n["title"] for n in menu if "title" in n]
+    for expected in EXPECTED_MENU:
+        assert any(t.startswith(expected) for t in titles), f"missing {expected}"
+    for removed in REMOVED_MENU:
+        assert not any(t == removed for t in titles), f"should be gone: {removed}"
