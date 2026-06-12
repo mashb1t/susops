@@ -39,3 +39,19 @@ def test_screenshot_of_about_panel(tray_proc, tmp_path):
     assert result.get("ok"), result
     assert out.stat().st_size > 5_000  # a real PNG, not a stub
     assert result["width"] > 100 and result["height"] > 100
+
+
+def test_config_window_opens_and_dumps(tray_proc):
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_pac_host("blabla.de", conn_tag="work")
+    assert tray_proc.send("open-config").get("ok")
+    dump = tray_proc.send("dump-window")
+    assert dump["open"] is True
+    assert any("work" in t for t in dump["tabs"])
+    labels = [r["label"] for r in dump["sidebar"]]
+    assert "DOMAINS" in labels
+    assert any("blabla.de" in l for l in labels)
+    sel = tray_proc.send("select work domains 0")
+    assert sel.get("ok"), sel

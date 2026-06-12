@@ -108,10 +108,13 @@ def build_connection_detail(conn, status) -> DetailSpec:
         status_text = f"{DOT_ON} running" + (f" · pid {pid}" if pid else "")
     else:
         status_text = f"{DOT_OFF} stopped"
+    socks_port = getattr(conn, "socks_proxy_port", None)
+    if socks_port is None:
+        socks_port = getattr(conn, "socks_port", None)
     rows = [
         ("Tag", conn.tag),
         ("SSH Host", conn.ssh_host),
-        ("SOCKS Port", str(conn.socks_port or "auto")),
+        ("SOCKS Port", str(socks_port or "auto")),
         ("Status", status_text),
     ]
     actions = [

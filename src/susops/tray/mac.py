@@ -2045,6 +2045,16 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: {"menu": _menu_tree(self._app.menu)}),
             "open-about": lambda args: _run_on_main(
                 lambda: (_show_about_panel(), {"ok": True})[1]),
+            "open-config": lambda args: _run_on_main(
+                lambda: (self._ensure_config_window().open(args[0] if args else None),
+                         {"ok": True})[1]),
+            "select": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().select(
+                    args[0],
+                    args[1] if len(args) > 1 else None,
+                    int(args[2]) if len(args) > 2 else 0)),
+            "dump-window": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().dump()),
             "screenshot": _screenshot,
             "quit": _quit,
         }
@@ -2059,6 +2069,77 @@ class SusOpsMacTray(AbstractTrayApp):
             for entry in store.values():
                 return entry["panel"]
         return None
+
+    # ------------------------------------------------------------------ #
+    # Config window
+    # ------------------------------------------------------------------ #
+
+    def _ensure_config_window(self):
+        if self._config_window is None:
+            from susops.tray.mac_config_window import ConfigWindow
+            self._config_window = ConfigWindow(self)
+        return self._config_window
+
+    def _show_config_window(self, tab: str | None = None) -> None:
+        def _open():
+            self._ensure_config_window().open(tab)
+        _on_main(_open)
+
+    def run_add_connection_from_window(self) -> None:
+        """Called by the window's '+' tab. Same flow as the menu item."""
+        self._show_add_connection_dialog()
+        self._refresh_config_window()
+
+    def dispatch_window_action(self, action_id: str, identity: tuple) -> None:
+        """Map a detail-pane action onto the existing do_* methods.
+        Extended for shares in Task 7."""
+        conn_tag = self._config_window.current_tag if self._config_window else None
+        if conn_tag is None:
+            return
+        kind = identity[0] if identity else None
+        if action_id == "conn.start":
+            self.do_start_connection(conn_tag)
+        elif action_id == "conn.stop":
+            self.do_stop_connection(conn_tag)
+        elif action_id == "conn.restart":
+            self.do_restart_connection(conn_tag)
+        elif action_id == "conn.test":
+            self.do_test_connection(conn_tag)
+        elif action_id == "conn.toggle":
+            self.do_toggle_connection_enabled(conn_tag)
+        elif action_id == "conn.remove":
+            if _show_confirm("Remove Connection",
+                             f"Remove connection '{conn_tag}' and all its "
+                             f"domains, forwards and shares?", ok="Remove"):
+                self.do_remove_connection(conn_tag)
+        elif kind == "domain":
+            host = identity[1]
+            if action_id == "domain.test":
+                self.do_test_domain(host, conn_tag)
+            elif action_id == "domain.toggle":
+                self.do_toggle_pac_host_enabled(host)
+            elif action_id == "domain.remove":
+                if _show_confirm("Remove Domain", f"Remove '{host}'?", ok="Remove"):
+                    self.do_remove_pac_host(host)
+        elif kind == "forward":
+            _, direction, src_port = identity
+            if action_id == "forward.test":
+                self.do_test_forward(conn_tag, src_port, direction)
+            elif action_id == "forward.toggle":
+                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+            elif action_id == "forward.remove":
+                if _show_confirm("Remove Forward", f"Remove :{src_port} ({direction})?",
+                                 ok="Remove"):
+                    if direction == "local":
+                        self.do_remove_local_forward(src_port)
+                    else:
+                        self.do_remove_remote_forward(src_port)
+        self._refresh_config_window()
+
+    def _refresh_config_window(self) -> None:
+        cw = self._config_window
+        if cw is not None and cw.is_open():
+            _on_main(cw.refresh)
 
     # ------------------------------------------------------------------ #
     # AbstractTrayApp implementation
@@ -2339,6 +2420,7 @@ class SusOpsMacTray(AbstractTrayApp):
             self._item_status,
             None,
             rumps.MenuItem("Settings…", callback=lambda _: self._show_settings_dialog(), key=","),
+            rumps.MenuItem("Config Window…", callback=lambda _: self._show_config_window()),
             None,
             add_menu,
             rm_menu,
@@ -2442,6 +2524,7 @@ class SusOpsMacTray(AbstractTrayApp):
     def do_poll(self) -> None:
         super().do_poll()
         self._refresh_share_submenu()
+        self._refresh_config_window()
 
     # ------------------------------------------------------------------ #
     # Settings dialog (with live logo preview)
