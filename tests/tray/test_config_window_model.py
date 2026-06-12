@@ -310,7 +310,7 @@ def test_connection_detail_running():
     assert spec.status_text == "running · pid 4711"
     assert spec.status_dot == "green"
     assert spec.editable is False
-    assert spec.toggle == ("Enabled", True, "connection.toggle")
+    assert spec.toggle == ("Enabled", True, "conn.toggle")
     assert spec.toggle_note == (
         "Disabled connections are skipped when the proxy starts.")
     # static field rows

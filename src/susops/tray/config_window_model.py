@@ -247,8 +247,8 @@ def filter_rows(rows, query) -> list[ListRow]:
     kept_in_segment = False
     for r in rows:
         if r.kind in ("section", "info"):
-            # A new section starts a fresh segment; flush nothing (headers
-            # without surviving items are simply dropped).
+            # A new section starts a fresh segment. Headers without
+            # surviving items are simply dropped.
             if r.kind == "section":
                 pending_headers = [r]
                 kept_in_segment = False
@@ -293,7 +293,7 @@ def build_connection_detail(conn, status) -> DetailSpec:
         title=conn.tag,
         status_text=status_text,
         status_dot=_conn_dot(conn, status),
-        toggle=("Enabled", bool(conn.enabled), "connection.toggle"),
+        toggle=("Enabled", bool(conn.enabled), "conn.toggle"),
         toggle_note="Disabled connections are skipped when the proxy starts.",
         fields=fields,
         actions=actions,
