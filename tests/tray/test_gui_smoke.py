@@ -90,3 +90,48 @@ def test_add_menu_populated(tray_proc):
     assert any("Add Remote Forward" in m for m in menu)
     assert any("Share File" in m for m in menu)
     assert any("Fetch File" in m for m in menu)
+
+
+def test_gear_tab_shows_settings_and_hides_sidebar(tray_proc):
+    """Selecting the gear tab renders app settings and hides the
+    per-connection sidebar + Add control; switching back restores them."""
+    import time
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config").get("ok")
+
+    # Wait for the connection tab to be ready.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        dump = tray_proc.send("dump-window")
+        if dump.get("open") and dump.get("current_tag") == "work":
+            break
+        time.sleep(0.5)
+    assert dump.get("sidebar_hidden") is False
+    assert dump.get("gear") is False
+
+    # Jump to the gear tab. The pane render is deferred to the next run-loop
+    # pass via NSTimer, so wait for detail_title to flip to App Settings.
+    assert tray_proc.send("open-config gear").get("ok")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        dump = tray_proc.send("dump-window")
+        if dump.get("gear") and dump.get("detail_title") == "App Settings":
+            break
+        time.sleep(0.25)
+    assert dump.get("gear") is True
+    assert dump.get("mode") == "gear"
+    assert dump.get("sidebar_hidden") is True
+    assert dump.get("detail_title") == "App Settings"
+
+    # Switch back to the connection tab — sidebar + Add reappear.
+    assert tray_proc.send("open-config work").get("ok")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        dump = tray_proc.send("dump-window")
+        if not dump.get("gear"):
+            break
+        time.sleep(0.25)
+    assert dump.get("gear") is False
+    assert dump.get("sidebar_hidden") is False

@@ -141,6 +141,11 @@ class ConfigWindow:
         self._shares: list = []
         self._current_detail_title = None
         self._suppress_selection_cb = False  # True while _reload_sidebar is rebuilding rows
+        self._gear_mode = False  # True while the gear (app-settings) pane is shown
+        self._settings_ctx = None  # ctx from tray._settings_fields while gear pane open
+        self._settings_widgets = None  # {key: NSControl} for the gear pane
+        self._settings_fields_spec = None  # field spec list for the gear pane
+        self._pending_tab = None  # tab requested via open() before tabs loaded
 
     def is_open(self) -> bool:
         return self.window is not None and bool(self.window.isVisible())
@@ -149,7 +154,12 @@ class ConfigWindow:
         if self.window is None:
             self._build()
         if tab:
-            self._select_tab_by_tag(tab)
+            # If tabs aren't built yet (first open before the async data load),
+            # defer the selection until _apply_data populates them.
+            if self.tabs:
+                self._select_tab_by_tag(tab)
+            else:
+                self._pending_tab = tab
         from susops.tray.mac import _RegularPolicyScope
         if self._policy_scope is None:
             self._policy_scope = _RegularPolicyScope()
@@ -194,12 +204,33 @@ class ConfigWindow:
         self._statuses = statuses
         self._shares = shares
         self._reload_tabs()
+        # Apply a tab requested via open() before tabs were built.
+        if self._pending_tab is not None and self.tabs:
+            pending = self._pending_tab
+            self._pending_tab = None
+            self._select_tab_by_tag(pending)
+            return
+        # While the gear pane is shown, a periodic refresh must not clobber the
+        # in-progress settings form (re-rendering would discard the user's
+        # edits) nor un-hide the sidebar. _reload_tabs already refreshed the tab
+        # labels; leave the gear pane and hidden sidebar untouched.
+        if self._gear_mode:
+            self._set_sidebar_visible(False)
+            return
         self._reload_sidebar(preserve=True)
         self._schedule_render()
 
     def dump(self) -> dict:
+        sidebar_hidden = False
+        try:
+            sidebar_hidden = bool(self._sidebar_tv.enclosingScrollView().isHidden())
+        except Exception:
+            pass
         return {
             "open": self.is_open(),
+            "mode": "gear" if self._gear_mode else (self.current_tag or None),
+            "gear": self._gear_mode,
+            "sidebar_hidden": sidebar_hidden,
             "tabs": [t.title for t in self.tabs],
             "current_tag": self.current_tag,
             "sidebar": [
@@ -345,6 +376,10 @@ class ConfigWindow:
         self._permanent_handler_count = len(self._handlers)
 
     def _on_closed(self) -> None:
+        if self._gear_mode:
+            # Closing the window from the gear pane: discard any unsaved preview.
+            self._revert_settings_preview()
+            self._gear_mode = False
         if self._policy_scope is not None:
             try:
                 self._policy_scope.__exit__(None, None, None)
@@ -362,7 +397,10 @@ class ConfigWindow:
         for i, t in enumerate(self.tabs):
             seg.setLabel_forSegment_(t.title, i)
             seg.setWidth_forSegment_(0, i)  # autosize
-        if self.current_tag is not None:
+        if self._gear_mode:
+            # Keep the gear segment (last) selected across periodic refreshes.
+            seg.setSelectedSegment_(len(self.tabs) - 1)
+        elif self.current_tag is not None:
             seg.setSelectedSegment_(conn_tags.index(self.current_tag))
 
     def _select_tab_by_tag(self, tag: str) -> None:
@@ -380,6 +418,12 @@ class ConfigWindow:
             return
         spec = self.tabs[idx]
         if spec.kind == "connection":
+            if self._gear_mode:
+                # Leaving the gear pane without saving: discard any live logo /
+                # bandwidth preview so an unsaved style does not stick.
+                self._revert_settings_preview()
+            self._gear_mode = False
+            self._set_sidebar_visible(True)
             self.current_tag = spec.tag
             self._reload_sidebar(preserve=False)
             self._schedule_render()
@@ -387,12 +431,26 @@ class ConfigWindow:
             self._restore_segment_selection()
             self.tray.run_add_connection_from_window()
         elif spec.kind == "gear":
-            self._restore_segment_selection()
+            # Gear is the last segment and has no underlying connection tab to
+            # restore to. App settings are app-level, so hide the per-connection
+            # sidebar + Add… control while the gear pane is shown.
+            self._seg.setSelectedSegment_(idx)
+            self._gear_mode = True
+            self._set_sidebar_visible(False)
             from Foundation import NSTimer  # type: ignore[import]
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.0, False,
-                lambda _t: self._render_placeholder("App settings move here in Task 9.")
+                0.0, False, lambda _t: self._render_settings_pane()
             )
+
+    def _set_sidebar_visible(self, visible: bool) -> None:
+        try:
+            self._sidebar_tv.enclosingScrollView().setHidden_(not visible)
+        except Exception:
+            pass
+        try:
+            self._add_btn.setHidden_(not visible)
+        except Exception:
+            pass
 
     def _on_add_command(self, title: str) -> None:
         tag = self.current_tag
@@ -620,3 +678,247 @@ class ConfigWindow:
             btn.setAction_("fire:")
             self._detail.addSubview_(btn)
             x += bw + 8
+
+    # ------------------------------------------------------------------ #
+    # Gear (app settings) pane
+    # ------------------------------------------------------------------ #
+
+    def _render_settings_pane(self, defaults: dict | None = None) -> None:
+        """Render the app-settings form into the detail panel.
+
+        The field spec + validation/persist live on the tray
+        (_settings_fields / _apply_settings) so this pane and the modal
+        Settings dialog share one source of truth. This renderer only handles
+        the field kinds the settings form uses: switch, segmented, text.
+        """
+        if self.window is None or not self._gear_mode:
+            return
+        from AppKit import (  # type: ignore[import]
+            NSFont,
+            NSImage,
+            NSImageScaleProportionallyDown,
+            NSOffState,
+            NSOnState,
+            NSRegularControlSize,
+            NSSegmentSwitchTrackingSelectOne,
+            NSSwitchButton,
+        )
+        from Cocoa import (  # type: ignore[import]
+            NSButton,
+            NSColor,
+            NSMakeRect,
+            NSSegmentedControl,
+            NSTextField,
+        )
+        import os
+
+        fields, ctx = self.tray._settings_fields(defaults)
+        self._settings_ctx = ctx
+        self._settings_fields_spec = fields
+
+        self._clear_detail()
+        self._current_detail_title = "App Settings"
+        self._gear_mode = True
+
+        w = self._detail.frame().size.width
+        h = self._detail.frame().size.height
+        y = h - 36
+
+        title = NSTextField.alloc().initWithFrame_(NSMakeRect(8, y, w - 16, 24))
+        title.setStringValue_("App Settings")
+        title.setFont_(NSFont.boldSystemFontOfSize_(16))
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setTextColor_(NSColor.labelColor())
+        self._detail.addSubview_(title)
+        y -= 36
+
+        label_w = 200
+        input_x = 8 + label_w + 10
+        input_w = min(220, w - input_x - 8)
+        row_h = 22
+        row_gap = 12
+
+        widgets: dict[str, object] = {}
+
+        def _label(text: str, ly: float) -> None:
+            lab = NSTextField.alloc().initWithFrame_(NSMakeRect(8, ly, label_w, row_h))
+            lab.setStringValue_(text)
+            lab.setAlignment_(2)  # right
+            lab.setBezeled_(False)
+            lab.setDrawsBackground_(False)
+            lab.setEditable_(False)
+            lab.setTextColor_(NSColor.labelColor())
+            self._detail.addSubview_(lab)
+
+        for f in fields:
+            key = f["key"]
+            kind = f.get("kind", "text")
+            default = f.get("default")
+            on_change = f.get("on_change")
+            _label(f.get("label", ""), y)
+
+            if kind == "switch":
+                sw = NSButton.alloc().initWithFrame_(NSMakeRect(input_x, y, input_w, row_h))
+                sw.setButtonType_(NSSwitchButton)
+                sw.setTitle_("")
+                sw.setState_(NSOnState if default else NSOffState)
+                if on_change is not None:
+                    handler = _get_action_handler_cls().alloc().initWithCallback_(
+                        lambda sender, cb=on_change: cb(bool(sender.state())))
+                    self._handlers.append(handler)
+                    sw.setTarget_(handler)
+                    sw.setAction_("fire:")
+                self._detail.addSubview_(sw)
+                widgets[key] = sw
+
+            elif kind == "segmented":
+                options = f.get("options") or []
+                seg = NSSegmentedControl.alloc().initWithFrame_(
+                    NSMakeRect(input_x, y, input_w, row_h))
+                seg.setSegmentCount_(len(options))
+                seg.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
+                seg.setControlSize_(NSRegularControlSize)
+                for idx, opt in enumerate(options):
+                    if isinstance(opt, tuple):
+                        label_text, image_path = opt
+                    else:
+                        label_text, image_path = str(opt), None
+                    if image_path and os.path.exists(image_path):
+                        try:
+                            img = NSImage.alloc().initWithContentsOfFile_(image_path)
+                            if img is not None:
+                                img.setSize_((20, 20))
+                                seg.setImage_forSegment_(img, idx)
+                                try:
+                                    seg.cell().setImageScaling_forSegment_(
+                                        NSImageScaleProportionallyDown, idx)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    try:
+                        seg.setLabel_forSegment_(label_text, idx)
+                    except Exception:
+                        pass
+                try:
+                    seg.setSelectedSegment_(int(default) if default is not None else 0)
+                except Exception:
+                    pass
+                if on_change is not None:
+                    handler = _get_action_handler_cls().alloc().initWithCallback_(
+                        lambda sender, cb=on_change: cb(int(sender.selectedSegment())))
+                    self._handlers.append(handler)
+                    seg.setTarget_(handler)
+                    seg.setAction_("fire:")
+                self._detail.addSubview_(seg)
+                widgets[key] = seg
+
+            else:  # text
+                field = NSTextField.alloc().initWithFrame_(
+                    NSMakeRect(input_x, y, input_w, row_h))
+                field.setStringValue_(str(default) if default is not None else "")
+                field.setEditable_(True)
+                field.setSelectable_(True)
+                field.setBezeled_(True)
+                field.setTextColor_(NSColor.labelColor())
+                hint = f.get("hint")
+                if hint:
+                    try:
+                        field.cell().setPlaceholderString_(hint)
+                    except Exception:
+                        pass
+                self._detail.addSubview_(field)
+                widgets[key] = field
+                # Show the hint to the right of the port field too (the modal
+                # uses a placeholder; here the field often already has a value
+                # so surface the hint as a trailing note).
+                note_x = input_x + input_w + 10
+                if hint and note_x < w - 8:
+                    note = NSTextField.alloc().initWithFrame_(
+                        NSMakeRect(note_x, y, w - note_x - 8, row_h))
+                    note.setStringValue_(str(hint))
+                    note.setBezeled_(False)
+                    note.setDrawsBackground_(False)
+                    note.setEditable_(False)
+                    note.setFont_(NSFont.systemFontOfSize_(10))
+                    note.setTextColor_(NSColor.secondaryLabelColor())
+                    self._detail.addSubview_(note)
+
+            y -= row_h + row_gap
+
+        self._settings_widgets = widgets
+
+        # Buttons: Save / Revert / Open Config File
+        y -= 6
+        x = 8
+        for btn_title, cb in (
+            ("Save", self._on_settings_save),
+            ("Revert", self._on_settings_revert),
+            ("Open Config File", lambda: self.tray.do_open_config_file()),
+        ):
+            bw = max(80, 24 + 9 * len(btn_title))
+            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, bw, 28))
+            btn.setTitle_(btn_title)
+            btn.setBezelStyle_(1)
+            handler = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s, fn=cb: fn())
+            self._handlers.append(handler)
+            btn.setTarget_(handler)
+            btn.setAction_("fire:")
+            self._detail.addSubview_(btn)
+            x += bw + 8
+
+    def _read_settings_widgets(self) -> dict:
+        """Read the gear-pane widget values into a result dict keyed like the
+        field spec (same keys _apply_settings expects)."""
+        result: dict = {}
+        widgets = self._settings_widgets or {}
+        for f in self._settings_fields_spec or []:
+            key = f["key"]
+            kind = f.get("kind", "text")
+            w = widgets.get(key)
+            if w is None:
+                continue
+            if kind == "switch":
+                result[key] = bool(w.state())
+            elif kind == "segmented":
+                result[key] = int(w.selectedSegment())
+            else:
+                result[key] = str(w.stringValue()).strip()
+        return result
+
+    def _on_settings_save(self) -> None:
+        if self._settings_ctx is None:
+            return
+        result = self._read_settings_widgets()
+        err = self.tray._apply_settings(result, self._settings_ctx)
+        if err is not None:
+            from susops.tray.mac import _show_message
+            _show_message(err[0], err[1])
+            # Keep the pane open with the user's edits.
+            self._render_settings_pane(defaults=result)
+            return
+        # Saved: re-render from the now-persisted config (resets ctx so a
+        # follow-up unchanged-port check uses the new saved values).
+        self._render_settings_pane()
+
+    def _on_settings_revert(self) -> None:
+        # Discard edits + any live logo / bandwidth preview, then re-render
+        # from the current saved config.
+        self._revert_settings_preview()
+        self._render_settings_pane()
+
+    def _revert_settings_preview(self) -> None:
+        """Restore the menu-bar icon + bandwidth title to the saved config so a
+        previewed-but-unsaved logo style does not stick. Mirrors the modal
+        dialog's Cancel path."""
+        try:
+            self.tray.update_icon(self.tray.state)
+        except Exception:
+            pass
+        try:
+            self.tray.refresh_bandwidth_title()
+        except Exception:
+            pass

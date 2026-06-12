@@ -2588,7 +2588,19 @@ class SusOpsMacTray(AbstractTrayApp):
     # Settings dialog (with live logo preview)
     # ------------------------------------------------------------------ #
 
-    def _show_settings_dialog(self) -> None:
+    def _settings_fields(self, defaults: dict | None = None) -> tuple[list[dict], dict]:
+        """Build the app-settings field spec + a context dict.
+
+        Single source of truth for the settings form, shared by the modal
+        _show_settings_dialog and the config-window gear pane. Returns
+        (fields, ctx). ctx carries the current saved port values, the logo
+        style list, and the saved logo so _apply_settings can validate
+        "unchanged" ports and resolve the segmented selection back to a
+        LogoStyle.
+
+        defaults (optional): overrides the per-field initial values so a
+        re-show after a validation failure keeps the user's edits.
+        """
         ac = self.manager.app_config
         cfg = self.manager.config
         pac_port = cfg.pac_server_port
@@ -2601,7 +2613,6 @@ class SusOpsMacTray(AbstractTrayApp):
         seg_options: list[tuple[str, str | None]] = []
         for style in logo_styles:
             img_path = _get_icon_path(self.state, style.value.lower())
-            label_text = style.value.replace("_", " ").title()
             seg_options.append(("", img_path))
 
         def _preview(idx: int) -> None:
@@ -2611,10 +2622,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 if icon_path:
                     self._apply_icon_path(icon_path)
 
-        # Initial defaults — updated after each invalid attempt so the user keeps state.
-        # Launch-at-login state is read from a background-populated cache to avoid
-        # blocking the main thread on osascript / TCC prompts when opening Settings.
-        defaults = {
+        # Initial defaults. Launch-at-login state is read from a
+        # background-populated cache to avoid blocking the main thread on
+        # osascript / TCC prompts when opening Settings.
+        base = {
             "launch_at_login": bool(self._launch_at_login_cached),
             "stop_on_quit": ac.stop_on_quit,
             "ephemeral_ports": ac.ephemeral_ports,
@@ -2626,107 +2637,133 @@ class SusOpsMacTray(AbstractTrayApp):
             "sse_port": str(sse_port) if sse_port else "",
             "pac_port": str(pac_port) if pac_port else "",
         }
+        if defaults:
+            base.update(defaults)
 
+        fields = [
+            {"key": "launch_at_login", "label": "Launch at Login:", "kind": "switch",
+             "default": base["launch_at_login"]},
+            {"key": "stop_on_quit", "label": "Stop Proxy On Quit:", "kind": "switch",
+             "default": base["stop_on_quit"]},
+            {"key": "ephemeral_ports", "label": "Random SSH Ports On Start:", "kind": "switch",
+             "default": base["ephemeral_ports"]},
+            {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
+             "default": base["restore_shares"]},
+            {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
+             "default": base["show_bandwidth"],
+             "on_change": self._preview_bandwidth_visibility},
+            {"key": "notifications", "label": "Desktop Notifications:", "kind": "switch",
+             "default": base["notifications"]},
+            {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
+             "options": seg_options, "default": base["logo_style"],
+             "on_change": _preview},
+            # Server ports — RPC + SSE require a daemon restart to take
+            # effect; PAC is hot-restarted by the facade.
+            {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
+             "default": base["rpc_port"],
+             "hint": "auto (0) — restart daemon to apply"},
+            {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
+             "default": base["sse_port"],
+             "hint": "auto (0) — restart daemon to apply"},
+            {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
+             "default": base["pac_port"],
+             "hint": "auto (0)"},
+        ]
+        ctx = {
+            "rpc_port": rpc_port,
+            "sse_port": sse_port,
+            "pac_port": pac_port,
+            "logo_styles": logo_styles,
+            "saved_logo": saved_logo,
+        }
+        return fields, ctx
+
+    def _apply_settings(self, result: dict, ctx: dict) -> tuple[str, str] | None:
+        """Validate + persist settings produced by _settings_fields.
+
+        Returns an (error_title, error_message) tuple on validation failure
+        (caller shows it via _show_message and keeps the form open with edits),
+        or None on success. Mirrors the original modal validation + persist
+        exactly so the modal dialog and the gear pane never drift.
+        """
+        rpc_port = ctx["rpc_port"]
+        sse_port = ctx["sse_port"]
+        pac_port = ctx["pac_port"]
+        logo_styles = ctx["logo_styles"]
+        saved_logo = ctx["saved_logo"]
+
+        # Validate all three port fields. First failure returns its message;
+        # the caller re-shows the form so the user re-edits the offending
+        # value without losing their other edits.
+        port_ints: dict[str, int] = {}
+        port_specs = [
+            ("rpc_port", "RPC", rpc_port),
+            ("sse_port", "SSE", sse_port),
+            ("pac_port", "PAC", pac_port),
+        ]
+        for key, label, current in port_specs:
+            raw = (result.get(key) or "").strip() or "0"
+            try:
+                n = int(raw)
+            except ValueError:
+                return ("Invalid Port", f"'{raw}' is not a valid {label} port.")
+            if not validate_port(n, allow_zero=True):
+                return ("Invalid Port",
+                        f"{label} port must be 0 (auto) or between 1 and 65535.")
+            if n != 0 and n != current and not is_port_free(n):
+                return ("Port In Use", f"Port {n} is already in use.")
+            port_ints[key] = n
+
+        new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
+
+        self.manager.update_app_config(
+            stop_on_quit=result["stop_on_quit"],
+            ephemeral_ports=result["ephemeral_ports"],
+            restore_shares_on_start=result["restore_shares"],
+            tray_show_bandwidth=result["show_bandwidth"],
+            notifications_enabled=result["notifications"],
+            logo_style=new_logo,
+        )
+        # No refresh_bandwidth_title() here: preview already left the
+        # menu bar in its final state. Re-running update_title rebuilds
+        # the subview frame and momentarily nudges the icon size.
+        self.manager.update_config(
+            rpc_server_port=port_ints["rpc_port"],
+            status_server_port=port_ints["sse_port"],
+            pac_server_port=port_ints["pac_port"],
+        )
+        # Apply Launch at Login off the main thread — osascript may block
+        # for several seconds the first time (TCC prompt).
+        desired_login = bool(result["launch_at_login"])
+        self._launch_at_login_cached = desired_login  # optimistic update
+        threading.Thread(
+            target=lambda: _set_launch_at_login(desired_login),
+            daemon=True,
+            name="susops-loginitem-apply",
+        ).start()
+        self.update_icon(self.state)
+        return None
+
+    def _show_settings_dialog(self) -> None:
+        # Thin loop over the shared field spec + validation/persist. Behavior
+        # identical to the pre-extraction version: build fields, show modal,
+        # on Cancel revert any logo/bandwidth preview, on Save validate; if
+        # invalid show the message and re-show the form keeping edits.
+        defaults: dict | None = None
         while True:
-            fields = [
-                {"key": "launch_at_login", "label": "Launch at Login:", "kind": "switch",
-                 "default": defaults["launch_at_login"]},
-                {"key": "stop_on_quit", "label": "Stop Proxy On Quit:", "kind": "switch",
-                 "default": defaults["stop_on_quit"]},
-                {"key": "ephemeral_ports", "label": "Random SSH Ports On Start:", "kind": "switch",
-                 "default": defaults["ephemeral_ports"]},
-                {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
-                 "default": defaults["restore_shares"]},
-                {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
-                 "default": defaults["show_bandwidth"],
-                 "on_change": self._preview_bandwidth_visibility},
-                {"key": "notifications", "label": "Desktop Notifications:", "kind": "switch",
-                 "default": defaults["notifications"]},
-                {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
-                 "options": seg_options, "default": defaults["logo_style"],
-                 "on_change": _preview},
-                # Server ports — RPC + SSE require a daemon restart to take
-                # effect; PAC is hot-restarted by the facade.
-                {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
-                 "default": defaults["rpc_port"],
-                 "hint": "auto (0) — restart daemon to apply"},
-                {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
-                 "default": defaults["sse_port"],
-                 "hint": "auto (0) — restart daemon to apply"},
-                {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
-                 "default": defaults["pac_port"],
-                 "hint": "auto (0)"},
-            ]
-
+            fields, ctx = self._settings_fields(defaults)
             result = _show_form_dialog("Settings", fields, ok_title="Save", cancel_title="Cancel")
             if result is None:
                 # Revert any preview
                 self.update_icon(self.state)
                 self.refresh_bandwidth_title()
                 return
-
-            # Refresh defaults so a re-show on validation failure keeps user edits.
-            defaults.update(result)
-
-            # Validate all three port fields; the helper short-circuits to
-            # the inner loop on failure so the user re-edits the offending
-            # value without losing their other edits.
-            port_ints: dict[str, int] = {}
-            port_specs = [
-                ("rpc_port", "RPC", rpc_port),
-                ("sse_port", "SSE", sse_port),
-                ("pac_port", "PAC", pac_port),
-            ]
-            invalid = False
-            for key, label, current in port_specs:
-                raw = (result.get(key) or "").strip() or "0"
-                try:
-                    n = int(raw)
-                except ValueError:
-                    _show_message("Invalid Port", f"'{raw}' is not a valid {label} port.")
-                    invalid = True
-                    break
-                if not validate_port(n, allow_zero=True):
-                    _show_message("Invalid Port",
-                                  f"{label} port must be 0 (auto) or between 1 and 65535.")
-                    invalid = True
-                    break
-                if n != 0 and n != current and not is_port_free(n):
-                    _show_message("Port In Use", f"Port {n} is already in use.")
-                    invalid = True
-                    break
-                port_ints[key] = n
-            if invalid:
+            # Keep edits if validation fails.
+            defaults = dict(result)
+            err = self._apply_settings(result, ctx)
+            if err is not None:
+                _show_message(err[0], err[1])
                 continue
-
-            new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
-
-            self.manager.update_app_config(
-                stop_on_quit=result["stop_on_quit"],
-                ephemeral_ports=result["ephemeral_ports"],
-                restore_shares_on_start=result["restore_shares"],
-                tray_show_bandwidth=result["show_bandwidth"],
-                notifications_enabled=result["notifications"],
-                logo_style=new_logo,
-            )
-            # No refresh_bandwidth_title() here: preview already left the
-            # menu bar in its final state. Re-running update_title rebuilds
-            # the subview frame and momentarily nudges the icon size.
-            self.manager.update_config(
-                rpc_server_port=port_ints["rpc_port"],
-                status_server_port=port_ints["sse_port"],
-                pac_server_port=port_ints["pac_port"],
-            )
-            # Apply Launch at Login off the main thread — osascript may block
-            # for several seconds the first time (TCC prompt).
-            desired_login = bool(result["launch_at_login"])
-            self._launch_at_login_cached = desired_login  # optimistic update
-            threading.Thread(
-                target=lambda: _set_launch_at_login(desired_login),
-                daemon=True,
-                name="susops-loginitem-apply",
-            ).start()
-            self.update_icon(self.state)
             return
 
     # ------------------------------------------------------------------ #
