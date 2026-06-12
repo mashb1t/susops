@@ -291,7 +291,7 @@ susops
 
 ### Screens
 
-**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `◐` orange pending, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
+**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `–` disabled, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
 - **Stats** — CPU%, memory, active connections, PID for the selected connection
 - **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
@@ -459,7 +459,7 @@ Slim menu items:
 - **Quit ⌘Q**
 
 The **Settings window** is a tabbed NSWindow:
-- **One tab per connection** — labelled with a state dot (●/◐/○) and the connection tag. Each tab has a grouped sidebar (DOMAINS / FORWARDS / SHARES / CONNECTION) with per-item state indicators, and an **Add…** pull-down (Add Domain/IP/CIDR, Add Local Forward, Add Remote Forward, Share File…, Fetch File…) preset to the current connection. Selecting a sidebar item opens a detail panel with per-item actions: **Test**, **Toggle enabled**, **Remove** (for domains and forwards); **Reveal Password**, **Stop/Start**, **Delete** (for shares); **Start/Stop/Restart/Test/Remove** (for the connection itself).
+- **One tab per connection** — labelled with a state dot (●/–/○) and the connection tag. Each tab has a grouped sidebar (DOMAINS / FORWARDS / SHARES / CONNECTION) with per-item state indicators, and an **Add…** pull-down (Add Domain/IP/CIDR, Add Local Forward, Add Remote Forward, Share File…, Fetch File…) preset to the current connection. Selecting a sidebar item opens a detail panel with per-item actions: **Test**, **Toggle enabled**, **Remove** (for domains and forwards); **Reveal Password**, **Stop/Start**, **Delete** (for shares); **Start/Stop/Restart/Test/Remove** (for the connection itself).
 - **+ tab** — add a new connection.
 - **Gear tab (⚙)** — app-wide settings (PAC port, stop-on-quit, ephemeral ports) with **Save**, **Revert**, and **Open Config File** buttons.
 

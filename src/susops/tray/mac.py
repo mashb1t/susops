@@ -1948,7 +1948,7 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_launch_at_login_async()
         self._build_menu()
         self._register_appearance_observer()
-        self._config_window = None  # set in Phase 1
+        self._config_window = None  # created lazily by _ensure_config_window
         self._debug_server = None
         debug_port = os.environ.get("SUSOPS_TRAY_DEBUG_PORT")
         if debug_port:
@@ -1994,8 +1994,9 @@ class SusOpsMacTray(AbstractTrayApp):
     # ------------------------------------------------------------------ #
 
     def _debug_handlers(self) -> dict:
-        """Debug-server command table. Every UI-touching handler marshals via
-        _run_on_main. Extended in Phase 1 with open-config/select/dump-window."""
+        """Debug-server command table (ping, dump-menu, open-about, open-config,
+        select, dump-window, action, screenshot, quit). Every UI-touching handler
+        marshals via _run_on_main."""
 
         def _screenshot(args):
             if not args:
@@ -2042,8 +2043,8 @@ class SusOpsMacTray(AbstractTrayApp):
         }
 
     def _debug_target_window(self):
-        """Window the screenshot command captures: config window when open
-        (Phase 1), else any open About/live panel (Phase 0 verification)."""
+        """Window the screenshot command captures: the config window when open,
+        else any open About or live panel."""
         cw = getattr(self, "_config_window", None)
         if cw is not None and cw.is_open():
             return cw.window
@@ -2073,8 +2074,8 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_config_window()
 
     def dispatch_window_action(self, action_id: str, identity: tuple) -> None:
-        """Map a detail-pane action onto the existing do_* methods.
-        Extended for shares in Task 7."""
+        """Map a detail-pane action id onto the corresponding do_* method.
+        Confirms destructive actions then refreshes the config window."""
         conn_tag = self._config_window.current_tag if self._config_window else None
         if conn_tag is None:
             return

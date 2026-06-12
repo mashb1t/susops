@@ -1,9 +1,7 @@
 """macOS GUI smoke tests for the rumps tray with debug server.
 
-Phase 0 of the self-verification feedback loop: exercises dump-menu,
-open-about, and in-process screenshot via TrayDebugServer.
-
-Skipped unless SUSOPS_RUN_GUI_TESTS=1 is set (macOS only).
+Exercises dump-menu, open-about, and in-process screenshot via
+TrayDebugServer. Skipped unless SUSOPS_RUN_GUI_TESTS=1 is set (macOS only).
 
 Run locally:
     SUSOPS_RUN_GUI_TESTS=1 .venv/bin/pytest tests/tray/test_gui_smoke.py -v
