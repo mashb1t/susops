@@ -131,6 +131,14 @@ def test_forward_detail():
     assert {a.action_id for a in spec.actions} == {"forward.test", "forward.remove"}
 
 
+def test_forward_detail_local_direction():
+    fw = _conn().forwards.local[0]
+    spec = build_forward_detail(_conn(), fw, "local")
+    assert ("Direction", "local (-L)") in spec.rows
+    assert ("Forward", "localhost:5432 → db.internal:5432") in spec.rows
+    assert ("Protocols", "TCP") in spec.rows
+
+
 def test_share_detail_running():
     spec = build_share_detail(_share())
     assert spec.title == "file.bin"

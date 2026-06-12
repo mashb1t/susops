@@ -39,9 +39,9 @@ class Action:
 @dataclass(frozen=True)
 class DetailSpec:
     title: str
-    rows: list = field(default_factory=list)
+    rows: list[tuple[str, str]] = field(default_factory=list)
     toggle: tuple | None = None
-    actions: list = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
 
 
 def build_tab_specs(cfg, statuses) -> list[TabSpec]:
@@ -141,7 +141,7 @@ def build_domain_detail(conn, host: str) -> DetailSpec:
 def build_forward_detail(conn, fw, direction: str) -> DetailSpec:
     protos = [p for p, on in (("TCP", fw.tcp), ("UDP", fw.udp)) if on]
     rows = [
-        ("Direction", f"{direction} (-L)" if direction == "local" else f"{direction} (-R)"),
+        ("Direction", {"local": f"{direction} (-L)", "remote": f"{direction} (-R)"}[direction]),
         ("Forward", f"{fw.src_addr}:{fw.src_port} → {fw.dst_addr}:{fw.dst_port}"),
         ("Protocols", " + ".join(protos)),
         ("Tag", fw.tag or "—"),
