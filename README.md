@@ -439,7 +439,33 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected. Both tray implementations support the same feature set via native dialogs:
+The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
+
+**Note: the macOS and Linux tray apps diverge in their UI structure.** The unified Settings window described below is macOS-only for now; the Linux tray keeps the classic submenu structure.
+
+### macOS tray
+
+The macOS tray has a slim menu with a unified **Settings window** (open with Settings… ⌘, or from the tray menu):
+
+Slim menu items:
+- **Status line** — shows current connection state
+- **Settings… ⌘,** — opens the unified config window
+- **Start / Stop / Restart Proxy** — bulk lifecycle for all connections
+- **Show Status** — print current state to stdout
+- **Show Logs** — open the log directory
+- **Launch Browser ▸** — submenu: Chrome or Firefox with the PAC URL pre-configured
+- **Reset All** — kill all processes and wipe the workspace
+- **About SusOps**
+- **Quit ⌘Q**
+
+The **Settings window** is a tabbed NSWindow:
+- **One tab per connection** — labelled with a state dot (●/◐/○) and the connection tag. Each tab has a grouped sidebar (DOMAINS / FORWARDS / SHARES / CONNECTION) with per-item state indicators, and an **Add…** pull-down (Add Domain/IP/CIDR, Add Local Forward, Add Remote Forward, Share File…, Fetch File…) preset to the current connection. Selecting a sidebar item opens a detail panel with per-item actions: **Test**, **Toggle enabled**, **Remove** (for domains and forwards); **Reveal Password**, **Stop/Start**, **Delete** (for shares); **Start/Stop/Restart/Test/Remove** (for the connection itself).
+- **+ tab** — add a new connection.
+- **Gear tab (⚙)** — app-wide settings (PAC port, stop-on-quit, ephemeral ports) with **Save**, **Revert**, and **Open Config File** buttons.
+
+### Linux tray
+
+The Linux tray keeps the classic submenu menu structure:
 
 - **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
 - **Start / Stop / Restart All** — bulk lifecycle operations across all connections
@@ -849,6 +875,33 @@ scripts/build-local.sh brew      # SusOps.app + .dmg (macOS only)
 scripts/build-local.sh install-pypi   # install wheel into a throwaway venv
 scripts/build-local.sh install-brew   # copy SusOps.app to /Applications
 ```
+
+### Tray development (macOS)
+
+Run a dev tray instance against an isolated workspace without touching your live `~/.susops` setup:
+
+```bash
+# Isolated workspace (avoids any conflict with a running user tray)
+WS=$(mktemp -d /tmp/susops-dev.XXXX)
+SUSOPS_TRAY_WORKSPACE=$WS SUSOPS_TRAY_DEBUG_PORT=7799 .venv/bin/susops-tray &
+
+# Drive the tray via the debug command server
+.venv/bin/python tools/tray_debug.py 7799 ping
+.venv/bin/python tools/tray_debug.py 7799 dump-menu        # full menu JSON
+.venv/bin/python tools/tray_debug.py 7799 open-config       # open the Settings window
+.venv/bin/python tools/tray_debug.py 7799 screenshot /tmp/tray.png
+.venv/bin/python tools/tray_debug.py 7799 quit
+```
+
+`SUSOPS_TRAY_WORKSPACE` points the tray at a different workspace directory (separate config, PID files, sockets) so it never touches `~/.susops`. `SUSOPS_TRAY_DEBUG_PORT` starts a localhost command server on that port; `tools/tray_debug.py` is the client. Supported commands: `ping`, `dump-menu`, `open-config [gear]`, `select <conn> <section> <index>`, `dump-window`, `screenshot <path>`, `action <name>`, `open-about`, `quit`.
+
+### GUI smoke tests (macOS)
+
+```bash
+SUSOPS_RUN_GUI_TESTS=1 .venv/bin/pytest -m gui -v
+```
+
+Seven smoke tests launch a real tray instance (using `SUSOPS_TRAY_WORKSPACE` + `SUSOPS_TRAY_DEBUG_PORT` internally), drive it through the debug server, and assert menu structure and window content. Skipped automatically on Linux and when `SUSOPS_RUN_GUI_TESTS` is unset.
 
 ### Project layout
 
