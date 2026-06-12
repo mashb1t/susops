@@ -10,6 +10,8 @@ NSObject subclasses (PyObjC re-registration bug - see mac.py).
 """
 from __future__ import annotations
 
+import os
+
 from susops.tray.config_window_model import (
     DetailSpec,
     SidebarRow,
@@ -380,6 +382,13 @@ class ConfigWindow:
             # Closing the window from the gear pane: discard any unsaved preview.
             self._revert_settings_preview()
             self._gear_mode = False
+            # Drop the gear widgets now so they don't briefly flash when the
+            # window is reopened on a connection tab.
+            if self.window is not None and getattr(self, "_detail", None) is not None:
+                try:
+                    self._clear_detail()
+                except Exception:
+                    pass
         if self._policy_scope is not None:
             try:
                 self._policy_scope.__exit__(None, None, None)
@@ -710,7 +719,6 @@ class ConfigWindow:
             NSSegmentedControl,
             NSTextField,
         )
-        import os
 
         fields, ctx = self.tray._settings_fields(defaults)
         self._settings_ctx = ctx
@@ -718,7 +726,6 @@ class ConfigWindow:
 
         self._clear_detail()
         self._current_detail_title = "App Settings"
-        self._gear_mode = True
 
         w = self._detail.frame().size.width
         h = self._detail.frame().size.height
@@ -789,6 +796,7 @@ class ConfigWindow:
                         try:
                             img = NSImage.alloc().initWithContentsOfFile_(image_path)
                             if img is not None:
+                                # 20px: tighter vertical room in the gear pane than the modal's 24px
                                 img.setSize_((20, 20))
                                 seg.setImage_forSegment_(img, idx)
                                 try:
