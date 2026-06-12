@@ -2078,8 +2078,12 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def dispatch_window_action(self, action_id: str, identity: tuple) -> None:
         """Map a detail-pane action id onto the corresponding do_* method.
-        Confirms destructive actions then refreshes the config window."""
-        conn_tag = self._config_window.current_tag if self._config_window else None
+        Confirms destructive actions then refreshes the config window.
+
+        Stopgap until the Task 3 rewrite: the conn tag comes from the v2
+        identity tuple (("connection", tag) / ("domain", conn_tag, host) /
+        ("forward", conn_tag, direction, src_port)). Not called in Task 2."""
+        conn_tag = identity[1] if identity and len(identity) > 1 else None
         if conn_tag is None:
             return
         kind = identity[0] if identity else None
@@ -2099,7 +2103,7 @@ class SusOpsMacTray(AbstractTrayApp):
                              f"domains, forwards and shares?", ok="Remove"):
                 self.do_remove_connection(conn_tag)
         elif kind == "domain":
-            host = identity[1]
+            host = identity[2]
             if action_id == "domain.test":
                 self.do_test_domain(host, conn_tag)
             elif action_id == "domain.toggle":
@@ -2108,7 +2112,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 if _show_confirm("Remove Domain", f"Remove '{host}'?", ok="Remove"):
                     self.do_remove_pac_host(host)
         elif kind == "forward":
-            _, direction, src_port = identity
+            _, _conn_tag, direction, src_port = identity
             if action_id == "forward.test":
                 self.do_test_forward(conn_tag, src_port, direction)
             elif action_id == "forward.toggle":

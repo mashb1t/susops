@@ -167,6 +167,7 @@ class ConfigWindow:
         self.search_text = ""
         self._policy_scope = None
         self._handlers: list = []
+        self._addbar_handlers: list = []  # add-button targets, own lifetime
         self._permanent_handler_count = 0
         self._cfg = None
         self._statuses: list = []
@@ -267,7 +268,6 @@ class ConfigWindow:
 
         # --- Column 1 (nav band, darkest) ---
         col1 = self._make_band(NSMakeRect(0, 0, COL1_W, ch), band="col1")
-        col1.setAutoresizingMask_(32)  # MinXMargin off; height tracks via subviews
         col1.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxXMargin
         content.addSubview_(col1)
         self._col1 = col1
@@ -764,13 +764,17 @@ class ConfigWindow:
 
     def _rebuild_add_buttons(self) -> None:
         from Cocoa import NSButton, NSMakeRect, NSView  # type: ignore[import]
-        # Tear down the previous bar.
+        # Tear down the previous bar + its handlers. Button targets live in
+        # _addbar_handlers, NOT _handlers: the col-3 placeholder render trims
+        # _handlers back to _permanent_handler_count and NSButton does not
+        # retain its target, so a shared list would free live targets.
         if self._addbar is not None:
             try:
                 self._addbar.removeFromSuperview()
             except Exception:
                 pass
             self._addbar = None
+        self._addbar_handlers.clear()
         specs = self._add_button_specs()
         if not specs:
             return
@@ -786,7 +790,7 @@ class ConfigWindow:
             btn.setBezelStyle_(1)
             handler = _get_action_handler_cls().alloc().initWithCallback_(
                 lambda _s, k=kind: self._on_add_clicked(k))
-            self._handlers.append(handler)
+            self._addbar_handlers.append(handler)
             btn.setTarget_(handler)
             btn.setAction_("fire:")
             bar.addSubview_(btn)
@@ -869,6 +873,9 @@ class ConfigWindow:
             if self.selected_identity else None,
             "detail_title": None,
             "dirty": False,
+            # Debug: add-button targets must survive col-3 handler trims
+            # (NSButton does not retain its target).
+            "addbar_handlers": len(self._addbar_handlers),
         }
 
     def select(self, category: str, index: int | None = None) -> dict:
