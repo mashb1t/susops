@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import signal
 import socket
 import subprocess
@@ -81,15 +80,6 @@ def tray(daemon):
 # ---------------------------------------------------------------------------
 # Live GUI fixture (opt-in, macOS only)
 # ---------------------------------------------------------------------------
-
-gui_guard = [
-    pytest.mark.gui,
-    pytest.mark.skipif(platform.system() != "Darwin", reason="macOS only"),
-    pytest.mark.skipif(
-        not os.environ.get("SUSOPS_RUN_GUI_TESTS"),
-        reason="set SUSOPS_RUN_GUI_TESTS=1 to run GUI smoke tests",
-    ),
-]
 
 
 def _free_port() -> int:

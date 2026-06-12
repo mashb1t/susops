@@ -336,9 +336,10 @@ def _on_main(callable_) -> None:
 def _run_on_main(fn, timeout: float = 5.0) -> dict:
     """Run fn on the main thread, wait for the result. For debug-server
     handlers, which run on socket threads but must touch AppKit."""
-    import threading as _threading
+    if threading.current_thread() is threading.main_thread():
+        return {"error": "_run_on_main must be called off the main thread"}
     box: dict = {}
-    done = _threading.Event()
+    done = threading.Event()
 
     def _wrap():
         try:
