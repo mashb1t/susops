@@ -2055,10 +2055,13 @@ class SusOpsMacTray(AbstractTrayApp):
                     int(args[2]) if len(args) > 2 else 0)),
             "dump-window": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().dump()),
-            "action": lambda args: _run_on_main(
+            "action": lambda args: (_run_on_main(
                 lambda: (self.dispatch_window_action(
-                    args[0], tuple(self._config_window._selected_identity() or ())),
-                    {"ok": True})[1]) if args else {"error": "usage: action <action_id>"},
+                    args[0],
+                    tuple((getattr(self, "_config_window", None)
+                           and self._config_window._selected_identity()) or ())),
+                    {"ok": True})[1]) if args
+                else {"error": "usage: action <action_id>"}),
             "screenshot": _screenshot,
             "quit": _quit,
         }

@@ -17,7 +17,7 @@ from susops.tray.config_window_model import (
 def _conn(tag="work", enabled=True, **kw):
     return NS(
         tag=tag, ssh_host="user@bastion", socks_proxy_port=1080, enabled=enabled,
-        pac_hosts=kw.get("pac_hosts", ["blabla.de", "10.0.0.0/8"]),
+        pac_hosts=kw.get("pac_hosts", ["blabla.de"]),
         pac_hosts_disabled=kw.get("pac_hosts_disabled", ["10.0.0.0/8"]),
         forwards=NS(
             local=kw.get("local", [NS(src_port=5432, src_addr="localhost",
