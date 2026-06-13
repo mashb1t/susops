@@ -583,7 +583,7 @@ class ConfigWindow:
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
         )
-        win.setTitle_("SusOps")
+        win.setTitle_("SusOps Settings")
         win.setReleasedWhenClosed_(False)
         win.setHidesOnDeactivate_(False)
         win.setTitlebarAppearsTransparent_(True)
