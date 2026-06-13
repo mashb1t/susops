@@ -2303,7 +2303,7 @@ class ConfigWindow:
         self._set_col2_visible(False)
         self._render_settings_pane()
 
-    SETTINGS_SECTIONS = ("General:", "Menu bar:", "Servers:", "Config file:")
+    SETTINGS_SECTIONS = ("General", "Menu bar", "Servers", "Config file")
     _SETTINGS_LABEL_W = 100
     _SETTINGS_LABEL_GAP = 14
 
@@ -2365,7 +2365,7 @@ class ConfigWindow:
                 NSMakeRect(label_x, sy, label_w, 18))
             lbl.setStringValue_(title)
             lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
-            lbl.setAlignment_(1)  # right
+            lbl.setAlignment_(2)  # right
             lbl.setBezeled_(False)
             lbl.setDrawsBackground_(False)
             lbl.setEditable_(False)
