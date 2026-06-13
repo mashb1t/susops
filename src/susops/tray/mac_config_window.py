@@ -64,8 +64,20 @@ def _make_vcenter_cell_cls(base_cell_cls):
 
         def _centeredRect_(self, frame):
             rect = self._baseTitleRect_(frame)
-            delta = max(0.0, (frame.size.height - rect.size.height) / 2.0)
-            rect.origin.y += delta
+            # titleRectForBounds_ can already be full-height on borderless fields,
+            # so derive a one-line text height from cellSizeForBounds_.
+            text_h = rect.size.height
+            try:
+                size = objc.super(_SusOpsVCenterCell, self).cellSizeForBounds_(
+                    frame)
+                if size is not None and getattr(size, "height", 0) > 0:
+                    text_h = min(rect.size.height, float(size.height))
+            except Exception:
+                pass
+            text_h = max(1.0, min(float(frame.size.height), float(text_h)))
+            rect.origin.y = float(frame.origin.y) + \
+                max(0.0, (float(frame.size.height) - text_h) / 2.0)
+            rect.size.height = text_h
             return rect
 
         def titleRectForBounds_(self, frame):
