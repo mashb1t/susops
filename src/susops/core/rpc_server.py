@@ -27,6 +27,7 @@ _ALLOWED_METHODS: set[str] = {
     "list_config",
     # Connection CRUD
     "add_connection", "remove_connection", "set_connection_enabled",
+    "update_connection",
     # PAC hosts
     "add_pac_host", "remove_pac_host", "set_pac_host_enabled",
     # Forwards

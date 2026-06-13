@@ -47,7 +47,8 @@ paths:
         via the specified connection's SOCKS proxy.\n- `test_forward` — Check if a port forward is active.\n\
         - `test_ssh`\n- `toggle_forward_enabled` — Toggle enabled on a forward. Returns the new enabled
         state.\n- `update_app_config`\n- `update_config` — Update top-level SusOpsConfig fields (e.g.
-        pac_server_port)."
+        pac_server_port).\n- `update_connection` — Edit a connection's tag / ssh_host / socks_proxy_port
+        in place."
       operationId: invoke
       requestBody:
         required: true
@@ -2163,6 +2164,168 @@ components:
           description: accepts arbitrary keyword args via **kwargs
     UpdateConfigResult:
       type: 'null'
+    InvokeUpdateConnection:
+      type: object
+      description: Edit a connection's tag / ssh_host / socks_proxy_port in place.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: update_connection
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+            new_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+            ssh_host:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+            socks_proxy_port:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+            restart:
+              type: boolean
+              default: true
+          required:
+          - tag
+          additionalProperties: false
+    UpdateConnectionResult:
+      $defs:
+        FileShare:
+          description: A persisted file share associated with a connection.
+          properties:
+            file_path:
+              title: File Path
+              type: string
+            password:
+              title: Password
+              type: string
+            port:
+              default: 0
+              title: Port
+              type: integer
+            stopped:
+              default: false
+              title: Stopped
+              type: boolean
+          required:
+          - file_path
+          - password
+          title: FileShare
+          type: object
+        Forwards:
+          properties:
+            local:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Local
+              type: array
+            remote:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Remote
+              type: array
+          title: Forwards
+          type: object
+        PortForward:
+          properties:
+            tag:
+              default: ''
+              title: Tag
+              type: string
+            src_addr:
+              default: localhost
+              title: Src Addr
+              type: string
+            src_port:
+              title: Src Port
+              type: integer
+            dst_addr:
+              default: localhost
+              title: Dst Addr
+              type: string
+            dst_port:
+              title: Dst Port
+              type: integer
+            tcp:
+              default: true
+              title: Tcp
+              type: boolean
+            udp:
+              default: false
+              title: Udp
+              type: boolean
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - src_port
+          - dst_port
+          title: PortForward
+          type: object
+      properties:
+        tag:
+          title: Tag
+          type: string
+        ssh_host:
+          title: Ssh Host
+          type: string
+        socks_proxy_port:
+          default: 0
+          title: Socks Proxy Port
+          type: integer
+        enabled:
+          default: true
+          title: Enabled
+          type: boolean
+        forwards:
+          $ref: '#/components/schemas/Forwards'
+          default:
+            local: []
+            remote: []
+        pac_hosts:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts
+          type: array
+        pac_hosts_disabled:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts Disabled
+          type: array
+        file_shares:
+          default: []
+          items:
+            $ref: '#/components/schemas/FileShare'
+          title: File Shares
+          type: array
+      required:
+      - tag
+      - ssh_host
+      title: Connection
+      type: object
     InvocationRequest:
       type: object
       oneOf:
@@ -2213,6 +2376,7 @@ components:
       - $ref: '#/components/schemas/InvokeToggleForwardEnabled'
       - $ref: '#/components/schemas/InvokeUpdateAppConfig'
       - $ref: '#/components/schemas/InvokeUpdateConfig'
+      - $ref: '#/components/schemas/InvokeUpdateConnection'
       discriminator:
         propertyName: method
     InvocationResponseSuccess:

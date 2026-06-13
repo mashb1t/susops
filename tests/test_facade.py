@@ -46,6 +46,92 @@ def test_remove_nonexistent_connection_raises(mgr):
         mgr.remove_connection("nonexistent")
 
 
+# ------------------------------------------------------------------ #
+# update_connection (inline edit, children-preserving)
+# ------------------------------------------------------------------ #
+
+def test_update_connection_changes_host_and_port(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    updated = mgr.update_connection(
+        "work", ssh_host="user@newhost.com", socks_proxy_port=1081, restart=False
+    )
+    assert updated.ssh_host == "user@newhost.com"
+    assert updated.socks_proxy_port == 1081
+    conn = mgr.list_config().connections[0]
+    assert conn.tag == "work"
+    assert conn.ssh_host == "user@newhost.com"
+    assert conn.socks_proxy_port == 1081
+
+
+def test_update_connection_preserves_children_on_rename(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    mgr.add_pac_host("ex.com", conn_tag="work")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tag="pg"))
+    # Seed a file_share entry directly in config (no real server needed).
+    mgr._add_file_share_to_config("work", "/tmp/secret.bin", "pw", 9999)
+
+    mgr.update_connection(
+        "work", new_tag="renamed", ssh_host="new@host", socks_proxy_port=1081,
+        restart=False,
+    )
+
+    cfg = mgr.list_config()
+    assert [c.tag for c in cfg.connections] == ["renamed"]
+    conn = cfg.connections[0]
+    assert conn.ssh_host == "new@host"
+    assert conn.socks_proxy_port == 1081
+    # The whole point: children survive the rename (no cascade).
+    assert "ex.com" in conn.pac_hosts
+    assert any(f.src_port == 5432 and f.tag == "pg" for f in conn.forwards.local)
+    assert any(f.port == 9999 and f.file_path == "/tmp/secret.bin" for f in conn.file_shares)
+
+
+def test_update_connection_rename_to_existing_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_connection("other", "user@other.com")
+    with pytest.raises(ValueError, match="already exists"):
+        mgr.update_connection("work", new_tag="other", restart=False)
+
+
+def test_update_connection_empty_tag_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError):
+        mgr.update_connection("work", new_tag="   ", restart=False)
+
+
+def test_update_connection_empty_host_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError, match="ssh_host"):
+        mgr.update_connection("work", ssh_host="  ", restart=False)
+
+
+def test_update_connection_invalid_port_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError, match="Invalid socks_proxy_port"):
+        mgr.update_connection("work", socks_proxy_port=99999, restart=False)
+
+
+def test_update_connection_same_tag_no_false_conflict(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    # new_tag=None means keep the tag — must not trip the "already exists" check.
+    updated = mgr.update_connection("work", ssh_host="user@changed.com", restart=False)
+    assert updated.tag == "work"
+    assert mgr.list_config().connections[0].ssh_host == "user@changed.com"
+
+
+def test_update_connection_restart_false_leaves_tunnel_untouched(mgr):
+    # Stopped connection — no SSH needed. restart=False must not start it.
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    mgr.update_connection(
+        "work", ssh_host="user@newhost.com", socks_proxy_port=1090, restart=False
+    )
+    status = mgr.status()
+    assert all(not s.running for s in status.connection_statuses)
+    conn = mgr.list_config().connections[0]
+    assert conn.ssh_host == "user@newhost.com"
+    assert conn.socks_proxy_port == 1090
+
+
 def test_add_pac_host(mgr):
     mgr.add_connection("work", "user@host.com")
     mgr.add_pac_host("*.internal.example.com", conn_tag="work")

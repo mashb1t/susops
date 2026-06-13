@@ -1745,6 +1745,75 @@ class SusOpsManager:
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}") if running else None
         self._emit("state", {"tag": tag, "running": running, "pid": pid})
 
+    def update_connection(
+            self,
+            tag: str,
+            *,
+            new_tag: str | None = None,
+            ssh_host: str | None = None,
+            socks_proxy_port: int | None = None,
+            restart: bool = True,
+    ) -> Connection:
+        """Edit a connection's tag / ssh_host / socks_proxy_port in place.
+
+        Unlike remove + re-add, this preserves the connection's children
+        (forwards, pac_hosts, pac_hosts_disabled, file_shares, enabled) via
+        model_copy — remove_connection cascades and would drop them.
+
+        If the connection was running and restart=True, the tunnel is torn
+        down under the OLD tag and brought back up under the NEW config so a
+        renamed/re-pointed connection picks up the change immediately.
+        """
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+
+            target_tag = (new_tag if new_tag is not None else tag).strip()
+            if not target_tag:
+                raise ValueError("Tag must be a non-empty string")
+            if target_tag != tag:
+                _validate_tag(target_tag)
+                if get_connection(self.config, target_tag) is not None:
+                    raise ValueError(f"Connection '{target_tag}' already exists")
+
+            new_host = (ssh_host if ssh_host is not None else conn.ssh_host).strip()
+            if not new_host:
+                raise ValueError("ssh_host must be a non-empty string")
+
+            new_port = conn.socks_proxy_port if socks_proxy_port is None else int(socks_proxy_port)
+            if not validate_port(new_port, allow_zero=True):
+                raise ValueError(f"Invalid socks_proxy_port {new_port}: must be 0 or 1-65535")
+            if new_port != 0 and new_port != conn.socks_proxy_port and not is_port_free(new_port):
+                raise ValueError(f"SOCKS port {new_port} is already in use")
+
+            was_running = (
+                    is_tunnel_running(tag, self._process_mgr)
+                    or is_socket_alive(tag, self.workspace)
+            )
+
+            updated = conn.model_copy(update={
+                "tag": target_tag,
+                "ssh_host": new_host,
+                "socks_proxy_port": new_port,
+            })
+            self.config = self.config.model_copy(update={
+                "connections": [updated if c.tag == tag else c for c in self.config.connections]
+            })
+            self._save()
+
+        self._update_pac()
+        if was_running and restart:
+            # Tear down under the OLD tag (its PID/socket/shares/forwards), then
+            # bring it back up under the NEW config. Outside the config lock —
+            # stop/start acquire their own locks.
+            self.stop(tag=tag)
+            self.start(tag=target_tag)
+        self._log(f"[{tag}] Updated → tag={target_tag} host={new_host} socks={new_port}")
+        self._emit_state(self._compute_state())
+        return updated
+
     def _update_pac(self) -> None:
         """Write the PAC file and reload the in-process server if running."""
         pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
