@@ -1789,8 +1789,18 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._copy_to_pasteboard(f"http://localhost:{port}")
             elif action_id == "share.copy_password":
                 self._copy_to_pasteboard(info.password or "")
-            elif action_id == "share.show_file_path":
-                self.show_output_dialog("Share File Path", str(info.file_path))
+            elif action_id == "share.open_folder":
+                try:
+                    from AppKit import NSWorkspace, NSURL  # type: ignore[import]
+
+                    p = Path(str(info.file_path)).expanduser()
+                    if p.exists():
+                        u = NSURL.fileURLWithPath_(str(p))
+                        NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_([u])
+                    else:
+                        self.show_alert("File Not Found", str(p))
+                except Exception as e:
+                    self.show_alert("Could Not Open Folder", str(e))
         self._refresh_config_window()
 
     def _reserve_share_silent(self, info) -> None:
