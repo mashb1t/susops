@@ -1113,7 +1113,10 @@ class ConfigWindow:
             NSTextField,
             NSView,
         )
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL1_W, 30))
+        row_w = self._nav_viewport_width()
+        cell_x = 9
+        cell_w = max(40, row_w - 2 * cell_x)
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 30))
         self._style_debug_row_cell(cell)
         x = 8
         if item.icon:
@@ -1126,7 +1129,7 @@ class ConfigWindow:
                 cell.addSubview_(iv)
                 x += 24
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(x, 4, COL1_W - x - 44, 20))
+            NSMakeRect(x, 4, cell_w - x - 44, 20))
         title.setStringValue_(item.title)
         title.setFont_(NSFont.systemFontOfSize_(13))
         title.setBezeled_(False)
@@ -1139,7 +1142,7 @@ class ConfigWindow:
             # Sit inside the selection pill (which floats inset ~9px from the
             # column edge), not in the margin outside it.
             count = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL1_W - 55, 3, 28, 20))
+                NSMakeRect(cell_w - 47, 3, 28, 20))
             count.setStringValue_(str(item.count))
             count.setFont_(NSFont.systemFontOfSize_(12))
             count.setAlignment_(1)  # right
@@ -1161,9 +1164,11 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 24))
+        cell_x = 9
+        cell_w = max(40, row_w - 2 * cell_x)
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 24))
         self._style_debug_row_cell(cell)
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, row_w - 20, 16))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, cell_w - 20, 16))
         # Section titles render as the model emits them ("Local"/"Remote"),
         # NOT uppercased. Medium weight, secondary color.
         lbl.setStringValue_(r.title)
@@ -1183,9 +1188,11 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 18))
+        cell_x = 9
+        cell_w = max(40, row_w - 2 * cell_x)
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 18))
         self._style_debug_row_cell(cell)
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, row_w - 20, 16))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, cell_w - 20, 16))
         lbl.setStringValue_(r.title)
         lbl.setFont_(NSFont.systemFontOfSize_(11))
         lbl.setBezeled_(False)
@@ -1200,7 +1207,9 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 38))
+        cell_x = 9
+        cell_w = max(40, row_w - 2 * cell_x)
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 38))
         self._style_debug_row_cell(cell)
         title_color = (NSColor.secondaryLabelColor() if r.dimmed
                        else NSColor.labelColor())
@@ -1237,11 +1246,11 @@ class ConfigWindow:
         badge_right_inset = 27
         # Keep text inside the same floating row area as the selection pill.
         pill_right_inset = 9
-        row_right_limit = row_w - pill_right_inset - 10
+        row_right_limit = cell_w - pill_right_inset - 10
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(row_w - badge_w - badge_right_inset, badge_y, badge_w, 16))
+                NSMakeRect(cell_w - badge_w - badge_right_inset, badge_y, badge_w, 16))
             badge.setStringValue_(r.badge)
             badge.setFont_(NSFont.systemFontOfSize_(10))
             badge.setAlignment_(1)  # center
@@ -1259,7 +1268,7 @@ class ConfigWindow:
                 pass
             cell.addSubview_(badge)
 
-        title_right_limit = (row_w - badge_w - badge_right_inset - 6
+        title_right_limit = (cell_w - badge_w - badge_right_inset - 6
                              if badge_w else row_right_limit)
         title_w = max(40, title_right_limit - text_x)
         title = NSTextField.alloc().initWithFrame_(
@@ -1289,8 +1298,17 @@ class ConfigWindow:
     def _list_viewport_width(self) -> float:
         """Visible width of column 2's table area used for row content layout."""
         tv = getattr(self, "_list_tv", None)
+        return self._table_viewport_width(tv, fallback=float(COL2_W))
+
+    def _nav_viewport_width(self) -> float:
+        """Visible width of column 1's table area used for row content layout."""
+        tv = getattr(self, "_nav_tv", None)
+        return self._table_viewport_width(tv, fallback=float(COL1_W))
+
+    def _table_viewport_width(self, tv, *, fallback: float) -> float:
+        """Best-effort visible width of a table's clip view."""
         if tv is None:
-            return float(COL2_W)
+            return fallback
         try:
             scroll = tv.enclosingScrollView()
             if scroll is not None:
@@ -1305,7 +1323,7 @@ class ConfigWindow:
                 return w
         except Exception:
             pass
-        return float(COL2_W)
+        return fallback
 
     def _sf_symbol(self, name: str):
         from AppKit import NSImage  # type: ignore[import]
