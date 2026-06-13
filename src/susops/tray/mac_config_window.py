@@ -45,8 +45,6 @@ _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
 _vcenter_text_cell_cls = None
-_vcenter_secure_cell_cls = None
-_vcenter_combo_cell_cls = None
 
 
 def _make_vcenter_cell_cls(base_cell_cls):
@@ -105,26 +103,6 @@ def _get_vcenter_text_cell_cls():
 
     _vcenter_text_cell_cls = _make_vcenter_cell_cls(NSTextFieldCell)
     return _vcenter_text_cell_cls
-
-
-def _get_vcenter_secure_cell_cls():
-    global _vcenter_secure_cell_cls
-    if _vcenter_secure_cell_cls is not None:
-        return _vcenter_secure_cell_cls
-    from Cocoa import NSSecureTextFieldCell  # type: ignore[import]
-
-    _vcenter_secure_cell_cls = _make_vcenter_cell_cls(NSSecureTextFieldCell)
-    return _vcenter_secure_cell_cls
-
-
-def _get_vcenter_combo_cell_cls():
-    global _vcenter_combo_cell_cls
-    if _vcenter_combo_cell_cls is not None:
-        return _vcenter_combo_cell_cls
-    from Cocoa import NSComboBoxCell  # type: ignore[import]
-
-    _vcenter_combo_cell_cls = _make_vcenter_cell_cls(NSComboBoxCell)
-    return _vcenter_combo_cell_cls
 
 
 def _truncate_tail(field) -> None:
@@ -1880,7 +1858,6 @@ class ConfigWindow:
             for opt in f.options:
                 combo.addItemWithObjectValue_(str(opt))
             combo.setStringValue_(str(f.value or ""))
-            _apply_vcenter_cell(combo, _get_vcenter_combo_cell_cls())
             self._wire_text_dirty(combo)
             # NSComboBox selection changes do not always emit text-change
             # notifications, so wire action events too.
@@ -1943,10 +1920,6 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f.placeholder)
                 except Exception:
                     pass
-            if tf is secure:
-                _apply_vcenter_cell(tf, _get_vcenter_secure_cell_cls())
-            else:
-                _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
