@@ -420,8 +420,8 @@ MIN_W = 1024
 MIN_H = 640
 COL1_W = 180
 COL2_W = 270
-TOP_INSET = 38          # traffic lights overlay col 1; start content below them
-SIDEBAR_TOP_INSET = 23  # nav-only top inset (kept independent for fine tuning)
+TOP_INSET = 45          # traffic lights overlay col 1; start content below them
+SIDEBAR_TOP_INSET = TOP_INSET - 9  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
 ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
@@ -1778,7 +1778,7 @@ class ConfigWindow:
         # content column.
         if spec.toggle_note:
             note = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(cw - 360, toggle_y - 18, 360, 14))
+                NSMakeRect(0, toggle_y - 18, cw, 14))
             note.setStringValue_(spec.toggle_note)
             note.setFont_(NSFont.systemFontOfSize_(11))
             note.setAlignment_(1)  # right
