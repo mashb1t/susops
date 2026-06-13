@@ -590,6 +590,7 @@ def test_share_detail_running_fields_and_url():
     assert "share.copy_url" not in ids and "share.copy_password" not in ids
     assert spec.actions[0].destructive is True
     # URL row carries a Copy button; password row carries Reveal + Copy.
+    assert by_key["file"].trailing == (("share.show_file_path", "Show"),)
     assert by_key["url"].trailing == (("share.copy_url", "Copy"),)
     assert by_key["password"].trailing == (("share.reveal", "Reveal"),
                                            ("share.copy_password", "Copy"))

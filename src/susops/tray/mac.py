@@ -1789,6 +1789,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._copy_to_pasteboard(f"http://localhost:{port}")
             elif action_id == "share.copy_password":
                 self._copy_to_pasteboard(info.password or "")
+            elif action_id == "share.show_file_path":
+                self.show_output_dialog("Share File Path", str(info.file_path))
         self._refresh_config_window()
 
     def _reserve_share_silent(self, info) -> None:

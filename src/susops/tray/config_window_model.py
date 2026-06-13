@@ -453,7 +453,8 @@ def build_share_detail(info, status, conn_tags=()) -> DetailSpec:
         status_dot = "red"
     fields = [
         FormField(key="file", label="File", kind="static",
-                  value=str(info.file_path)),
+                  value=str(info.file_path),
+                  trailing=(("share.show_file_path", "Show"),)),
         FormField(key="conn_tag", label="Connection", kind="popup",
                   value=getattr(info, "conn_tag", "") or "",
                   options=list(conn_tags)),
