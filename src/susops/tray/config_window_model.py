@@ -301,6 +301,30 @@ def build_connection_detail(conn, status) -> DetailSpec:
     )
 
 
+def build_connection_form(ssh_hosts) -> DetailSpec:
+    """Create-only connection form. Connection EDIT is out of scope (Phase 3
+    facade update_connection). Fields: tag, ssh_host combo, optional socks_port.
+    """
+    fields = [
+        FormField(key="tag", label="Tag", kind="text", value="",
+                  placeholder="e.g. work"),
+        FormField(key="ssh_host", label="SSH Host", kind="combo", value="",
+                  options=list(ssh_hosts),
+                  placeholder="hostname, IP, or ssh alias"),
+        FormField(key="socks_port", label="SOCKS Port", kind="text", value="",
+                  placeholder="auto", note="leave empty for auto"),
+    ]
+    return DetailSpec(
+        title="New Connection",
+        status_text="",
+        status_dot="",
+        fields=fields,
+        actions=[Action("conn.create", "Create")],
+        toggle=None,
+        editable=True,
+    )
+
+
 def build_domain_form(conn_tags, *, conn_tag=None, host=None,
                       status=None, conn=None) -> DetailSpec:
     is_edit = host is not None

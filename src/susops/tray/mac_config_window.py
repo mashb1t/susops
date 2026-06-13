@@ -16,6 +16,7 @@ from susops.tray.config_window_model import (
     ListRow,
     NavItem,
     build_connection_detail,
+    build_connection_form,
     build_connection_rows,
     build_domain_form,
     build_domain_rows,
@@ -283,6 +284,10 @@ class ConfigWindow:
         self._field_kinds: dict = {}     # field key -> FormField.kind
         self._save_button = None         # cached Save NSButton (enable on dirty)
         self._dirty_identity = None      # identity the dirty form belongs to
+        # Create mode: "connection" | "domain" | "forward" or None. While set,
+        # col-2 selection is cleared and col 3 shows an inline create form with
+        # an always-enabled Create button + a Cancel button.
+        self._create_kind = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -582,10 +587,13 @@ class ConfigWindow:
             self._pending_category = None
             self.category = cat if cat in CATEGORIES else self.category
         self._reload_nav()
-        # While a col-3 form is dirty, cols 1-2 keep refreshing but column 3
-        # stays untouched. skip_detail also pins the col-2 selection to the
-        # dirty identity so the in-flight edit is not clobbered.
-        self._reload_list(preserve=True, skip_detail=self._dirty)
+        # While a col-3 form is dirty OR a create form is open, cols 1-2 keep
+        # refreshing but column 3 stays untouched. skip_detail pins the col-2
+        # selection to the dirty identity (None during create, so no row is
+        # forced) so neither an in-flight edit nor an open empty create form is
+        # clobbered by a poll.
+        self._reload_list(preserve=True,
+                          skip_detail=self._dirty or self._create_kind is not None)
 
     def _reload_nav(self) -> None:
         self.nav_items = build_nav(self._cfg, self._shares)
@@ -685,6 +693,7 @@ class ConfigWindow:
                         return
                     self._dirty = False
                     self._dirty_identity = None
+                self._create_kind = None
                 self.category = new_cat
                 self.selected_identity = None
                 self.search_text = ""
@@ -697,14 +706,23 @@ class ConfigWindow:
             row = int(self._list_tv.selectedRow())
             if 0 <= row < len(self.rows) and self.rows[row].kind == "item":
                 new_identity = self.rows[row].identity
-                if (self._dirty and self._dirty_identity is not None
-                        and new_identity != self._dirty_identity):
+                # Leaving an edit form (dirty + identity) OR a dirty create form
+                # both prompt the discard confirm.
+                leaving_dirty = self._dirty and (
+                    self._create_kind is not None
+                    or (self._dirty_identity is not None
+                        and new_identity != self._dirty_identity))
+                if leaving_dirty:
                     if not self._confirm_discard():
                         # No: keep editing - revert the table selection.
-                        self._reselect_dirty_row()
+                        if self._create_kind is not None:
+                            self._reselect_none()
+                        else:
+                            self._reselect_dirty_row()
                         return
                     self._dirty = False
                     self._dirty_identity = None
+                self._create_kind = None
                 self.selected_identity = new_identity
                 self._render_selection_placeholder()
 
@@ -730,6 +748,20 @@ class ConfigWindow:
         self._suppress_selection_cb = True
         try:
             self._select_table_row(self._list_tv, target)
+        finally:
+            self._suppress_selection_cb = False
+
+    def _reselect_none(self) -> None:
+        """Clear the col-2 highlight under the suppression flag. Used on the No
+        path of the discard confirm while a create form is open (create mode has
+        no selected row)."""
+        self._suppress_selection_cb = True
+        try:
+            from Foundation import NSIndexSet  # type: ignore[import]
+            self._list_tv.selectRowIndexes_byExtendingSelection_(
+                NSIndexSet.indexSet(), False)
+        except Exception:
+            pass
         finally:
             self._suppress_selection_cb = False
 
@@ -997,8 +1029,83 @@ class ConfigWindow:
         return []  # settings
 
     def _on_add_clicked(self, kind: str) -> None:
-        # Task 2: no-op placeholder; real create forms land in Tasks 5/6.
-        self._render_col3_placeholder("Create forms land in Task 5/6.")
+        if kind in ("connection", "domain", "forward"):
+            self.enter_create_mode(kind)
+        else:
+            # Shares + fetch create forms land in Task 6.
+            self._render_col3_placeholder("Create form lands in Task 6.")
+
+    # ------------------------------------------------------------------ #
+    # Create mode
+    # ------------------------------------------------------------------ #
+
+    def enter_create_mode(self, kind: str) -> None:
+        """Show the inline create form for `kind` in column 3. Clears the col-2
+        selection (under suppression) so no edit form competes with it. A dirty
+        create form is guarded by the discard confirm exactly like an edit."""
+        if self._dirty and not self._confirm_discard():
+            return
+        # Capture the highlighted row's conn tag BEFORE clearing the selection
+        # so domain/forward create can preselect it.
+        conn_tags = [c.tag for c in self._cfg.connections] if self._cfg else []
+        preselect = self._preselected_conn_tag(conn_tags)
+        self._dirty = False
+        self._dirty_identity = None
+        self._create_kind = kind
+        self.selected_identity = None
+        # Deselect any highlighted col-2 row without firing the selection cb.
+        self._suppress_selection_cb = True
+        try:
+            from Foundation import NSIndexSet  # type: ignore[import]
+            self._list_tv.selectRowIndexes_byExtendingSelection_(
+                NSIndexSet.indexSet(), False)
+        except Exception:
+            pass
+        finally:
+            self._suppress_selection_cb = False
+        spec = self._build_create_spec(kind, preselect)
+        if spec is None:
+            self._create_kind = None
+            self._render_col3_placeholder("Cannot create here.")
+            return
+        self._detail_spec = spec
+        self._render_detail(spec)
+
+    def exit_create_mode(self) -> None:
+        """Leave create mode and restore normal selection rendering."""
+        self._create_kind = None
+        self._dirty = False
+        self._dirty_identity = None
+        self._render_selection_placeholder()
+
+    def _build_create_spec(self, kind: str, preselect: str):
+        conn_tags = [c.tag for c in self._cfg.connections] if self._cfg else []
+        if kind == "connection":
+            try:
+                from susops.tray.base import get_ssh_hosts
+                ssh_hosts = get_ssh_hosts()
+            except Exception:
+                ssh_hosts = []
+            return build_connection_form(ssh_hosts)
+        # Domain/forward need a connection.
+        if not conn_tags:
+            return None
+        if kind == "domain":
+            return build_domain_form(conn_tags, conn_tag=preselect)
+        if kind == "forward":
+            return build_forward_form(conn_tags, conn_tag=preselect)
+        return None
+
+    def _preselected_conn_tag(self, conn_tags):
+        """The conn tag of the currently selected col-2 row, if it carries one,
+        else the first connection tag (or "" when none)."""
+        ident = self.selected_identity
+        if ident and len(ident) >= 2 and ident[0] in ("domain", "forward",
+                                                       "connection"):
+            tag = ident[1]
+            if tag in conn_tags:
+                return tag
+        return conn_tags[0] if conn_tags else ""
 
     # ------------------------------------------------------------------ #
     # Column 3 (placeholder in Task 2)
@@ -1007,8 +1114,10 @@ class ConfigWindow:
     def _render_selection_placeholder(self) -> None:
         # Fresh render of column 3 - any prior dirty form is being replaced, so
         # clear the dirty flag (callers gate this behind the discard confirm).
+        # This is the normal selection/detail path, never a create form.
         self._dirty = False
         self._dirty_identity = None
+        self._create_kind = None
         if self.category == "settings":
             self._detail_spec = None
             self._render_col3_placeholder("Settings pane lands in Task 7.")
@@ -1615,10 +1724,21 @@ class ConfigWindow:
 
     def _render_action_row(self, spec, container, cw, top_y) -> None:
         from Cocoa import NSMakeRect  # type: ignore[import]
-        # Save starts disabled until the form is dirty.
-        actions = list(spec.actions)
         btn_h = 30
         row_y = top_y - btn_h
+
+        # Create mode: a primary Create button (styled like Save, but ALWAYS
+        # enabled) + a neutral Cancel to its right, both right-aligned. No
+        # destructive button.
+        if self._create_kind is not None:
+            create = next((a for a in spec.actions
+                           if a.action_id.endswith(".create")), None)
+            if create is not None:
+                self._render_create_action_row(create, container, cw, row_y, btn_h)
+                return
+
+        # Save starts disabled until the form is dirty.
+        actions = list(spec.actions)
 
         def _make_button(action):
             title = action.title
@@ -1670,6 +1790,48 @@ class ConfigWindow:
             btn.setFrame_(frame)
             container.addSubview_(btn)
             rx += bw + 8
+
+    def _render_create_action_row(self, action, container, cw, row_y,
+                                  btn_h) -> None:
+        """Create + Cancel buttons, right-aligned. Create is styled like Save
+        (accent fill, return key equivalent) but ALWAYS enabled. Cancel exits
+        create mode without dispatching."""
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        create_w = max(80, 28 + 8 * len(action.title))
+        cancel_w = max(72, 28 + 8 * len("Cancel"))
+        gap = 8
+        total = create_w + gap + cancel_w
+        rx = cw - total
+
+        cancel = self._styled_neutral_button(
+            "Cancel", NSMakeRect(rx, row_y, cancel_w, btn_h))
+        cancel_handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s: self.exit_create_mode())
+        self._handlers.append(cancel_handler)
+        cancel.setTarget_(cancel_handler)
+        cancel.setAction_("fire:")
+        container.addSubview_(cancel)
+
+        create = self._styled_save_button(
+            action.title, NSMakeRect(rx + cancel_w + gap, row_y, create_w,
+                                     btn_h))
+        create.setEnabled_(True)
+        self._restyle_save_button(create, True)
+        create_handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s, aid=action.action_id: self._dispatch_create(aid))
+        self._handlers.append(create_handler)
+        create.setTarget_(create_handler)
+        create.setAction_("fire:")
+        container.addSubview_(create)
+
+    def _dispatch_create(self, action_id: str) -> None:
+        """Forward a create action with the live form values. Runs on the main
+        thread (button handler)."""
+        try:
+            values = self.collect_form_values()
+            self.tray.create_window_item(self._create_kind, values)
+        except Exception:
+            pass
 
     def _dispatch(self, action_id: str) -> None:
         """Forward a detail-pane action to the tray dispatch with the current
@@ -1723,6 +1885,7 @@ class ConfigWindow:
         self._detail_spec = None
         self._dirty = False
         self._dirty_identity = None
+        self._create_kind = None
         self._clear_col3()
         w = self._col3.frame().size.width
         h = self._col3.frame().size.height
@@ -1767,6 +1930,7 @@ class ConfigWindow:
                               if self._detail_spec.toggle else None)
             if self._detail_spec else None,
             "dirty": bool(self._dirty),
+            "create_kind": self._create_kind,
             "fields": self._dump_fields(),
             # Cumulative auto-answered modal panels (debug mode) so tests can
             # assert no unexpected dialog fired.
@@ -1813,6 +1977,18 @@ class ConfigWindow:
         self._on_search(text)
         return {"ok": True, "search": self.search_text,
                 "rows": len([r for r in self.rows if r.kind == "item"])}
+
+    def add(self) -> dict:
+        """Debug: trigger the current category's primary add button, entering
+        create mode. Errors for categories without an inline create form yet."""
+        specs = self._add_button_specs()
+        if not specs:
+            return {"error": f"no add button for category '{self.category}'"}
+        kind = specs[0][1]
+        if kind not in ("connection", "domain", "forward"):
+            return {"error": f"inline create not available for '{kind}'"}
+        self.enter_create_mode(kind)
+        return {"ok": True, "create_kind": self._create_kind}
 
     def set_field(self, key: str, value: str) -> dict:
         """Debug: write a value into a live col-3 form widget and mark dirty,

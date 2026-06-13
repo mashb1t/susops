@@ -2030,7 +2030,7 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _debug_handlers(self) -> dict:
         """Debug-server command table (ping, dump-menu, open-about, open-config,
-        select, dump-window, search, set-field, confirm-next, action,
+        select, dump-window, search, set-field, add, confirm-next, action,
         screenshot, quit). Every UI-touching handler marshals via _run_on_main.
 
         open-config [category] — category key (connections/domains/forwards/
@@ -2039,6 +2039,8 @@ class SusOpsMacTray(AbstractTrayApp):
             selectable item row in column 2.
         search [text…] — set the search field string (empty clears) + filter.
         set-field <key> <value…> — write a live col-3 form widget, mark dirty.
+        add — trigger the current category's primary add button (enters create
+            mode for connections/domains/forwards).
         confirm-next <ok|cancel> — queue the answer for the next multi-button
             panel (confirms default to cancel in debug mode otherwise).
         """
@@ -2082,6 +2084,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().set_field(
                     args[0], " ".join(args[1:])))
                 if args else {"error": "usage: set-field <key> <value…>"}),
+            "add": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().add()),
             "confirm-next": lambda args: (
                 (_DEBUG_CONFIRM_QUEUE.append(args[0]),
                  {"ok": True, "queued": args[0]})[1]
@@ -2137,8 +2141,18 @@ class SusOpsMacTray(AbstractTrayApp):
           ("forward", conn_tag, direction, src_port)
           ("share", port)
         Destructive actions confirm first. *.save routes to save_window_form
-        with the live form values. *.create and fetch.run are not rendered
-        yet and resolve to a quiet message."""
+        with the live form values. *.create routes to create_window_item.
+        fetch.run is not rendered yet (Task 6) and resolves to a quiet
+        message."""
+        # *.create is dispatched through the window's create handler, which
+        # reads _create_kind + the live form values, so it has no identity.
+        if action_id.endswith(".create"):
+            cw = getattr(self, "_config_window", None)
+            if cw is None or cw._create_kind is None:
+                return
+            self.create_window_item(cw._create_kind, cw.collect_form_values())
+            return
+
         kind = identity[0] if identity else None
         if kind is None:
             return
@@ -2151,7 +2165,7 @@ class SusOpsMacTray(AbstractTrayApp):
             self.save_window_form(identity, values)
             return
 
-        if action_id.endswith(".create") or action_id == "fetch.run":
+        if action_id == "fetch.run":
             _show_message("Not yet available",
                           "This action is not available yet.")
             return
@@ -2245,6 +2259,164 @@ class SusOpsMacTray(AbstractTrayApp):
         cw._dirty_identity = None
         cw.selected_identity = tuple(new_identity)
         self._refresh_config_window()
+
+    # ------------------------------------------------------------------ #
+    # Inline create. Pure-input validation lives here (single place),
+    # mirroring save_window_form. The add runs on a worker thread. Alerts,
+    # refresh and reselect marshal back to the main thread. On any error the
+    # create form stays open with its edits.
+    # ------------------------------------------------------------------ #
+
+    def create_window_item(self, kind: str, values: dict) -> None:
+        if kind == "connection":
+            self._create_connection(values)
+        elif kind == "domain":
+            self._create_domain(values)
+        elif kind == "forward":
+            self._create_forward(values)
+
+    def _exit_create_and_select(self, new_identity: tuple) -> None:
+        """Main-thread: leave create mode, refresh, and select the new row by
+        identity. No success alert - the selected new row is the feedback."""
+        cw = getattr(self, "_config_window", None)
+        if cw is None:
+            return
+        cw._create_kind = None
+        cw._dirty = False
+        cw._dirty_identity = None
+        cw.selected_identity = tuple(new_identity)
+        self._refresh_config_window()
+
+    def _create_connection(self, values: dict) -> None:
+        tag = (values.get("tag") or "").strip()
+        ssh_host = (values.get("ssh_host") or "").strip()
+        port_text = str(values.get("socks_port") or "").strip()
+        if not tag:
+            _show_message("Missing Field", "Connection Tag must not be empty.")
+            return
+        if not ssh_host:
+            _show_message("Missing Field", "SSH Host must not be empty.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "SOCKS Proxy Port must be between 1 and 65535.")
+                return
+            port_int = int(port_text)
+            if not is_port_free(port_int):
+                _show_message("Port In Use",
+                              f"Port {port_int} is already in use.")
+                return
+
+        new_identity = ("connection", tag)
+        # Auto-start the new connection when the proxy is already running,
+        # matching do_add_connection's behavior (but without its alert).
+        autostart = self.state == ProcessState.RUNNING
+
+        def _work():
+            try:
+                self.manager.add_connection(tag, ssh_host, port_int)
+            except Exception as exc:
+                return {"error": str(exc)}
+            if autostart:
+                try:
+                    self.manager.start(tag=tag)
+                except Exception as exc:
+                    return {"error": f"Connection added but failed to "
+                                     f"start: {exc}"}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _create_domain(self, values: dict) -> None:
+        host = (values.get("host") or "").strip()
+        conn_tag = (values.get("conn_tag") or "").strip()
+        if not host:
+            _show_message("Missing Field", "Host must not be empty.")
+            return
+        if not conn_tag or conn_tag not in self._connection_tags():
+            _show_message("Missing Field", "Select a connection.")
+            return
+
+        new_identity = ("domain", conn_tag, host)
+
+        def _work():
+            try:
+                self.manager.add_pac_host(host, conn_tag=conn_tag)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _create_forward(self, values: dict) -> None:
+        conn_tag = (values.get("conn_tag") or "").strip()
+        dir_label = values.get("direction") or ""
+        direction = self._DIRECTION_FROM_LABEL.get(dir_label, "local")
+        remote = direction == "remote"
+        src_addr = (values.get("src_addr") or "localhost").strip()
+        dst_addr = (values.get("dst_addr") or "localhost").strip()
+        src_txt = str(values.get("src_port") or "").strip()
+        dst_txt = str(values.get("dst_port") or "").strip()
+        protocols = values.get("protocols") or (False, False)
+        tcp, udp = bool(protocols[0]), bool(protocols[1])
+        tag = (values.get("tag") or "").strip()
+
+        if not conn_tag or conn_tag not in self._connection_tags():
+            _show_message("No Connection", "Select a connection.")
+            return
+        if not tcp and not udp:
+            _show_message("Protocol Required",
+                          "Select at least one protocol (TCP or UDP).")
+            return
+        if not src_txt.isdigit() or not validate_port(int(src_txt)):
+            _show_message("Invalid Source Port",
+                          "Source port must be a number between 1 and 65535.")
+            return
+        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
+            _show_message("Invalid Destination Port",
+                          "Destination port must be a number between 1 and "
+                          "65535.")
+            return
+        src_port = int(src_txt)
+        dst_port = int(dst_txt)
+        if not remote and not is_port_free(src_port):
+            _show_message("Port In Use",
+                          f"Local port {src_port} is already in use.")
+            return
+
+        new_identity = ("forward", conn_tag, direction, src_port)
+
+        def _work():
+            fw = PortForward(tag=tag, src_addr=src_addr, src_port=src_port,
+                             dst_addr=dst_addr, dst_port=dst_port,
+                             tcp=tcp, udp=udp)
+            try:
+                self._add_forward_rpc(conn_tag, fw, direction)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _after_create(self, result, new_identity: tuple) -> None:
+        """Main-thread create callback. Error -> alert, form stays open with its
+        edits. Success -> exit create mode + select the new row."""
+        if isinstance(result, dict) and result.get("error"):
+            _show_message("Add Failed", result["error"])
+            self._refresh_config_window()
+            return
+        self._exit_create_and_select(new_identity)
+
+    def _connection_tags(self) -> list:
+        try:
+            return [c.tag for c in self.manager.list_config().connections]
+        except Exception:
+            return []
 
     def _save_forward(self, identity: tuple, values: dict) -> None:
         _, old_conn_tag, old_direction, old_src_port = identity

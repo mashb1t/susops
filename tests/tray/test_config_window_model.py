@@ -12,6 +12,7 @@ from susops.tray.config_window_model import (
     ListRow,
     NavItem,
     build_connection_detail,
+    build_connection_form,
     build_connection_rows,
     build_domain_form,
     build_domain_rows,
@@ -356,6 +357,35 @@ def test_connection_detail_socks_port_fallback():
     spec = build_connection_detail(conn, _status("work", running=False))
     by_label = {f.label: f for f in spec.fields}
     assert by_label["SOCKS Port"].value == "2200"
+
+
+# ---- connection form (create only) ----
+
+def test_connection_form_create_mode():
+    spec = build_connection_form(["host.lan", "1.2.3.4", "bastion"])
+    assert isinstance(spec, DetailSpec)
+    assert spec.editable is True
+    assert spec.title == "New Connection"
+    assert spec.status_text == ""
+    assert spec.status_dot == ""
+    assert spec.toggle is None
+    by_key = {f.key: f for f in spec.fields}
+    assert set(by_key) == {"tag", "ssh_host", "socks_port"}
+    assert by_key["tag"].kind == "text"
+    assert by_key["tag"].value == ""
+    assert by_key["ssh_host"].kind == "combo"
+    assert by_key["ssh_host"].options == ["host.lan", "1.2.3.4", "bastion"]
+    assert by_key["ssh_host"].value == ""
+    assert by_key["socks_port"].kind == "text"
+    assert by_key["socks_port"].value == ""
+    assert by_key["socks_port"].note == "leave empty for auto"
+    assert [a.action_id for a in spec.actions] == ["conn.create"]
+
+
+def test_connection_form_empty_ssh_hosts():
+    spec = build_connection_form([])
+    by_key = {f.key: f for f in spec.fields}
+    assert by_key["ssh_host"].options == []
 
 
 # ---- domain form ----

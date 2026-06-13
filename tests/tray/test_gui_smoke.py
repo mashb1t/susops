@@ -265,3 +265,88 @@ def test_inline_edit_forward_validation_keeps_form(tray_proc):
     cfg = c.list_config()
     # Original forward untouched.
     assert [f.src_port for f in cfg.connections[0].forwards.local] == [5432]
+
+
+def test_inline_create_domain(tray_proc):
+    """Add button on Domains opens a create form; Create persists the host."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config domains").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "domains",
+    )
+    assert tray_proc.send("add").get("ok")
+    d = tray_proc.send("dump-window")
+    assert d["create_kind"] == "domain"
+    assert d["detail_title"] == "New Domain / IP / CIDR"
+
+    tray_proc.send("set-field host test.example.com")
+    assert tray_proc.send("action domain.create").get("ok")
+    # Wait for the background create + refresh to land.
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("create_kind") is None
+        and any(r["title"] == "test.example.com" for r in d.get("rows", [])),
+        timeout=6.0,
+    )
+    assert dump["create_kind"] is None
+    assert any(r["title"] == "test.example.com" for r in dump["rows"])
+    cfg = c.list_config()
+    assert "test.example.com" in cfg.connections[0].pac_hosts
+
+
+def test_inline_create_connection(tray_proc):
+    """Add button on Connections creates a new connection; nav count bumps."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")  # seed: 1
+    assert tray_proc.send("open-config connections").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            n["key"] == "connections" and n["count"] == 1
+            for n in d.get("nav", [])),
+    )
+    assert tray_proc.send("add").get("ok")
+    d = tray_proc.send("dump-window")
+    assert d["create_kind"] == "connection"
+    assert d["detail_title"] == "New Connection"
+
+    tray_proc.send("set-field tag third")
+    tray_proc.send("set-field ssh_host pi@third.lan")
+    assert tray_proc.send("action conn.create").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("create_kind") is None and any(
+            n["key"] == "connections" and n["count"] == 2
+            for n in d.get("nav", [])),
+        timeout=6.0,
+    )
+    assert any(n["key"] == "connections" and n["count"] == 2
+               for n in dump["nav"])
+    cfg = c.list_config()
+    assert {conn.tag for conn in cfg.connections} == {"work", "third"}
+
+
+def test_inline_create_domain_validation_keeps_form(tray_proc):
+    """Create domain with empty host -> validation alert, form stays open."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config domains").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "domains",
+    )
+    assert tray_proc.send("add").get("ok")
+    assert tray_proc.send("dump-window")["create_kind"] == "domain"
+    # Fire Create with an empty host field.
+    tray_proc.send("action domain.create")
+    time.sleep(1.0)
+    dump = tray_proc.send("dump-window")
+    assert dump["create_kind"] == "domain"  # still in create mode
+    assert "Missing Field" in [a["title"] for a in dump["alerts"]]
+    cfg = c.list_config()
+    assert cfg.connections[0].pac_hosts == []
