@@ -354,7 +354,7 @@ def _get_row_view_cls():
             if not self.isSelected():
                 return
             b = self.bounds()
-            inset_y = 2.0
+            inset_y = 0.0
             inset = 9.0  # equal floating margin both sides (macOS System Settings)
             radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
             # The table view can be wider than its visible column (the row view
@@ -1246,7 +1246,7 @@ class ConfigWindow:
         badge_right_inset = 27
         # Keep text inside the same floating row area as the selection pill.
         pill_right_inset = 9
-        row_right_limit = cell_w - pill_right_inset - 10
+        row_right_limit = cell_w - pill_right_inset - 18
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
@@ -1268,7 +1268,7 @@ class ConfigWindow:
                 pass
             cell.addSubview_(badge)
 
-        title_right_limit = (cell_w - badge_w - badge_right_inset - 6
+        title_right_limit = (cell_w - badge_w - badge_right_inset - 12
                              if badge_w else row_right_limit)
         title_w = max(40, title_right_limit - text_x)
         title = NSTextField.alloc().initWithFrame_(
