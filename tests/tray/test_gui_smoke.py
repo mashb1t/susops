@@ -214,7 +214,7 @@ def test_inline_edit_forward_round_trip(tray_proc):
 
 def test_dirty_suppresses_refresh(tray_proc):
     """While a col-3 form is dirty, an external config change must NOT clobber
-    the in-flight edit. Cols 1-2 still refresh; col-3 stays put."""
+    the in-flight edit. Cols 1-2 still refresh and col-3 stays put."""
     from susops.client import SusOpsClient
     from susops.core.config import PortForward
     c = SusOpsClient(workspace=tray_proc.workspace)
@@ -260,6 +260,8 @@ def test_inline_edit_forward_validation_keeps_form(tray_proc):
     time.sleep(1.0)
     dump = tray_proc.send("dump-window")
     assert dump["dirty"] is True  # save rejected, form kept
+    # The validation alert was recorded and auto-answered, nothing else fired.
+    assert [a["title"] for a in dump["alerts"]] == ["Invalid Source Port"]
     cfg = c.list_config()
     # Original forward untouched.
     assert [f.src_port for f in cfg.connections[0].forwards.local] == [5432]

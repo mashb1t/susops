@@ -994,11 +994,15 @@ def _show_form_dialog(
     return result
 
 
-# When set (by the debug server in test mode), modal alert panels are recorded
-# and auto-answered with the default button instead of blocking on a modal run
-# loop. None in production.
-_DEBUG_ALERT_HOOK = None
-_DEBUG_ALERTS: list[tuple[str, str]] = []
+# Debug-server test mode. Modal alert panels are recorded and auto-answered
+# instead of blocking on a modal run loop, because GUI smoke tests drive the
+# window over the debug socket on the main thread. Policy: single-button
+# panels answer with their only button. Multi-button panels (confirms) answer
+# with CANCEL unless an explicit answer was queued via `confirm-next`, so a
+# destructive default can never fire by accident. False in production.
+_DEBUG_ALERT_MODE = False
+_DEBUG_ALERTS: list[dict] = []         # [{"title": ..., "answered": label}]
+_DEBUG_CONFIRM_QUEUE: list[str] = []   # queued "ok"/"cancel" for next confirms
 
 
 def _show_message_panel(
@@ -1027,17 +1031,23 @@ def _show_message_panel(
 
     Returns the response_code of the clicked button.
     """
-    # Headless/debug escape hatch: GUI smoke tests drive the window over the
-    # debug socket on the main thread, so a blocking runModalForWindow_ would
-    # deadlock the test harness. When a debug alert hook is installed, record
-    # the alert and return the default button's response code instead of
-    # running the modal. Production (no debug port) is unaffected.
-    if _DEBUG_ALERT_HOOK is not None:
-        try:
-            _DEBUG_ALERT_HOOK(title, message, list(buttons))
-        except Exception:
-            pass
-        idx = default_index if 0 <= default_index < len(buttons) else 0
+    # Headless/debug escape hatch. A blocking runModalForWindow_ would
+    # deadlock the test harness, so in debug mode the panel is recorded and
+    # auto-answered. Single-button panels use their only button. Multi-button
+    # panels answer with CANCEL unless `confirm-next` queued an explicit
+    # answer, so a destructive default can never fire by accident.
+    if _DEBUG_ALERT_MODE:
+        eff_cancel = cancel_index if cancel_index is not None \
+            else len(buttons) - 1
+        if len(buttons) == 1:
+            idx = 0
+        elif _DEBUG_CONFIRM_QUEUE:
+            answer = _DEBUG_CONFIRM_QUEUE.pop(0)
+            idx = default_index if answer == "ok" else eff_cancel
+        else:
+            idx = eff_cancel
+        idx = idx if 0 <= idx < len(buttons) else 0
+        _DEBUG_ALERTS.append({"title": title, "answered": buttons[idx][0]})
         return int(buttons[idx][1])
 
     from AppKit import (  # type: ignore[import]
@@ -1972,11 +1982,11 @@ class SusOpsMacTray(AbstractTrayApp):
         self._debug_server = None
         debug_port = os.environ.get("SUSOPS_TRAY_DEBUG_PORT")
         if debug_port:
-            # In debug/test mode, auto-answer modal alerts (default button) so
-            # GUI smoke tests driving the window over the socket don't deadlock
-            # on a blocking runModalForWindow_.
-            global _DEBUG_ALERT_HOOK
-            _DEBUG_ALERT_HOOK = lambda t, m, _b: _DEBUG_ALERTS.append((t, m))
+            # Auto-answer modal alerts in test mode (see _DEBUG_ALERT_MODE) so
+            # GUI smoke tests driving the window over the socket don't
+            # deadlock on a blocking runModalForWindow_.
+            global _DEBUG_ALERT_MODE
+            _DEBUG_ALERT_MODE = True
             from susops.tray.debug_server import TrayDebugServer
             self._debug_server = TrayDebugServer(
                 self._debug_handlers(), port=int(debug_port),
@@ -2020,14 +2030,17 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _debug_handlers(self) -> dict:
         """Debug-server command table (ping, dump-menu, open-about, open-config,
-        select, dump-window, search, action, screenshot, quit). Every
-        UI-touching handler marshals via _run_on_main.
+        select, dump-window, search, set-field, confirm-next, action,
+        screenshot, quit). Every UI-touching handler marshals via _run_on_main.
 
         open-config [category] — category key (connections/domains/forwards/
             shares/settings) or omitted.
         select <category> [index] — switch nav, then select the index-th
             selectable item row in column 2.
         search [text…] — set the search field string (empty clears) + filter.
+        set-field <key> <value…> — write a live col-3 form widget, mark dirty.
+        confirm-next <ok|cancel> — queue the answer for the next multi-button
+            panel (confirms default to cancel in debug mode otherwise).
         """
 
         def _screenshot(args):
@@ -2069,6 +2082,11 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().set_field(
                     args[0], " ".join(args[1:])))
                 if args else {"error": "usage: set-field <key> <value…>"}),
+            "confirm-next": lambda args: (
+                (_DEBUG_CONFIRM_QUEUE.append(args[0]),
+                 {"ok": True, "queued": args[0]})[1]
+                if args and args[0] in ("ok", "cancel")
+                else {"error": "usage: confirm-next <ok|cancel>"}),
             "action": lambda args: (_run_on_main(
                 lambda: (self.dispatch_window_action(
                     args[0],
@@ -2118,14 +2136,15 @@ class SusOpsMacTray(AbstractTrayApp):
           ("domain", conn_tag, host)
           ("forward", conn_tag, direction, src_port)
           ("share", port)
-        Destructive actions confirm first. Task-4+ ids (*.save / *.create /
-        fetch.run) are not rendered yet and resolve to a quiet message."""
+        Destructive actions confirm first. *.save routes to save_window_form
+        with the live form values. *.create and fetch.run are not rendered
+        yet and resolve to a quiet message."""
         kind = identity[0] if identity else None
         if kind is None:
             return
 
-        # Inline edit Save (Task 4): route *.save through save_window_form with
-        # the live form values collected from the window.
+        # Route *.save through save_window_form with the live form values
+        # collected from the window.
         if action_id.endswith(".save"):
             cw = getattr(self, "_config_window", None)
             values = cw.collect_form_values() if cw is not None else {}
@@ -2202,9 +2221,9 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_config_window()
 
     # ------------------------------------------------------------------ #
-    # Inline-edit save (Task 4): validate in one place, remove+re-add with
-    # rollback. The RPC sequence runs in the background; alerts + refresh +
-    # reselect marshal back to the main thread.
+    # Inline-edit save. Validation lives here (single place). Remove+re-add
+    # with rollback runs on a worker thread. Alerts, refresh and reselect
+    # marshal back to the main thread. On any error the form stays dirty.
     # ------------------------------------------------------------------ #
 
     _DIRECTION_FROM_LABEL = {"Local (-L)": "local", "Remote (-R)": "remote"}
@@ -2229,7 +2248,7 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _save_forward(self, identity: tuple, values: dict) -> None:
         _, old_conn_tag, old_direction, old_src_port = identity
-        # --- validation (main thread, single source of truth) ---
+        # Pure-input validation on the main thread (no RPC).
         new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
         dir_label = values.get("direction") or ""
         new_direction = self._DIRECTION_FROM_LABEL.get(dir_label, old_direction)
@@ -2255,8 +2274,8 @@ class SusOpsMacTray(AbstractTrayApp):
             _show_message("No Protocol",
                           "Enable at least one protocol (TCP or UDP).")
             return
-        # Local src bind must be free when the src_port changed (or direction
-        # changed to local), so we don't collide with another listener.
+        # A locally-bound src port must be free when it changed (or the
+        # direction changed to local) to avoid colliding with another listener.
         port_changed = (new_src_port != old_src_port
                         or new_direction != old_direction)
         if new_direction == "local" and port_changed and not is_port_free(new_src_port):
@@ -2264,18 +2283,20 @@ class SusOpsMacTray(AbstractTrayApp):
                           f"Local port {new_src_port} is already in use.")
             return
 
-        # Capture the OLD forward so rollback can restore it verbatim.
-        old_fw = self._find_forward(old_conn_tag, old_direction, old_src_port)
-        if old_fw is None:
-            _show_message("Forward Not Found",
-                          "The forward no longer exists; reopen the window.")
-            return
-        new_fw = PortForward(tag=tag, src_addr=src_addr, src_port=new_src_port,
-                             dst_addr=dst_addr, dst_port=new_dst_port,
-                             tcp=tcp, udp=udp, enabled=bool(old_fw.enabled))
         new_identity = ("forward", new_conn_tag, new_direction, new_src_port)
 
         def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker.
+            # The old forward is captured so rollback can restore it verbatim.
+            old_fw = self._find_forward(old_conn_tag, old_direction,
+                                        old_src_port)
+            if old_fw is None:
+                return {"error": "The forward no longer exists. "
+                                 "Reopen the window."}
+            new_fw = PortForward(tag=tag, src_addr=src_addr,
+                                 src_port=new_src_port, dst_addr=dst_addr,
+                                 dst_port=new_dst_port, tcp=tcp, udp=udp,
+                                 enabled=bool(old_fw.enabled))
             try:
                 self._remove_forward_rpc(old_direction, old_src_port)
             except Exception as exc:
@@ -2284,10 +2305,13 @@ class SusOpsMacTray(AbstractTrayApp):
                 self._add_forward_rpc(new_conn_tag, new_fw, new_direction)
             except Exception as exc:
                 # Rollback: re-add the original forward to its old connection.
+                # A rollback failure is reported, never swallowed.
                 try:
                     self._add_forward_rpc(old_conn_tag, old_fw, old_direction)
-                except Exception:
-                    pass
+                except Exception as exc2:
+                    return {"error": f"Could not save forward: {exc}. "
+                                     f"WARNING: the original forward could "
+                                     f"not be restored: {exc2}"}
                 return {"error": f"Could not save forward: {exc}"}
             return {"ok": True}
 
@@ -2307,10 +2331,11 @@ class SusOpsMacTray(AbstractTrayApp):
         if not new_host:
             _show_message("Invalid Host", "Host must not be empty.")
             return
-        was_disabled = self._is_pac_host_disabled(old_conn_tag, old_host)
         new_identity = ("domain", new_conn_tag, new_host)
 
         def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker.
+            was_disabled = self._is_pac_host_disabled(old_conn_tag, old_host)
             try:
                 self.manager.remove_pac_host(old_host, conn_tag=old_conn_tag)
             except Exception as exc:
@@ -2322,13 +2347,16 @@ class SusOpsMacTray(AbstractTrayApp):
                         new_host, False, conn_tag=new_conn_tag)
             except Exception as exc:
                 # Rollback: re-add the original host to its old connection.
+                # A rollback failure is reported, never swallowed.
                 try:
                     self.manager.add_pac_host(old_host, conn_tag=old_conn_tag)
                     if was_disabled:
                         self.manager.set_pac_host_enabled(
                             old_host, False, conn_tag=old_conn_tag)
-                except Exception:
-                    pass
+                except Exception as exc2:
+                    return {"error": f"Could not save domain: {exc}. "
+                                     f"WARNING: the original domain could "
+                                     f"not be restored: {exc2}"}
                 return {"error": f"Could not save domain: {exc}"}
             return {"ok": True}
 

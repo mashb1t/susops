@@ -35,8 +35,8 @@ _text_delegate_cls = None
 
 def _get_text_delegate_cls():
     """Cached NSTextField/NSComboBox delegate that flags the owner dirty on
-    every keystroke (controlTextDidChange_). One instance per render owns all
-    text/secure/combo fields; removed in the trim/clear path."""
+    every keystroke (controlTextDidChange_). Instances live in _handlers and
+    are released by the col-3 trim."""
     global _text_delegate_cls
     if _text_delegate_cls is not None:
         return _text_delegate_cls
@@ -168,9 +168,9 @@ TOP_INSET = 38          # traffic lights overlay col 1; start content below them
 SEARCH_H = 24
 ADDBAR_H = 40
 
-# A1: column-3 content is constrained to a fixed-width column anchored
-# top-left, NOT stretched to the window edge. The Enabled toggle anchors to
-# the RIGHT EDGE of this content column (near the title), not the window border.
+# Column-3 content is constrained to a fixed-width column anchored top-left,
+# NOT stretched to the window edge. The Enabled toggle anchors to the RIGHT
+# EDGE of this content column (near the title), not the window border.
 CONTENT_MAX_W = 540
 CONTENT_PAD = 16
 
@@ -214,12 +214,11 @@ class ConfigWindow:
         self._suppress_selection_cb = False
         self._pending_category = None  # category requested via open() pre-load
         self._detail_spec = None       # last DetailSpec rendered in col 3
-        # --- editing / dirty tracking (Task 4) ---
+        # --- editing / dirty tracking ---
         self._dirty = False
         self._field_widgets: dict = {}   # field key -> widget (live col-3 form)
         self._field_kinds: dict = {}     # field key -> FormField.kind
         self._save_button = None         # cached Save NSButton (enable on dirty)
-        self._dirty_observers: list = [] # NSNotificationCenter observers to remove
         self._dirty_identity = None      # identity the dirty form belongs to
 
     # ------------------------------------------------------------------ #
@@ -315,7 +314,7 @@ class ConfigWindow:
 
         # --- Column 1 (nav band, darkest) ---
         col1 = self._make_band(NSMakeRect(0, 0, COL1_W, ch), band="col1")
-        col1.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxXMargin
+        col1.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxYMargin
         content.addSubview_(col1)
         self._col1 = col1
 
@@ -509,10 +508,9 @@ class ConfigWindow:
             self._pending_category = None
             self.category = cat if cat in CATEGORIES else self.category
         self._reload_nav()
-        # While a col-3 form is dirty, cols 1-2 keep refreshing but column 3 is
-        # left untouched. _reload_list also restores col-2 selection by
-        # identity; suppress the col-3 re-render via skip_detail so the in-flight
-        # edit is not clobbered.
+        # While a col-3 form is dirty, cols 1-2 keep refreshing but column 3
+        # stays untouched. skip_detail also pins the col-2 selection to the
+        # dirty identity so the in-flight edit is not clobbered.
         self._reload_list(preserve=True, skip_detail=self._dirty)
 
     def _reload_nav(self) -> None:
@@ -763,7 +761,7 @@ class ConfigWindow:
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 24))
         lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, COL2_W - 20, 16))
-        # A5: render the section title as the model emits it ("Local"/"Remote"),
+        # Section titles render as the model emits them ("Local"/"Remote"),
         # NOT uppercased. Medium weight, secondary color.
         lbl.setStringValue_(r.title)
         try:
@@ -1010,33 +1008,26 @@ class ConfigWindow:
                      if getattr(s, "tag", None) == tag), None)
 
     # ------------------------------------------------------------------ #
-    # Detail renderer (static presentation, editable controls land in T4)
+    # Detail renderer
     # ------------------------------------------------------------------ #
 
     def _clear_col3(self) -> None:
-        """Remove all col-3 subviews + per-render handlers + dirty observers +
-        field-widget caches. Shared by every col-3 render path."""
-        from Cocoa import NSNotificationCenter  # type: ignore[import]
+        """Remove all col-3 subviews + per-render handlers + field-widget
+        caches. Shared by every col-3 render path. Text-change tracking uses
+        the delegate protocol and the delegates live in _handlers, so the trim
+        above releases them with everything else."""
         for v in list(self._col3.subviews()):
             v.removeFromSuperview()
         del self._handlers[self._permanent_handler_count:]
-        # Tear down NSControlTextDidChange observers so they don't leak or fire
-        # against freed widgets across renders.
-        nc = NSNotificationCenter.defaultCenter()
-        for obs in self._dirty_observers:
-            try:
-                nc.removeObserver_(obs)
-            except Exception:
-                pass
-        self._dirty_observers = []
         self._field_widgets = {}
         self._field_kinds = {}
         self._save_button = None
 
     def _content_column(self):
-        """Create the A1 content column: a fixed CONTENT_MAX_W view anchored
-        top-left with CONTENT_PAD, flexible right margin so it does NOT stretch
-        to the window edge on resize. Returns (container, content_w)."""
+        """Create the content column: a fixed CONTENT_MAX_W view anchored
+        top-left with CONTENT_PAD. No horizontal autoresize bits are set, so
+        width and left edge stay fixed and the column never stretches to the
+        window edge on resize. Returns (container, content_w)."""
         from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
         w = self._col3.frame().size.width
         h = self._col3.frame().size.height
@@ -1048,8 +1039,7 @@ class ConfigWindow:
             container.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         except Exception:
             pass
-        # Fixed left margin + height-sizable + flexible right margin (MaxXMargin).
-        container.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxXMargin
+        container.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxYMargin
         self._col3.addSubview_(container)
         return container, cw
 
@@ -1185,13 +1175,13 @@ class ConfigWindow:
             container.addSubview_(note)
 
     # ------------------------------------------------------------------ #
-    # Field-row planning: pair src_addr/src_port and dst_addr/dst_port (A3)
+    # Field-row planning: pair src_addr/src_port and dst_addr/dst_port
     # ------------------------------------------------------------------ #
 
     def _plan_field_rows(self, fields):
         """Group FormFields into render rows. src_addr+src_port collapse to one
-        "Source" row, dst_addr+dst_port to one "Destination" row (A3). Every
-        other field is its own single-control row. Returns a list of dicts:
+        "Source" row, dst_addr+dst_port to one "Destination" row. Every other
+        field is its own single-control row. Returns a list of dicts:
           {"label": str, "fields": [FormField, ...]}
         preserving spec order. The MODEL still keeps 4 separate FormFields."""
         by_key = {f.key: f for f in fields}
@@ -1244,8 +1234,8 @@ class ConfigWindow:
             pass
         container.addSubview_(card)
 
-        # A2: right-aligned labels in a ~110px column, 10px gap, controls right
-        # after.
+        # Right-aligned labels in a ~110px column, 10px gap, controls right
+        # after so labels hug their controls.
         label_w = 110
         inner_pad = 14
         gap = 10
@@ -1288,8 +1278,8 @@ class ConfigWindow:
 
     def _render_row_controls(self, card, row, value_x, ry, value_w) -> None:
         """Render one editable row. Paired Source/Destination rows place an
-        addr field (~190) + port field (~110) side by side (A3); single-field
-        rows fill the row width."""
+        addr field (~190) + port field (~110) side by side. Single-field rows
+        fill the row width."""
         fields = row["fields"]
         if len(fields) == 2:
             # addr + port side by side.
@@ -1333,7 +1323,7 @@ class ConfigWindow:
         if kind == "check_pair":
             self._make_check_pair(card, f, x, ry, width)
             return
-        cy = ry - 3  # bezeled controls are taller; nudge to align baseline
+        cy = ry - 3  # nudge taller bezeled controls to align baselines
         if kind == "popup":
             popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
                 NSMakeRect(x, cy, width, 24), False)
@@ -1406,8 +1396,8 @@ class ConfigWindow:
 
     def _wire_text_dirty(self, control) -> None:
         """Attach a controlTextDidChange_ delegate that flags dirty. The
-        delegate instance is held in _handlers; observers list is unused for
-        the delegate path but the trim still clears _handlers."""
+        delegate instance lives in _handlers and is released by the col-3
+        trim like every other per-render target."""
         delegate = _get_text_delegate_cls().alloc().initWithCallback_(
             self._mark_dirty)
         self._handlers.append(delegate)
@@ -1444,7 +1434,7 @@ class ConfigWindow:
 
     def _render_action_row(self, spec, container, cw, top_y) -> None:
         from Cocoa import NSButton, NSMakeRect  # type: ignore[import]
-        # Save renders now (Task 4). It starts disabled until the form is dirty.
+        # Save starts disabled until the form is dirty.
         actions = list(spec.actions)
         btn_h = 26
         row_y = top_y - btn_h
@@ -1463,8 +1453,8 @@ class ConfigWindow:
             btn.setBezelStyle_(1)  # NSBezelStyleRounded (standard bezel)
             is_save = action.action_id.endswith(".save")
             if action.destructive:
-                # A4: quiet treatment - standard bezel with red attributed
-                # title text. No filled red bezel block.
+                # Quiet destructive treatment - standard bezel with red
+                # attributed title text. No filled red bezel block.
                 btn.setTitle_(title)
                 try:
                     attrs = {NSForegroundColorAttributeName:
@@ -1475,8 +1465,8 @@ class ConfigWindow:
                 except Exception:
                     pass
             elif is_save:
-                # A4: native default-button blue - setKeyEquivalent_("\r")
-                # makes AppKit render it filled-accent.
+                # Native default-button blue - setKeyEquivalent_("\r") makes
+                # AppKit render it filled-accent.
                 btn.setTitle_(title)
                 try:
                     btn.setKeyEquivalent_("\r")
@@ -1534,7 +1524,7 @@ class ConfigWindow:
             pass
 
     # ------------------------------------------------------------------ #
-    # Form-value collection (Task 4)
+    # Form-value collection
     # ------------------------------------------------------------------ #
 
     def _read_widget(self, key: str):
@@ -1621,10 +1611,17 @@ class ConfigWindow:
             if self._detail_spec else None,
             "dirty": bool(self._dirty),
             "fields": self._dump_fields(),
+            # Cumulative auto-answered modal panels (debug mode) so tests can
+            # assert no unexpected dialog fired.
+            "alerts": self._dump_alerts(),
             # Debug: add-button targets must survive col-3 handler trims
             # (NSButton does not retain its target).
             "addbar_handlers": len(self._addbar_handlers),
         }
+
+    def _dump_alerts(self) -> list:
+        from susops.tray.mac import _DEBUG_ALERTS
+        return [dict(a) for a in _DEBUG_ALERTS]
 
     def _dump_fields(self) -> dict:
         """JSON-serializable snapshot of the live form widget values."""

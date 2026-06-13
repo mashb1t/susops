@@ -427,9 +427,9 @@ def test_forward_form_edit_mode_fields():
     assert by_key["src_port"].value == "5432"
     assert by_key["dst_addr"].value == "db.internal"
     assert by_key["dst_port"].value == "5432"
-    # A3: labels carry no "Source Addr"/"Source Port" text - paired rows are
-    # labeled "Source"/"Destination" by the renderer; the bare addr fields
-    # become the row label, the port fields collapse to "Port".
+    # Labels carry no "Source Addr"/"Source Port" text. Paired rows are
+    # labeled "Source"/"Destination" by the renderer, the bare addr fields
+    # become the row label and the port fields collapse to "Port".
     labels = {f.label for f in spec.fields}
     assert "Source Addr" not in labels and "Source Port" not in labels
     assert "Dest Addr" not in labels and "Dest Port" not in labels
