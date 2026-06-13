@@ -394,7 +394,7 @@ MIN_H = 640
 COL1_W = 180
 COL2_W = 270
 TOP_INSET = 38          # traffic lights overlay col 1; start content below them
-SIDEBAR_TOP_INSET = 38  # nav-only top inset (kept independent for fine tuning)
+SIDEBAR_TOP_INSET = 23  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 24
 ADDBAR_H = 40
 
