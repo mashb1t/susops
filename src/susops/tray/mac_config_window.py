@@ -31,6 +31,34 @@ _table_ds_cls = None
 _window_delegate_cls = None
 _action_handler_cls = None
 _text_delegate_cls = None
+_row_view_cls = None
+
+
+def _hex_color(hex_str: str, alpha: float = 1.0):
+    """NSColor from an "rrggbb" hex string (sRGB). Module-level so the future
+    settings pane can reuse the same palette."""
+    from Cocoa import NSColor  # type: ignore[import]
+    h = hex_str.lstrip("#")
+    r = int(h[0:2], 16) / 255.0
+    g = int(h[2:4], 16) / 255.0
+    b = int(h[4:6], 16) / 255.0
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha)
+
+
+# Always-dark palette (Tailscale-like), pinned regardless of system mode. Hex
+# values are the mockup contract; keep in sync with the spec appearance row.
+PALETTE = {
+    "window": "17181c",      # col3 base + window
+    "col1": "25262c",        # nav band
+    "col2": "1f2026",        # list band
+    "card": "222329",        # elevated card in col3
+    "input_fill": "2a2b31",  # text/secure field fill
+    "input_border": "3f4147",
+    "input_text": "e8e9ed",
+    "badge_fill": "3a3c44",
+    "badge_text": "c7c9d1",
+    "separator": "0a0a0c",   # near-black hairline
+}
 
 
 def _get_text_delegate_cls():
@@ -87,6 +115,9 @@ def _get_table_ds_cls():
 
         def tableView_viewForTableColumn_row_(self, _tv, _col, row):
             return self._owner._make_cell(self._role, row)
+
+        def tableView_rowViewForRow_(self, _tv, _row):
+            return _get_row_view_cls().alloc().init()
 
         def tableView_heightOfRow_(self, _tv, row):
             return self._owner._row_height(self._role, row)
@@ -155,6 +186,38 @@ def _get_action_handler_cls():
 
     _action_handler_cls = _SusOpsActionHandler
     return _SusOpsActionHandler
+
+
+def _get_row_view_cls():
+    """Cached NSTableRowView subclass drawing a rounded accent selection pill
+    instead of the square system highlight. Used by both tables."""
+    global _row_view_cls
+    if _row_view_cls is not None:
+        return _row_view_cls
+    from Cocoa import NSBezierPath, NSColor, NSTableRowView  # type: ignore[import]
+    from Foundation import NSMakeRect  # type: ignore[import]
+
+    class _SusOpsRowView(NSTableRowView):
+        def drawSelectionInRect_(self, rect):
+            if not self.isSelected():
+                return
+            b = self.bounds()
+            inset_x = 4.0
+            inset_y = 2.0
+            r = NSMakeRect(b.origin.x + inset_x, b.origin.y + inset_y,
+                           b.size.width - 2 * inset_x,
+                           b.size.height - 2 * inset_y)
+            try:
+                accent = NSColor.controlAccentColor()
+            except Exception:
+                accent = NSColor.alternateSelectedControlColor()
+            accent.set()
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                r, 6.0, 6.0)
+            path.fill()
+
+    _row_view_cls = _SusOpsRowView
+    return _SusOpsRowView
 
 
 # ---- geometry ----
@@ -273,7 +336,7 @@ class ConfigWindow:
             NSWindowStyleMaskFullSizeContentView,
             NSWindowStyleMaskResizable,
             NSWindowStyleMaskTitled,
-            NSWindowTitleHidden,
+            NSWindowTitleVisible,
         )
         from Cocoa import (  # type: ignore[import]
             NSColor,
@@ -291,8 +354,20 @@ class ConfigWindow:
         win.setReleasedWhenClosed_(False)
         win.setHidesOnDeactivate_(False)
         win.setTitlebarAppearsTransparent_(True)
+        # Pin DarkAqua so the window is always dark regardless of system mode;
+        # system controls (popups, switch, search) inherit it automatically.
         try:
-            win.setTitleVisibility_(NSWindowTitleHidden)
+            from AppKit import (  # type: ignore[import]
+                NSAppearance,
+                NSAppearanceNameDarkAqua,
+            )
+            win.setAppearance_(
+                NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua))
+        except Exception:
+            pass
+        # Title visible + centered over the dark chrome (mockup).
+        try:
+            win.setTitleVisibility_(NSWindowTitleVisible)
         except Exception:
             pass
         try:
@@ -306,7 +381,7 @@ class ConfigWindow:
         try:
             content.setWantsLayer_(True)
             content.layer().setBackgroundColor_(
-                NSColor.windowBackgroundColor().CGColor())
+                _hex_color(PALETTE["window"]).CGColor())
         except Exception:
             pass
 
@@ -331,7 +406,7 @@ class ConfigWindow:
         try:
             col3.setWantsLayer_(True)
             col3.layer().setBackgroundColor_(
-                NSColor.windowBackgroundColor().CGColor())
+                _hex_color(PALETTE["window"]).CGColor())
         except Exception:
             pass
         col3.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
@@ -354,31 +429,24 @@ class ConfigWindow:
         self._render_col3_placeholder("Select an item.")
 
     def _make_band(self, frame, *, band: str):
-        """Layer-backed NSView with a distinct dynamic color so the three
-        columns read as layered. col1 darkest < col2 < col3 (windowBackground).
-
-        Blend the window background toward black by a per-band fraction so the
-        layering is visible in both light and dark mode (underPageBackground /
-        controlBackground resolve too close in dark mode)."""
-        from Cocoa import NSColor, NSView  # type: ignore[import]
+        """Layer-backed NSView painted with the exact mockup palette so the
+        three columns read as layered near-black bands (col1 nav, col2 list)."""
+        from Cocoa import NSView  # type: ignore[import]
         view = NSView.alloc().initWithFrame_(frame)
         try:
             view.setWantsLayer_(True)
-            base = NSColor.windowBackgroundColor()
-            black = NSColor.blackColor()
-            frac = 0.22 if band == "col1" else 0.10  # col1 darkest
-            color = base.blendedColorWithFraction_ofColor_(frac, black) or base
-            view.layer().setBackgroundColor_(color.CGColor())
+            view.layer().setBackgroundColor_(_hex_color(PALETTE[band]).CGColor())
         except Exception:
             pass
         return view
 
     def _add_separator(self, content, x: float, ch: float) -> None:
-        from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
+        from Cocoa import NSMakeRect, NSView  # type: ignore[import]
         line = NSView.alloc().initWithFrame_(NSMakeRect(x - 0.5, 0, 1, ch))
         try:
             line.setWantsLayer_(True)
-            line.layer().setBackgroundColor_(NSColor.separatorColor().CGColor())
+            line.layer().setBackgroundColor_(
+                _hex_color(PALETTE["separator"]).CGColor())
         except Exception:
             pass
         line.setAutoresizingMask_(16)  # HeightSizable
@@ -399,9 +467,11 @@ class ConfigWindow:
         tv.setHeaderView_(None)
         tv.setBackgroundColor_(self._clear_color())
         tv.setRowHeight_(30)
+        # Regular highlight style so the custom row view's drawSelectionInRect_
+        # is invoked; the override paints a rounded accent pill instead of the
+        # stock square fill (no double-draw).
         try:
-            if hasattr(tv, "setStyle_"):
-                tv.setStyle_(1)  # NSTableViewStyleSourceList
+            tv.setSelectionHighlightStyle_(0)  # NSTableViewSelectionHighlightStyleRegular
         except Exception:
             pass
         ds = _get_table_ds_cls().alloc().initWithOwner_role_(self, "nav")
@@ -453,6 +523,10 @@ class ConfigWindow:
         tv.addTableColumn_(col)
         tv.setHeaderView_(None)
         tv.setBackgroundColor_(self._clear_color())
+        try:
+            tv.setSelectionHighlightStyle_(0)  # Regular; custom pill draws it
+        except Exception:
+            pass
         ds = _get_table_ds_cls().alloc().initWithOwner_role_(self, "list")
         self._handlers.append(ds)
         self._list_ds = ds
@@ -811,30 +885,34 @@ class ConfigWindow:
             cell.addSubview_(dot)
         text_x = 30
 
-        # Badge pill on the right (rounded layer-backed text field).
+        # Badge pill on the right (rounded layer-backed text field). Inset from
+        # the column edge enough to clear the scroller gutter so the full pill
+        # shows (mockup). The selection pill insets 4px, the scroller ~14px.
         badge_w = 0
+        badge_right_inset = 18
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL2_W - badge_w - 10, 18, badge_w, 16))
+                NSMakeRect(COL2_W - badge_w - badge_right_inset, 18, badge_w, 16))
             badge.setStringValue_(r.badge)
             badge.setFont_(NSFont.systemFontOfSize_(10))
             badge.setAlignment_(1)  # center
             badge.setBezeled_(False)
             badge.setEditable_(False)
             badge.setSelectable_(False)
-            badge.setTextColor_(NSColor.secondaryLabelColor())
+            badge.setTextColor_(_hex_color(PALETTE["badge_text"]))
             try:
                 badge.setWantsLayer_(True)
                 badge.setDrawsBackground_(False)
                 badge.layer().setBackgroundColor_(
-                    NSColor.quaternaryLabelColor().CGColor())
-                badge.layer().setCornerRadius_(7.0)
+                    _hex_color(PALETTE["badge_fill"]).CGColor())
+                badge.layer().setCornerRadius_(8.0)
             except Exception:
                 pass
             cell.addSubview_(badge)
 
-        title_w = COL2_W - text_x - (badge_w + 16 if badge_w else 12)
+        title_w = COL2_W - text_x - (badge_w + badge_right_inset + 6
+                                     if badge_w else 12)
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(text_x, 18, max(40, title_w), 18))
         title.setStringValue_(r.title)
@@ -872,7 +950,7 @@ class ConfigWindow:
     # ------------------------------------------------------------------ #
 
     def _rebuild_add_buttons(self) -> None:
-        from Cocoa import NSButton, NSMakeRect, NSView  # type: ignore[import]
+        from Cocoa import NSMakeRect, NSView  # type: ignore[import]
         # Tear down the previous bar + its handlers. Button targets live in
         # _addbar_handlers, NOT _handlers: the col-3 placeholder render trims
         # _handlers back to _permanent_handler_count and NSButton does not
@@ -894,9 +972,8 @@ class ConfigWindow:
         bw = (COL2_W - gap * (n + 1)) / n
         x = gap
         for label, kind in specs:
-            btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, 6, bw, 26))
-            btn.setTitle_(label)
-            btn.setBezelStyle_(1)
+            btn = self._styled_neutral_button(
+                label, NSMakeRect(x, 6, bw, 28))
             handler = _get_action_handler_cls().alloc().initWithCallback_(
                 lambda _s, k=kind: self._on_add_clicked(k))
             self._addbar_handlers.append(handler)
@@ -1223,13 +1300,8 @@ class ConfigWindow:
             NSMakeRect(0, card_y, card_w, card_h))
         try:
             card.setWantsLayer_(True)
-            base = NSColor.windowBackgroundColor()
-            fill = base.blendedColorWithFraction_ofColor_(
-                0.06, NSColor.whiteColor()) or base
-            card.layer().setBackgroundColor_(fill.CGColor())
-            card.layer().setCornerRadius_(8.0)
-            card.layer().setBorderWidth_(0.5)
-            card.layer().setBorderColor_(NSColor.separatorColor().CGColor())
+            card.layer().setBackgroundColor_(_hex_color(PALETTE["card"]).CGColor())
+            card.layer().setCornerRadius_(9.0)
         except Exception:
             pass
         container.addSubview_(card)
@@ -1354,19 +1426,34 @@ class ConfigWindow:
         tf = cls.alloc().initWithFrame_(NSMakeRect(x, cy, width, 22))
         tf.setStringValue_(str(f.value or ""))
         tf.setFont_(NSFont.systemFontOfSize_(13))
-        tf.setBezeled_(True)
-        tf.setBezelStyle_(0)  # square
+        tf.setBezeled_(False)
+        tf.setDrawsBackground_(False)
         tf.setEditable_(True)
         tf.setSelectable_(True)
-        tf.setDrawsBackground_(True)
+        tf.setTextColor_(_hex_color(PALETTE["input_text"]))
         if f.placeholder:
             try:
                 tf.cell().setPlaceholderString_(f.placeholder)
             except Exception:
                 pass
+        self._style_input_field(tf)
         self._wire_text_dirty(tf)
         card.addSubview_(tf)
         self._field_widgets[f.key] = tf
+
+    def _style_input_field(self, tf) -> None:
+        """Layer-style an editable text/secure field to the mockup palette: fill
+        #2a2b31, 1px #3f4147 border, radius 6. ~4px text inset comes from a
+        slightly larger frame; the field editor inherits the dark appearance."""
+        try:
+            tf.setWantsLayer_(True)
+            layer = tf.layer()
+            layer.setBackgroundColor_(_hex_color(PALETTE["input_fill"]).CGColor())
+            layer.setCornerRadius_(6.0)
+            layer.setBorderWidth_(1.0)
+            layer.setBorderColor_(_hex_color(PALETTE["input_border"]).CGColor())
+        except Exception:
+            pass
 
     def _make_check_pair(self, card, f, x, ry, width) -> None:
         """TCP + UDP checkboxes side by side."""
@@ -1412,6 +1499,7 @@ class ConfigWindow:
         if self._save_button is not None:
             try:
                 self._save_button.setEnabled_(True)
+                self._restyle_save_button(self._save_button, True)
             except Exception:
                 pass
 
@@ -1432,53 +1520,118 @@ class ConfigWindow:
             return "—"
         return str(f.value) if f.value not in (None, "") else "—"
 
+    def _attr_title(self, title: str, color):
+        """Centered attributed title in `color` for a borderless layer button."""
+        from AppKit import (  # type: ignore[import]
+            NSCenterTextAlignment,
+            NSFont,
+            NSMutableParagraphStyle,
+        )
+        from Cocoa import (  # type: ignore[import]
+            NSAttributedString,
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSParagraphStyleAttributeName,
+        )
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setAlignment_(NSCenterTextAlignment)
+        attrs = {
+            NSForegroundColorAttributeName: color,
+            NSFontAttributeName: NSFont.systemFontOfSize_(13),
+            NSParagraphStyleAttributeName: para,
+        }
+        return NSAttributedString.alloc().initWithString_attributes_(title, attrs)
+
+    def _base_layer_button(self, title, frame):
+        from Cocoa import NSButton  # type: ignore[import]
+        btn = NSButton.alloc().initWithFrame_(frame)
+        btn.setBordered_(False)
+        btn.setTitle_(title)
+        try:
+            btn.setWantsLayer_(True)
+            btn.layer().setCornerRadius_(6.0)
+        except Exception:
+            pass
+        return btn
+
+    def _styled_save_button(self, title, frame):
+        """Filled accent-blue Save. _restyle_save_button sets the enabled/
+        disabled fill + title (called on creation and on dirty flips)."""
+        from Cocoa import NSColor  # type: ignore[import]
+        btn = self._base_layer_button(title, frame)
+        btn.setAttributedTitle_(self._attr_title(title, NSColor.whiteColor()))
+        return btn
+
+    def _restyle_save_button(self, btn, enabled: bool) -> None:
+        from Cocoa import NSColor  # type: ignore[import]
+        try:
+            accent = NSColor.controlAccentColor()
+        except Exception:
+            accent = _hex_color("0a84ff")
+        try:
+            if enabled:
+                btn.layer().setBackgroundColor_(accent.CGColor())
+                btn.setAttributedTitle_(
+                    self._attr_title(btn.title(), NSColor.whiteColor()))
+            else:
+                btn.layer().setBackgroundColor_(
+                    accent.colorWithAlphaComponent_(0.40).CGColor())
+                btn.setAttributedTitle_(self._attr_title(
+                    btn.title(), NSColor.whiteColor().colorWithAlphaComponent_(0.65)))
+        except Exception:
+            pass
+
+    def _styled_neutral_button(self, title, frame):
+        """Dark filled rounded (Test / add buttons): fill #2a2b31, 1px border
+        #3f4147, title #e8e9ed."""
+        btn = self._base_layer_button(title, frame)
+        try:
+            btn.layer().setBackgroundColor_(_hex_color(PALETTE["input_fill"]).CGColor())
+            btn.layer().setBorderWidth_(1.0)
+            btn.layer().setBorderColor_(_hex_color(PALETTE["input_border"]).CGColor())
+        except Exception:
+            pass
+        btn.setAttributedTitle_(
+            self._attr_title(title, _hex_color(PALETTE["input_text"])))
+        return btn
+
+    def _styled_destructive_button(self, title, frame):
+        """Transparent fill, 1px red border at 0.45 alpha, red title."""
+        from Cocoa import NSColor  # type: ignore[import]
+        btn = self._base_layer_button(title, frame)
+        red = NSColor.systemRedColor()
+        try:
+            btn.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+            btn.layer().setBorderWidth_(1.0)
+            btn.layer().setBorderColor_(red.colorWithAlphaComponent_(0.45).CGColor())
+        except Exception:
+            pass
+        btn.setAttributedTitle_(self._attr_title(title, red))
+        return btn
+
     def _render_action_row(self, spec, container, cw, top_y) -> None:
-        from Cocoa import NSButton, NSMakeRect  # type: ignore[import]
+        from Cocoa import NSMakeRect  # type: ignore[import]
         # Save starts disabled until the form is dirty.
         actions = list(spec.actions)
-        btn_h = 26
+        btn_h = 30
         row_y = top_y - btn_h
 
         def _make_button(action):
-            from AppKit import NSFont  # type: ignore[import]
-            from Cocoa import (  # type: ignore[import]
-                NSAttributedString,
-                NSColor,
-                NSForegroundColorAttributeName,
-            )
             title = action.title
-            bw = max(72, 28 + 8 * len(title))
-            btn = NSButton.alloc().initWithFrame_(
-                NSMakeRect(0, row_y, bw, btn_h))
-            btn.setBezelStyle_(1)  # NSBezelStyleRounded (standard bezel)
+            bw = max(80, 28 + 8 * len(title))
             is_save = action.action_id.endswith(".save")
-            if action.destructive:
-                # Quiet destructive treatment - standard bezel with red
-                # attributed title text. No filled red bezel block.
-                btn.setTitle_(title)
-                try:
-                    attrs = {NSForegroundColorAttributeName:
-                             NSColor.systemRedColor()}
-                    btn.setAttributedTitle_(
-                        NSAttributedString.alloc()
-                        .initWithString_attributes_(title, attrs))
-                except Exception:
-                    pass
-            elif is_save:
-                # Native default-button blue - setKeyEquivalent_("\r") makes
-                # AppKit render it filled-accent.
-                btn.setTitle_(title)
-                try:
-                    btn.setKeyEquivalent_("\r")
-                except Exception:
-                    pass
-            else:
-                btn.setTitle_(title)
-            # Save is enabled only when the form is dirty.
             if is_save:
+                btn = self._styled_save_button(title, NSMakeRect(0, row_y, bw, btn_h))
                 btn.setEnabled_(bool(self._dirty))
                 self._save_button = btn
+                self._restyle_save_button(btn, bool(self._dirty))
+            elif action.destructive:
+                btn = self._styled_destructive_button(
+                    title, NSMakeRect(0, row_y, bw, btn_h))
+                btn.setEnabled_(bool(action.enabled))
             else:
+                btn = self._styled_neutral_button(
+                    title, NSMakeRect(0, row_y, bw, btn_h))
                 btn.setEnabled_(bool(action.enabled))
             handler = _get_action_handler_cls().alloc().initWithCallback_(
                 lambda _s, aid=action.action_id: self._dispatch(aid))
