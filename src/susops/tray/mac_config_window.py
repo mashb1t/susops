@@ -636,6 +636,7 @@ class ConfigWindow:
         self._settings_status_label = None  # tiny status text next to Save
         self._settings_save_message = ""
         self._settings_save_error = False
+        self._settings_save_clear_timer = None  # timer for auto-clearing "Saved"
         # Settings staging: all settings changes are staged locally and only
         # persist on Apply. _settings_dirty tracks pending edits so leaving the
         # category or closing the window can discard them (and revert the logo
@@ -679,6 +680,13 @@ class ConfigWindow:
         # Closing the window without Apply discards any staged settings
         # changes (and reverts a logo icon preview to the saved logo).
         self.discard_settings()
+        # Cancel any pending auto-clear timer.
+        if self._settings_save_clear_timer is not None:
+            try:
+                self._settings_save_clear_timer.cancel()
+            except Exception:
+                pass
+            self._settings_save_clear_timer = None
         if self._policy_scope is not None:
             try:
                 self._policy_scope.__exit__(None, None, None)
@@ -1796,6 +1804,14 @@ class ConfigWindow:
         when it exists."""
         from Cocoa import NSColor  # type: ignore[import]
 
+        # Cancel any pending auto-clear timer.
+        if self._settings_save_clear_timer is not None:
+            try:
+                self._settings_save_clear_timer.cancel()
+            except Exception:
+                pass
+            self._settings_save_clear_timer = None
+
         self._settings_save_message = str(message or "")
         self._settings_save_error = bool(is_error)
         lbl = self._settings_status_label
@@ -1811,7 +1827,20 @@ class ConfigWindow:
         lbl.setTextColor_(NSColor.systemGreenColor())
 
     def mark_settings_saved(self) -> None:
+        """Show 'Saved' and auto-clear it after 3 seconds."""
         self._set_settings_save_feedback("Saved", is_error=False)
+        # Schedule auto-clear on a background thread to avoid blocking the UI.
+        import threading
+        def _clear():
+            try:
+                # Marshal the UI update back to the main thread.
+                from susops.tray.mac import _on_main
+                _on_main(lambda: self._set_settings_save_feedback())
+            except Exception:
+                pass
+        self._settings_save_clear_timer = threading.Timer(3.0, _clear)
+        self._settings_save_clear_timer.daemon = True
+        self._settings_save_clear_timer.start()
 
     def mark_settings_save_failed(self) -> None:
         self._set_settings_save_feedback("Save failed", is_error=True)
