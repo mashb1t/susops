@@ -142,7 +142,7 @@ def _get_padded_secure_cell_cls():
     global _padded_secure_cell_cls
     if _padded_secure_cell_cls is not None:
         return _padded_secure_cell_cls
-    from Cocoa import NSSecureTextFieldCell  # type: ignore[import]
+    from Cocoa import NSMakeRect, NSSecureTextFieldCell  # type: ignore[import]
 
     class _SusOpsPaddedSecureCell(NSSecureTextFieldCell):
         def _insetRect_(self, frame):
