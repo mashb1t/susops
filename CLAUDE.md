@@ -85,8 +85,8 @@ src/susops/
     base.py               # AbstractTrayApp — all shared business logic
     linux.py              # GTK3 implementation of abstract methods
     mac.py                # rumps implementation of abstract methods
-    mac_config_window.py  # ConfigWindow — unified macOS settings window (tabs + sidebar + detail, raw AppKit)
-    config_window_model.py # pure-python view-model builders for the window (no AppKit, reused by tests)
+    mac_config_window.py  # ConfigWindow — 3-column macOS config window (nav / list / detail-editor, raw AppKit)
+    config_window_model.py # pure-python v2 view-model: NavItem/ListRow/FormField/DetailSpec builders (no AppKit, reused by tests)
     debug_server.py       # opt-in localhost TCP command server for driving the tray in tests/dev loops
 ```
 
@@ -228,7 +228,7 @@ Key implementation notes:
 
 **Tray abstraction.** `AbstractTrayApp.do_*` methods contain all business logic. Platform subclasses implement `update_icon`, `update_menu_sensitivity`, `show_alert`, `show_output_dialog`, `run_in_background`, and `schedule_poll`. Linux uses `Gtk.ComboBoxText(has_entry=True)` for bind address combos (read via `get_child().get_text()`). macOS uses sequential `rumps.Window` text prompts.
 
-**macOS tray divergence.** The macOS tray uses a unified `ConfigWindow` (slim menu, Settings… ⌘, opens it) — an AppKit NSWindow with a per-connection tab bar, grouped sidebar, and detail pane. `mac_config_window.py` owns the AppKit layer; `config_window_model.py` builds the pure-python view-models consumed by the window (no AppKit, reused by tests). The Linux tray keeps the classic menu-dialog approach.
+**macOS tray divergence.** The macOS tray uses a unified `ConfigWindow` (slim menu, Settings… ⌘, opens it) — an AppKit NSWindow laid out as a 3-column Tailscale-style editor: column 1 nav (Connections / Domains / Forwards / Shares + Settings), column 2 a searchable list with colored run-state dots and connection badges, column 3 a detail/editor pane. Forwards, domains, and shares are edited **inline** (change fields + Save with remove/re-add rollback); the `+` buttons open inline create forms; settings apply instantly (ports behind one Apply). This replaced the v1 per-connection tabbed window and its modal add/share/fetch dialogs. `mac_config_window.py` owns the AppKit layer; `config_window_model.py` builds the pure-python v2 view-models consumed by the window (no AppKit, reused by tests). The Linux tray keeps the classic menu-dialog approach.
 
 ## Config & Runtime State
 

@@ -441,11 +441,11 @@ Requires `rumps`: `pip install "susops[tray-mac]"`
 
 The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
 
-**Note: the macOS and Linux tray apps diverge in their UI structure.** The unified Settings window described below is macOS-only for now; the Linux tray keeps the classic submenu structure.
+**Note: the macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described below is macOS-only for now; the Linux tray keeps the classic submenu structure.
 
 ### macOS tray
 
-The macOS tray has a slim menu with a unified **Settings window** (open with Settings… ⌘, or from the tray menu):
+The macOS tray has a slim menu with a unified **config window** (open with Settings… ⌘, or from the tray menu):
 
 Slim menu items:
 - **Status line** — shows current connection state
@@ -458,10 +458,12 @@ Slim menu items:
 - **About SusOps**
 - **Quit ⌘Q**
 
-The **Settings window** is a tabbed NSWindow:
-- **One tab per connection** — labelled with a state dot (●/–/○) and the connection tag. Each tab has a grouped sidebar (DOMAINS / FORWARDS / SHARES / CONNECTION) with per-item state indicators, and an **Add…** pull-down (Add Domain/IP/CIDR, Add Local Forward, Add Remote Forward, Share File…, Fetch File…) preset to the current connection. Selecting a sidebar item opens a detail panel with per-item actions: **Test**, **Toggle enabled**, **Remove** (for domains and forwards); **Reveal Password**, **Stop/Start**, **Delete** (for shares); **Start/Stop/Restart/Test/Remove** (for the connection itself).
-- **+ tab** — add a new connection.
-- **Gear tab (⚙)** — app-wide settings (PAC port, stop-on-quit, ephemeral ports) with **Save**, **Revert**, and **Open Config File** buttons.
+The **config window** is a 3-column Tailscale-style editor (nav / list / detail) with a dark skin and instant-apply settings:
+
+- **Column 1 — nav.** Categories with live counts: **Connections / Domains / Forwards / Shares**, plus **Settings** pinned at the bottom. Selecting a category drives the list.
+- **Column 2 — list.** A search field on top filters the rows for the selected category. Forwards split into **Local** and **Remote** sections (each with a one-line explainer); shares show download counts. Each row carries a colored run-state dot (green active, amber pending, gray stopped/inactive, red error/connection-down) and a connection badge; disabled rows render dimmed. A context-aware add button sits at the bottom (`+ Add Connection`, `+ Add Domain / IP / CIDR`, `+ Add Forward`, or `Share File…` / `Fetch…`).
+- **Column 3 — detail / editor.** A header with the title, a colored status line, and an **Enabled** toggle in the top-right (applies instantly). The body is a card holding the form: forwards, domains, and shares are **edited inline** (change a field and **Save**) — no remove-and-re-enter. The same `+` buttons open inline **create forms** in this column (file/folder pickers still use the native chooser). Shares expose a copyable `http://localhost:PORT` URL and password. Per-item actions live in the action row (**Delete…** on the left, **Test** / **Save** on the right).
+- **Settings** spans columns 2–3: grouped toggles (launch at login, stop on quit, random SSH ports, restore shares, show bandwidth, notifications, logo style) that **apply instantly**, the RPC / SSE / PAC server ports behind a single **Apply** button, and an **Open Config File…** button.
 
 ### Linux tray
 
@@ -676,7 +678,7 @@ sudo apt install socat      # Ubuntu / Debian
 
 ### Enabling UDP on a forward
 
-Set `udp: true` in the forward config, or check "UDP" in the TUI/tray add-forward dialog:
+Set `udp: true` in the forward config, or check "UDP" in the TUI/tray forward form:
 
 ```yaml
 forwards:
