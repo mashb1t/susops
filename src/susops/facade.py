@@ -1124,46 +1124,58 @@ class SusOpsManager:
     def _add_file_share_to_config(
             self, conn_tag: str, file_path: str, password: str, port: int
     ) -> None:
-        conn = get_connection(self.config, conn_tag)
-        if conn is None:
-            return
-        # Update existing entry (clear stopped flag on re-share) or append new
-        existing = [f for f in conn.file_shares if f.file_path == file_path]
-        if existing:
-            new_shares = [
-                fs.model_copy(update={"password": password, "port": port, "stopped": False})
-                if fs.file_path == file_path else fs
-                for fs in conn.file_shares
-            ]
-        else:
-            new_shares = list(conn.file_shares) + [
-                FileShare(file_path=file_path, password=password, port=port)
-            ]
-        self._replace_connection(conn.model_copy(update={"file_shares": new_shares}))
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, conn_tag)
+            if conn is None:
+                return
+            # Update existing entry (clear stopped flag on re-share) or append new
+            existing = [f for f in conn.file_shares if f.file_path == file_path]
+            if existing:
+                new_shares = [
+                    fs.model_copy(update={"password": password, "port": port, "stopped": False})
+                    if fs.file_path == file_path else fs
+                    for fs in conn.file_shares
+                ]
+            else:
+                new_shares = list(conn.file_shares) + [
+                    FileShare(file_path=file_path, password=password, port=port)
+                ]
+            self._replace_connection(conn.model_copy(update={"file_shares": new_shares}))
+            self._save()
 
     def _remove_file_share_from_config(self, port: int) -> None:
-        new_conns = []
-        for conn in self.config.connections:
-            updated_shares = [f for f in conn.file_shares if f.port != port]
-            if len(updated_shares) != len(conn.file_shares):
-                new_conns.append(conn.model_copy(update={"file_shares": updated_shares}))
-            else:
-                new_conns.append(conn)
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            new_conns = []
+            for conn in self.config.connections:
+                updated_shares = [f for f in conn.file_shares if f.port != port]
+                if len(updated_shares) != len(conn.file_shares):
+                    new_conns.append(conn.model_copy(update={"file_shares": updated_shares}))
+                else:
+                    new_conns.append(conn)
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
 
     def _set_file_share_stopped(self, port: int, stopped: bool) -> None:
-        """Update the stopped flag on a persisted FileShare entry."""
-        new_conns = []
-        for conn in self.config.connections:
-            updated = [
-                fs.model_copy(update={"stopped": stopped}) if fs.port == port else fs
-                for fs in conn.file_shares
-            ]
-            new_conns.append(conn.model_copy(update={"file_shares": updated}))
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        """Update the stopped flag on a persisted FileShare entry.
+
+        Reads fresh under _config_lock so a concurrent config mutation (the
+        tray poll's list_shares, another frontend) cannot be clobbered by a
+        stale in-memory write. Matches the read-modify-write pattern used by
+        the other config mutators.
+        """
+        with self._config_lock:
+            self._reload_config()
+            new_conns = []
+            for conn in self.config.connections:
+                updated = [
+                    fs.model_copy(update={"stopped": stopped}) if fs.port == port else fs
+                    for fs in conn.file_shares
+                ]
+                new_conns.append(conn.model_copy(update={"file_shares": updated}))
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -2129,20 +2141,23 @@ class SusOpsManager:
                 failed_count=server.failed_count,
             ))
 
-        # Config-only stopped shares (persisted but server not running in this process)
-        self._reload_config()
-        for conn in self.config.connections:
-            for fs in conn.file_shares:
-                if fs.port not in running_ports:
-                    result.append(ShareInfo(
-                        file_path=fs.file_path,
-                        port=fs.port,
-                        password=fs.password,
-                        url=f"http://localhost:{fs.port}",
-                        conn_tag=conn.tag,
-                        running=False,
-                        stopped=fs.stopped,
-                    ))
+        # Config-only stopped shares (persisted but server not running in this
+        # process). Reload under the lock so a concurrent share/stop_share
+        # config write is not interleaved or clobbered.
+        with self._config_lock:
+            self._reload_config()
+            for conn in self.config.connections:
+                for fs in conn.file_shares:
+                    if fs.port not in running_ports:
+                        result.append(ShareInfo(
+                            file_path=fs.file_path,
+                            port=fs.port,
+                            password=fs.password,
+                            url=f"http://localhost:{fs.port}",
+                            conn_tag=conn.tag,
+                            running=False,
+                            stopped=fs.stopped,
+                        ))
 
         return result
 

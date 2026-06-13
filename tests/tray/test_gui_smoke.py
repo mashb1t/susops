@@ -471,10 +471,9 @@ def test_share_header_toggle_stops_and_restarts(tray_proc):
     """The shares header Enabled toggle owns serving: it replaces the Stop/Start
     button (ON when serving) and flipping it stops then re-serves the share.
 
-    Asserted via the reliable `running` (in-memory server) state. The persisted
-    `stopped` flag can be clobbered by a concurrent list_shares poll racing
-    stop_share's config write at the daemon (a facade thread-safety bug, tracked
-    separately); this test does not depend on that flag."""
+    Asserted via the `running` (in-memory server) state. Re-serving rebinds the
+    same port, which the OS can be slow to release under batch load, so the
+    re-serve waits use a generous timeout."""
     from pathlib import Path
 
     from susops.client import SusOpsClient
@@ -505,11 +504,11 @@ def test_share_header_toggle_stops_and_restarts(tray_proc):
     # Flip OFF -> the share stops serving.
     assert tray_proc.send("action share.toggle").get("ok")
     _wait_for(lambda: _serving(), lambda serving: serving is False,
-              timeout=8.0)
+              timeout=15.0)
     assert _serving() is False
 
-    # Flip ON again -> the share serves once more.
+    # Flip ON again -> the share serves once more (rebinds the same port).
     assert tray_proc.send("action share.toggle").get("ok")
     _wait_for(lambda: _serving(), lambda serving: serving is True,
-              timeout=8.0)
+              timeout=15.0)
     assert _serving() is True

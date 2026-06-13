@@ -285,6 +285,34 @@ def test_delete_share_removes_file_share_from_config(mgr_with_conn, tmp_path):
     assert not any(fs.port == info.port for fs in conn.file_shares)
 
 
+def test_stop_share_does_not_clobber_concurrent_config_write(mgr_with_conn, tmp_path):
+    """stop_share must reload config under the lock so a stale in-memory copy
+    does not overwrite a write made elsewhere on the same workspace.
+
+    Regression: _set_file_share_stopped wrote self.config without _config_lock
+    or _reload_config, so a concurrent list_shares/mutation (the tray poll does
+    this) could lose the stopped flag or drop an unrelated entry.
+    """
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+    info = mgr_with_conn.share(test_file, "work")
+    port = info.port
+
+    # A second manager on the same workspace writes to disk, leaving
+    # mgr_with_conn's in-memory config stale (missing "second").
+    other = SusOpsManager(workspace=tmp_path)
+    other.add_connection("second", "user@second.com")
+
+    mgr_with_conn.stop_share(port)
+
+    fresh = SusOpsManager(workspace=tmp_path).list_config()
+    tags = {c.tag for c in fresh.connections}
+    assert "second" in tags, "stop_share clobbered a concurrent connection write"
+    work = next(c for c in fresh.connections if c.tag == "work")
+    fs = next(f for f in work.file_shares if f.port == port)
+    assert fs.stopped is True
+
+
 def test_stop_share_then_start_again(mgr_with_conn, tmp_path):
     test_file = tmp_path / "data.txt"
     test_file.write_text("hello")
