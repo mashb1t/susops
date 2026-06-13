@@ -1114,6 +1114,7 @@ class ConfigWindow:
             NSView,
         )
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL1_W, 30))
+        self._style_debug_row_cell(cell)
         x = 8
         if item.icon:
             img = self._sf_symbol(item.icon)
@@ -1161,6 +1162,7 @@ class ConfigWindow:
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 24))
+        self._style_debug_row_cell(cell)
         lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, row_w - 20, 16))
         # Section titles render as the model emits them ("Local"/"Remote"),
         # NOT uppercased. Medium weight, secondary color.
@@ -1182,6 +1184,7 @@ class ConfigWindow:
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 18))
+        self._style_debug_row_cell(cell)
         lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, row_w - 20, 16))
         lbl.setStringValue_(r.title)
         lbl.setFont_(NSFont.systemFontOfSize_(11))
@@ -1198,6 +1201,7 @@ class ConfigWindow:
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 38))
+        self._style_debug_row_cell(cell)
         title_color = (NSColor.secondaryLabelColor() if r.dimmed
                        else NSColor.labelColor())
 
@@ -1312,6 +1316,18 @@ class ConfigWindow:
         except Exception:
             pass
         return None
+
+    def _style_debug_row_cell(self, cell) -> None:
+        """Debug visual aid: show explicit row bounds."""
+        try:
+            cell.setWantsLayer_(True)
+            layer = cell.layer()
+            layer.setBackgroundColor_(_hex_color("ff0000", 0.18).CGColor())
+            layer.setBorderWidth_(1.0)
+            layer.setBorderColor_(_hex_color("ff4d4d", 0.95).CGColor())
+            layer.setCornerRadius_(4.0)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Add buttons (column 2 bottom)
