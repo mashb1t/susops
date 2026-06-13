@@ -975,8 +975,10 @@ class ConfigWindow:
         _truncate_tail(title)
         cell.addSubview_(title)
         if item.count is not None:
+            # Sit inside the selection pill (which floats inset ~9px from the
+            # column edge), not in the margin outside it.
             count = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL1_W - 40, 5, 32, 20))
+                NSMakeRect(COL1_W - 44, 5, 28, 20))
             count.setStringValue_(str(item.count))
             count.setFont_(NSFont.systemFontOfSize_(12))
             count.setAlignment_(1)  # right
@@ -1036,9 +1038,17 @@ class ConfigWindow:
         title_color = (NSColor.secondaryLabelColor() if r.dimmed
                        else NSColor.labelColor())
 
+        # Single-line rows (e.g. domains, no subtitle) center their title, dot
+        # and badge vertically in the 38px row. Two-line rows keep the stacked
+        # title (top) + subtitle (bottom) layout.
+        two_line = bool(r.subtitle)
+        dot_y = 20 if two_line else 14
+        title_y = 18 if two_line else 10
+        badge_y = 18 if two_line else 11
+
         # Colored dot (10px circle, layer-backed).
         if r.dot:
-            dot = NSView.alloc().initWithFrame_(NSMakeRect(12, 20, 10, 10))
+            dot = NSView.alloc().initWithFrame_(NSMakeRect(12, dot_y, 10, 10))
             try:
                 dot.setWantsLayer_(True)
                 color = _ns_dot_color(r.dot)
@@ -1061,7 +1071,7 @@ class ConfigWindow:
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL2_W - badge_w - badge_right_inset, 18, badge_w, 16))
+                NSMakeRect(COL2_W - badge_w - badge_right_inset, badge_y, badge_w, 16))
             badge.setStringValue_(r.badge)
             badge.setFont_(NSFont.systemFontOfSize_(10))
             badge.setAlignment_(1)  # center
@@ -1082,7 +1092,7 @@ class ConfigWindow:
         title_w = COL2_W - text_x - (badge_w + badge_right_inset + 6
                                      if badge_w else 12)
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(text_x, 18, max(40, title_w), 18))
+            NSMakeRect(text_x, title_y, max(40, title_w), 18))
         title.setStringValue_(r.title)
         title.setFont_(NSFont.systemFontOfSize_(13))
         title.setBezeled_(False)
