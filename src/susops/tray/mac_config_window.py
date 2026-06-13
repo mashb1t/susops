@@ -789,6 +789,13 @@ class ConfigWindow:
         """Keep table document width and first-column width aligned to the
         scroll viewport width so horizontal movement cannot appear."""
         from Cocoa import NSMakeRect  # type: ignore[import]
+        if scroll is None:
+            try:
+                scroll = tv.enclosingScrollView()
+            except Exception:
+                scroll = None
+        if scroll is None:
+            return
         try:
             clip_w = float(scroll.contentView().bounds().size.width)
         except Exception:
@@ -862,6 +869,7 @@ class ConfigWindow:
         self._suppress_selection_cb = True
         try:
             self._nav_tv.reloadData()
+            self._fit_table_to_scroll_width(self._nav_tv, None, col_inset=8)
             idx = next((i for i, n in enumerate(self.nav_items)
                         if n.key == self.category), 0)
             self._select_table_row(self._nav_tv, idx)
@@ -892,6 +900,7 @@ class ConfigWindow:
         self._suppress_selection_cb = True
         try:
             self._list_tv.reloadData()
+            self._fit_table_to_scroll_width(self._list_tv, None, col_inset=4)
             target = None
             if prev is not None:
                 target = next((i for i, r in enumerate(self.rows)
@@ -1051,6 +1060,7 @@ class ConfigWindow:
         self._suppress_selection_cb = True
         try:
             self._list_tv.reloadData()
+            self._fit_table_to_scroll_width(self._list_tv, None, col_inset=4)
             target = next((i for i, r in enumerate(self.rows)
                            if r.identity == prev and r.kind == "item"), None)
             if target is None:
