@@ -712,6 +712,7 @@ class ConfigWindow:
         scroll.setDocumentView_(tv)
         scroll.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
         col1.addSubview_(scroll)
+        self._fit_table_to_scroll_width(tv, scroll, col_inset=8)
         self._nav_tv = tv
 
     def _build_list_column(self, col2, ch: float) -> None:
@@ -773,6 +774,7 @@ class ConfigWindow:
         scroll.setDocumentView_(tv)
         scroll.setAutoresizingMask_(2 | 16)
         col2.addSubview_(scroll)
+        self._fit_table_to_scroll_width(tv, scroll, col_inset=4)
         self._list_tv = tv
 
         # Add-button bar at the bottom (rebuilt per category).
@@ -782,6 +784,28 @@ class ConfigWindow:
     def _clear_color(self):
         from Cocoa import NSColor  # type: ignore[import]
         return NSColor.clearColor()
+
+    def _fit_table_to_scroll_width(self, tv, scroll, *, col_inset: float) -> None:
+        """Keep table document width and first-column width aligned to the
+        scroll viewport width so horizontal movement cannot appear."""
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        try:
+            clip_w = float(scroll.contentView().bounds().size.width)
+        except Exception:
+            clip_w = float(scroll.frame().size.width)
+        if clip_w <= 0:
+            return
+        try:
+            fr = tv.frame()
+            tv.setFrame_(NSMakeRect(fr.origin.x, fr.origin.y, clip_w, fr.size.height))
+        except Exception:
+            pass
+        try:
+            cols = tv.tableColumns()
+            if cols:
+                cols[0].setWidth_(max(40, clip_w - float(col_inset)))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Data application + render
