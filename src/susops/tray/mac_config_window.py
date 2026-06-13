@@ -1778,7 +1778,7 @@ class ConfigWindow:
         # content column.
         if spec.toggle_note:
             note = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(cw - 280, toggle_y - 18, 280, 14))
+                NSMakeRect(cw - 220, toggle_y - 18, 220, 14))
             note.setStringValue_(spec.toggle_note)
             note.setFont_(NSFont.systemFontOfSize_(11))
             note.setAlignment_(1)  # right
