@@ -426,6 +426,7 @@ SEARCH_H = 30
 ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
+NAV_COUNT_RIGHT_INSET = 47  # nav count label right inset within row pill
 DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
@@ -1172,7 +1173,7 @@ class ConfigWindow:
             # Sit inside the selection pill (which floats inset ~9px from the
             # column edge), not in the margin outside it.
             count = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(cell_w - 47, 3, 28, 20))
+                NSMakeRect(cell_w - NAV_COUNT_RIGHT_INSET, 3, 28, 20))
             count.setStringValue_(str(item.count))
             count.setFont_(NSFont.systemFontOfSize_(12))
             count.setAlignment_(1)  # right
@@ -1273,7 +1274,7 @@ class ConfigWindow:
         # the cell edge (mockup). The selection pill insets 4px, the scroller
         # overlays ~14-16px, so the pill needs a wider inset than that.
         badge_w = 0
-        badge_right_inset = ROW_PILL_INSET_X + 18
+        badge_right_inset = ROW_PILL_INSET_X - 5
         # Keep text inside the same floating row area as the selection pill.
         row_right_limit = cell_w - ROW_TEXT_RIGHT_PAD
         if r.badge:
