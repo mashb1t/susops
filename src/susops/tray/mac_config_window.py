@@ -395,7 +395,7 @@ COL1_W = 180
 COL2_W = 270
 TOP_INSET = 38          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = 23  # nav-only top inset (kept independent for fine tuning)
-SEARCH_H = 24
+SEARCH_H = 30
 ADDBAR_H = 40
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
@@ -1589,7 +1589,7 @@ class ConfigWindow:
         _role, value, action_id = spec.toggle
         toggle_w = 40
         toggle_x = cw - toggle_w
-        toggle_y = header_top - 24
+        toggle_y = header_top - 22
 
         def _on_flip(sender, aid=action_id):
             # Optimistically flip the label word so it switches immediately
