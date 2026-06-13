@@ -427,7 +427,7 @@ ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
 NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
-NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X  # match count inset to icon inset
+NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X + 28  # match count inset to icon inset
 DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
@@ -757,7 +757,12 @@ class ConfigWindow:
         )
         # Search field at the top.
         sf = NSSearchField.alloc().initWithFrame_(
-            NSMakeRect(8, ch - TOP_INSET - SEARCH_H, COL2_W - 16, SEARCH_H))
+            NSMakeRect(
+                ROW_PILL_INSET_X,
+                ch - TOP_INSET - SEARCH_H,
+                COL2_W - 2 * ROW_PILL_INSET_X,
+                SEARCH_H,
+            )
         sf.setAutoresizingMask_(2 | 8)  # WidthSizable | MinYMargin
         sf_handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda sender: self._on_search(str(sender.stringValue() or "")))
