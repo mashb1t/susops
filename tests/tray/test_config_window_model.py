@@ -332,15 +332,17 @@ def test_connection_detail_running():
     assert spec.title == "work"
     assert spec.status_text == "running · pid 4711"
     assert spec.status_dot == "green"
-    assert spec.editable is False
+    assert spec.editable is True
     assert spec.toggle == ("Enabled", True, "conn.toggle")
     assert spec.toggle_note == (
         "Disabled connections are skipped when the proxy starts.")
-    # static field rows
+    # editable text field rows
     by_label = {f.label: f for f in spec.fields}
-    assert by_label["Tag"].kind == "static"
+    assert by_label["Tag"].kind == "text"
     assert by_label["Tag"].value == "work"
+    assert by_label["SSH Host"].kind == "text"
     assert by_label["SSH Host"].value == "user@bastion"
+    assert by_label["SOCKS Port"].kind == "text"
     assert by_label["SOCKS Port"].value == "1080"
     by_id = {a.action_id: a for a in spec.actions}
     assert by_id["conn.start"].enabled is False
@@ -349,6 +351,9 @@ def test_connection_detail_running():
     assert by_id["conn.test"].enabled is True
     assert by_id["conn.remove"].enabled is True
     assert by_id["conn.remove"].destructive is True
+    assert by_id["conn.remove"].title == "Delete…"
+    # Save action present (only enabled-on-dirty handled by the renderer)
+    assert "conn.save" in by_id
     # destructive first
     assert spec.actions[0].action_id == "conn.remove"
 
@@ -379,6 +384,28 @@ def test_connection_detail_socks_port_fallback():
     spec = build_connection_detail(conn, _status("work", running=False))
     by_label = {f.label: f for f in spec.fields}
     assert by_label["SOCKS Port"].value == "2200"
+
+
+def test_connection_detail_editable_with_save():
+    spec = build_connection_detail(_conn("work"),
+                                   _status("work", running=False, pid=None))
+    assert spec.editable is True
+    by_key = {f.key: f for f in spec.fields}
+    assert set(by_key) >= {"tag", "ssh_host", "socks_port"}
+    assert by_key["tag"].kind == "text"
+    assert by_key["ssh_host"].kind == "text"
+    assert by_key["socks_port"].kind == "text"
+    by_id = {a.action_id: a for a in spec.actions}
+    assert "conn.save" in by_id
+    assert by_id["conn.save"].title == "Save"
+    # Auto socks port renders empty (with an "auto" placeholder), not "auto".
+    conn0 = NS(tag="work", ssh_host="h", socks_proxy_port=0, enabled=True,
+               pac_hosts=[], pac_hosts_disabled=[],
+               forwards=NS(local=[], remote=[]))
+    spec0 = build_connection_detail(conn0, _status("work", running=False))
+    sp = {f.key: f for f in spec0.fields}["socks_port"]
+    assert sp.value == ""
+    assert sp.placeholder == "auto"
 
 
 # ---- connection form (create only) ----
@@ -431,6 +458,7 @@ def test_domain_form_edit_mode():
     ids = [a.action_id for a in spec.actions]
     assert ids == ["domain.remove", "domain.test", "domain.save"]
     assert spec.actions[0].destructive is True
+    assert spec.actions[0].title == "Delete…"
 
 
 def test_domain_form_edit_enabled_host_active():
@@ -494,6 +522,7 @@ def test_forward_form_edit_mode_fields():
     assert spec.toggle == ("Enabled", True, "forward.toggle")
     ids = [a.action_id for a in spec.actions]
     assert ids == ["forward.remove", "forward.test", "forward.save"]
+    assert spec.actions[0].title == "Delete…"
 
 
 def test_forward_form_edit_remote_inactive():

@@ -213,6 +213,82 @@ def test_inline_edit_forward_round_trip(tray_proc):
     assert cfg.connections[0].forwards.local[0].dst_port == 5433
 
 
+def test_inline_edit_connection(tray_proc):
+    """Edit a connection's ssh_host + socks_port inline; the change persists
+    and the connection's children (forwards, domains) survive the edit."""
+    from susops.client import SusOpsClient
+    from susops.core.config import PortForward
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tag="pg"))
+    c.add_pac_host("ex.com", conn_tag="work")
+    assert tray_proc.send("open-config connections").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "connections"
+        and any(r["title"] == "work" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select connections 0").get("ok")
+    assert tray_proc.send("dump-window")["detail_title"] == "work"
+    assert tray_proc.send("set-field ssh_host admin@newhost").get("ok")
+    assert tray_proc.send("set-field socks_port 1081").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is True
+
+    assert tray_proc.send("action conn.save").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("dirty") is False,
+        timeout=6.0,
+    )
+    conn = _wait_for(
+        lambda: c.list_config().connections[0],
+        lambda cn: cn.ssh_host == "admin@newhost" and cn.socks_proxy_port == 1081,
+        timeout=6.0,
+    )
+    assert conn.ssh_host == "admin@newhost"
+    assert conn.socks_proxy_port == 1081
+    # Children preserved (no cascade): the forward + pac host survive.
+    assert any(f.src_port == 5432 for f in conn.forwards.local)
+    assert "ex.com" in conn.pac_hosts
+
+
+def test_inline_rename_connection(tray_proc):
+    """Rename a connection's tag inline; the tag changes, children survive, and
+    the renamed row is reselected in the detail pane."""
+    from susops.client import SusOpsClient
+    from susops.core.config import PortForward
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tag="pg"))
+    c.add_pac_host("ex.com", conn_tag="work")
+    assert tray_proc.send("open-config connections").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "connections"
+        and any(r["title"] == "work" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select connections 0").get("ok")
+    assert tray_proc.send("set-field tag work2").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is True
+
+    assert tray_proc.send("action conn.save").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("dirty") is False and d.get("detail_title") == "work2",
+        timeout=6.0,
+    )
+    assert dump["detail_title"] == "work2"  # renamed row reselected
+    conn = _wait_for(
+        lambda: c.list_config().connections[0],
+        lambda cn: cn.tag == "work2",
+        timeout=6.0,
+    )
+    assert conn.tag == "work2"
+    # Children preserved through the rename.
+    assert any(f.src_port == 5432 for f in conn.forwards.local)
+    assert "ex.com" in conn.pac_hosts
+
+
 def test_dirty_suppresses_refresh(tray_proc):
     """While a col-3 form is dirty, an external config change must NOT clobber
     the in-flight edit. Cols 1-2 still refresh and col-3 stays put."""

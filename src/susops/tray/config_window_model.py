@@ -285,18 +285,19 @@ def build_connection_detail(conn, status) -> DetailSpec:
     else:
         status_text = "stopped"
     fields = [
-        FormField(key="tag", label="Tag", kind="static", value=conn.tag),
-        FormField(key="ssh_host", label="SSH Host", kind="static",
+        FormField(key="tag", label="Tag", kind="text", value=conn.tag),
+        FormField(key="ssh_host", label="SSH Host", kind="text",
                   value=conn.ssh_host),
-        FormField(key="socks_port", label="SOCKS Port", kind="static",
-                  value=str(_socks_port(conn) or "auto")),
+        FormField(key="socks_port", label="SOCKS Port", kind="text",
+                  value=str(_socks_port(conn) or ""), placeholder="auto"),
     ]
     actions = [
-        Action("conn.remove", "Remove Connection…", destructive=True),
+        Action("conn.remove", "Delete…", destructive=True),
         Action("conn.test", "Test", enabled=running),
         Action("conn.restart", "Restart", enabled=running),
         Action("conn.stop", "Stop", enabled=running),
         Action("conn.start", "Start", enabled=not running),
+        Action("conn.save", "Save"),
     ]
     return DetailSpec(
         title=conn.tag,
@@ -306,7 +307,7 @@ def build_connection_detail(conn, status) -> DetailSpec:
         toggle_note="Disabled connections are skipped when the proxy starts.",
         fields=fields,
         actions=actions,
-        editable=False,
+        editable=True,
     )
 
 
@@ -356,7 +357,7 @@ def build_domain_form(conn_tags, *, conn_tag=None, host=None,
             toggle=("Enabled", enabled, "domain.toggle"),
             fields=fields,
             actions=[
-                Action("domain.remove", "Remove…", destructive=True),
+                Action("domain.remove", "Delete…", destructive=True),
                 Action("domain.test", "Test"),
                 Action("domain.save", "Save"),
             ],
@@ -406,7 +407,7 @@ def build_forward_form(conn_tags, *, fw=None, direction=None,
             toggle=("Enabled", bool(fw.enabled), "forward.toggle"),
             fields=fields,
             actions=[
-                Action("forward.remove", "Remove…", destructive=True),
+                Action("forward.remove", "Delete…", destructive=True),
                 Action("forward.test", "Test"),
                 Action("forward.save", "Save"),
             ],

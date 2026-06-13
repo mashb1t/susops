@@ -1727,9 +1727,9 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "conn.toggle":
                 self.do_toggle_connection_enabled(conn_tag)
             elif action_id == "conn.remove":
-                if _show_confirm("Remove Connection",
-                                 f"Remove connection '{conn_tag}' and all its "
-                                 f"domains, forwards and shares?", ok="Remove"):
+                if _show_confirm("Delete Connection",
+                                 f"Delete connection '{conn_tag}' and all its "
+                                 f"domains, forwards and shares?", ok="Delete"):
                     self.do_remove_connection(conn_tag)
         elif kind == "domain":
             _, conn_tag, host = identity
@@ -1738,7 +1738,7 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "domain.toggle":
                 self.do_toggle_pac_host_enabled(host)
             elif action_id == "domain.remove":
-                if _show_confirm("Remove Domain", f"Remove '{host}'?", ok="Remove"):
+                if _show_confirm("Delete Domain", f"Delete '{host}'?", ok="Delete"):
                     self.do_remove_pac_host(host)
         elif kind == "forward":
             _, conn_tag, direction, src_port = identity
@@ -1747,8 +1747,8 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "forward.toggle":
                 self.do_toggle_forward_enabled(conn_tag, src_port, direction)
             elif action_id == "forward.remove":
-                if _show_confirm("Remove Forward",
-                                 f"Remove :{src_port} ({direction})?", ok="Remove"):
+                if _show_confirm("Delete Forward",
+                                 f"Delete :{src_port} ({direction})?", ok="Delete"):
                     if direction == "local":
                         self.do_remove_local_forward(src_port)
                     else:
@@ -1830,7 +1830,9 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def save_window_form(self, identity: tuple, values: dict) -> None:
         kind = identity[0] if identity else None
-        if kind == "forward":
+        if kind == "connection":
+            self._save_connection(identity, values)
+        elif kind == "forward":
             self._save_forward(identity, values)
         elif kind == "domain":
             self._save_domain(identity, values)
@@ -2094,6 +2096,49 @@ class SusOpsMacTray(AbstractTrayApp):
             return [c.tag for c in self.manager.list_config().connections]
         except Exception:
             return []
+
+    def _save_connection(self, identity: tuple, values: dict) -> None:
+        old_tag = identity[1]
+        tag = (values.get("tag") or "").strip()
+        ssh_host = (values.get("ssh_host") or "").strip()
+        port_text = str(values.get("socks_port") or "").strip()
+        # Pure-input validation on the main thread (no RPC).
+        if not tag:
+            _show_message("Missing Field", "Connection Tag must not be empty.")
+            return
+        if not ssh_host:
+            _show_message("Missing Field", "SSH Host must not be empty.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "SOCKS port must be empty (auto) or 1–65535.")
+                return
+            port_int = int(port_text)
+
+        new_identity = ("connection", tag)
+
+        def _work():
+            # update_connection edits in place (preserving forwards/domains/
+            # shares) and, when the connection was running, restarts it under
+            # the new config. was_running + restart are handled in the facade.
+            try:
+                self.manager.update_connection(
+                    old_tag, new_tag=tag, ssh_host=ssh_host,
+                    socks_proxy_port=port_int, restart=True)
+                return {"ok": True}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
 
     def _save_forward(self, identity: tuple, values: dict) -> None:
         _, old_conn_tag, old_direction, old_src_port = identity
