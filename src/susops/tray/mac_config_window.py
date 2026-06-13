@@ -389,8 +389,8 @@ def _get_row_view_cls():
 # ---- geometry ----
 WIN_W = 1024
 WIN_H = 640
-MIN_W = 980
-MIN_H = 560
+MIN_W = 1024
+MIN_H = 640
 COL1_W = 180
 COL2_W = 270
 TOP_INSET = 38          # traffic lights overlay col 1; start content below them
@@ -1525,8 +1525,8 @@ class ConfigWindow:
         container, cw = self._content_column()
         self._content_view = container
         h = container.frame().size.height
-        # Header sits just below the transparent titlebar inset.
-        header_top = h - TOP_INSET - 8
+        # Align col-3 title top with col-2 search/top list origin.
+        header_top = h - TOP_INSET
 
         # --- Header: title (left) + status line + Enabled toggle (right edge of
         #     the 540px content column, near the title) ---
