@@ -1640,6 +1640,15 @@ class ConfigWindow:
             return width
         gap = 6
         btn_h = 22
+        # Vertically center the button on the field it sits beside. Static
+        # (URL) text renders as an 18px field at ry, so its center is ry+9;
+        # editable controls (the secure password) render at ry-3 with height
+        # 22, center ry+8. Align the button center to the field's center.
+        if f.kind == "static":
+            field_center = ry + 9
+        else:
+            field_center = ry - 3 + 11
+        btn_y = field_center - btn_h / 2
         # Lay buttons out from the right edge leftward, preserving spec order
         # left-to-right.
         widths = [max(48, 18 + 8 * len(label)) for _aid, label in trailing]
@@ -1649,7 +1658,7 @@ class ConfigWindow:
         bx = rx
         for (aid, label), bw in zip(trailing, widths):
             btn = self._styled_neutral_button(
-                label, NSMakeRect(bx, ry - 3, bw, btn_h))
+                label, NSMakeRect(bx, btn_y, bw, btn_h))
             if aid == "share.reveal":
                 handler = _get_action_handler_cls().alloc().initWithCallback_(
                     lambda _s, key=f.key, b=btn: self._on_reveal_password(key, b))

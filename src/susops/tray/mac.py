@@ -2490,6 +2490,9 @@ class SusOpsMacTray(AbstractTrayApp):
         if not conn_tag:
             _show_message("Missing Field", "Select a connection.")
             return
+        if not port_text:
+            _show_message("Missing Field", "Port is required.")
+            return
         if not port_text.isdigit() or not validate_port(int(port_text)):
             _show_message("Invalid Port",
                           "Port must be between 1 and 65535.")
