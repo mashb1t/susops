@@ -141,7 +141,9 @@ def _get_table_ds_cls():
             return self._owner._make_cell(self._role, row)
 
         def tableView_rowViewForRow_(self, _tv, _row):
-            return _get_row_view_cls().alloc().init()
+            rv = _get_row_view_cls().alloc().init()
+            rv.susopsRole = self._role
+            return rv
 
         def tableView_heightOfRow_(self, _tv, row):
             return self._owner._row_height(self._role, row)
@@ -222,16 +224,26 @@ def _get_row_view_cls():
     from Foundation import NSMakeRect  # type: ignore[import]
 
     class _SusOpsRowView(NSTableRowView):
+        susopsRole = "list"
+
         def drawSelectionInRect_(self, rect):
             if not self.isSelected():
                 return
             b = self.bounds()
-            # Left inset clears the column edge; the right inset is larger so the
-            # pill's right rounded corner stays clear of the vertical scroller
-            # gutter (~15px) and is never clipped.
-            inset_left = 4.0
-            inset_right = 16.0
             inset_y = 2.0
+            if getattr(self, "susopsRole", "list") == "nav":
+                # macOS System Settings look: the nav pill floats with an EQUAL
+                # comfortable margin on both sides, fully rounded corners.
+                inset_left = 9.0
+                inset_right = 9.0
+                radius = 7.0
+            else:
+                # col-2 list: left inset clears the column edge; the larger right
+                # inset keeps the pill's right rounded corner clear of the
+                # vertical scroller gutter (~15px) so it is never clipped.
+                inset_left = 4.0
+                inset_right = 16.0
+                radius = 6.0
             r = NSMakeRect(b.origin.x + inset_left, b.origin.y + inset_y,
                            b.size.width - (inset_left + inset_right),
                            b.size.height - 2 * inset_y)
@@ -241,7 +253,7 @@ def _get_row_view_cls():
                 accent = NSColor.alternateSelectedControlColor()
             accent.set()
             path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                r, 6.0, 6.0)
+                r, radius, radius)
             path.fill()
 
     _row_view_cls = _SusOpsRowView
@@ -2519,7 +2531,7 @@ class ConfigWindow:
 
     def _render_server_rows(self, doc, fields, x, width, top) -> float:
         """RPC / SSE / PAC port text fields ("auto" placeholder) + per-field
-        gray note, then one Apply button right-aligned under them."""
+        gray note. The Save button lives on the Config-file row, not here."""
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
             NSColor,
@@ -2575,43 +2587,43 @@ class ConfigWindow:
                 n.setTextColor_(NSColor.tertiaryLabelColor())
                 doc.addSubview_(n)
             y = row_y - 6
-
-        # Apply button accent-blue (like Save) and right-aligned under the port
-        # fields, near the right end of the field column. Settings is staged, so
-        # Apply is always enabled (it commits the staged changes).
-        from Cocoa import NSMakeRect as _R  # type: ignore[import]
-        btn_w = 84
-        btn_h = 28
-        btn_y = y - btn_h - 2
-        btn_x = x + width - btn_w
-        btn = self._styled_save_button(
-            "Apply", _R(btn_x, btn_y, btn_w, btn_h))
-        btn.setEnabled_(True)
-        self._restyle_save_button(btn, True)
-        handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda _s: self._on_apply_settings())
-        self._handlers.append(handler)
-        btn.setTarget_(handler)
-        btn.setAction_("fire:")
-        doc.addSubview_(btn)
-        return btn_y
+        return y
 
     def _render_config_file_row(self, doc, x, width, top) -> float:
-        """Config file row: an "Open Config File…" button ONLY, in the content
-        column next to its section label (left-aligned where the fields start).
-        No explainer sentence (user tweak)."""
+        """Config file row: "Open Config File…" and the blue "Save" button on a
+        single row, aligned with the "Config file:" section label. Save commits
+        ALL staged settings (toggles + logo + login + ports); it is always
+        enabled. Open Config File opens the YAML in $EDITOR."""
         from Cocoa import NSMakeRect  # type: ignore[import]
-        btn_w = 150
         btn_h = 28
-        btn_y = top - btn_h
-        btn = self._styled_neutral_button(
-            "Open Config File…", NSMakeRect(x, btn_y, btn_w, btn_h))
-        handler = _get_action_handler_cls().alloc().initWithCallback_(
+        # Vertically center the buttons on the "Config file:" section label
+        # (label is 18 tall, drawn at section_top - 2, so its center is at
+        # section_top + 7). Center the 28-tall buttons on that same line.
+        label_center = top + 7
+        btn_y = label_center - btn_h / 2.0
+        open_w = 150
+        open_btn = self._styled_neutral_button(
+            "Open Config File…", NSMakeRect(x, btn_y, open_w, btn_h))
+        open_handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda _s: self._dispatch("settings.open_config"))
-        self._handlers.append(handler)
-        btn.setTarget_(handler)
-        btn.setAction_("fire:")
-        doc.addSubview_(btn)
+        self._handlers.append(open_handler)
+        open_btn.setTarget_(open_handler)
+        open_btn.setAction_("fire:")
+        doc.addSubview_(open_btn)
+
+        # Save sits immediately to the right of Open Config File…, same row.
+        save_w = 84
+        save_x = x + open_w + 10
+        save_btn = self._styled_save_button(
+            "Save", NSMakeRect(save_x, btn_y, save_w, btn_h))
+        save_btn.setEnabled_(True)
+        self._restyle_save_button(save_btn, True)
+        save_handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s: self._on_apply_settings())
+        self._handlers.append(save_handler)
+        save_btn.setTarget_(save_handler)
+        save_btn.setAction_("fire:")
+        doc.addSubview_(save_btn)
         return btn_y
 
     def _on_setting_toggle(self, key: str, value) -> None:
