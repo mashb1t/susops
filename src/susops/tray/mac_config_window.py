@@ -1588,9 +1588,8 @@ class ConfigWindow:
         # word reflects the boolean: "Enabled" when on, "Disabled" when off.
         _role, value, action_id = spec.toggle
         toggle_w = 40
-        toggle_h = SEARCH_H
         toggle_x = cw - toggle_w
-        toggle_y = header_top - toggle_h
+        toggle_y = header_top - 24
 
         def _on_flip(sender, aid=action_id):
             # Optimistically flip the label word so it switches immediately
@@ -1612,7 +1611,7 @@ class ConfigWindow:
         if has_switch:
             from AppKit import NSSwitch  # type: ignore[import]
             sw = NSSwitch.alloc().initWithFrame_(
-                NSMakeRect(toggle_x, toggle_y, toggle_w, toggle_h))
+                NSMakeRect(toggle_x, toggle_y, toggle_w, 22))
             sw.setState_(1 if value else 0)
             sw.setTarget_(handler)
             sw.setAction_("fire:")
@@ -1621,7 +1620,7 @@ class ConfigWindow:
         else:
             from AppKit import NSButton  # type: ignore[import]
             btn = NSButton.alloc().initWithFrame_(
-                NSMakeRect(toggle_x, toggle_y, toggle_w, toggle_h))
+                NSMakeRect(toggle_x, toggle_y, toggle_w, 22))
             try:
                 btn.setButtonType_(3)  # NSButtonTypeSwitch
             except Exception:
@@ -1635,7 +1634,7 @@ class ConfigWindow:
         # "Enabled"/"Disabled" label to the LEFT of the control, reflecting the
         # toggle state. Cached so a flip can update the word optimistically.
         lbl = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(ctrl_left - 70, toggle_y + 7, 62, 16))
+            NSMakeRect(ctrl_left - 70, toggle_y + 3, 62, 16))
         lbl.setStringValue_("Enabled" if value else "Disabled")
         lbl.setFont_(NSFont.systemFontOfSize_(11))
         lbl.setAlignment_(1)  # right
@@ -1649,7 +1648,7 @@ class ConfigWindow:
         # content column.
         if spec.toggle_note:
             note = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(cw - 360, toggle_y - 14, 360, 14))
+                NSMakeRect(cw - 360, toggle_y - 18, 360, 14))
             note.setStringValue_(spec.toggle_note)
             note.setFont_(NSFont.systemFontOfSize_(11))
             note.setAlignment_(1)  # right
