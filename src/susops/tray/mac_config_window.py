@@ -45,6 +45,7 @@ _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
 _vcenter_text_cell_cls = None
+_padded_secure_cell_cls = None
 _TEXT_CELL_FLAG_ACCESSORS = (
     ("isEditable", "setEditable_"),
     ("isSelectable", "setSelectable_"),
@@ -135,6 +136,47 @@ def _get_vcenter_text_cell_cls():
 
     _vcenter_text_cell_cls = _make_vcenter_cell_cls(NSTextFieldCell)
     return _vcenter_text_cell_cls
+
+
+def _get_padded_secure_cell_cls():
+    global _padded_secure_cell_cls
+    if _padded_secure_cell_cls is not None:
+        return _padded_secure_cell_cls
+    from Cocoa import NSSecureTextFieldCell  # type: ignore[import]
+
+    class _SusOpsPaddedSecureCell(NSSecureTextFieldCell):
+        def _insetRect_(self, frame):
+            p = float(getattr(self, "_padding", 0.0))
+            if p <= 0:
+                return frame
+            return NSMakeRect(
+                float(frame.origin.x) + p,
+                float(frame.origin.y),
+                max(1.0, float(frame.size.width) - p),
+                float(frame.size.height),
+            )
+
+        def drawInteriorWithFrame_inView_(self, frame, view):
+            objc.super(_SusOpsPaddedSecureCell, self).drawInteriorWithFrame_inView_(
+                self._insetRect_(frame), view
+            )
+
+        def selectWithFrame_inView_editor_delegate_start_length_(
+            self, frame, view, editor, delegate, start, length
+        ):
+            objc.super(_SusOpsPaddedSecureCell, self).selectWithFrame_inView_editor_delegate_start_length_(
+                self._insetRect_(frame), view, editor, delegate, start, length
+            )
+
+        def editWithFrame_inView_editor_delegate_event_(
+            self, frame, view, editor, delegate, event
+        ):
+            objc.super(_SusOpsPaddedSecureCell, self).editWithFrame_inView_editor_delegate_event_(
+                self._insetRect_(frame), view, editor, delegate, event
+            )
+
+    _padded_secure_cell_cls = _SusOpsPaddedSecureCell
+    return _padded_secure_cell_cls
 
 
 def _truncate_tail(field) -> None:
@@ -533,6 +575,7 @@ class ConfigWindow:
         # category or closing the window can discard them (and revert the logo
         # preview).
         self._settings_dirty = False
+        self._revealed_secure_tokens: set[tuple] = set()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -2118,6 +2161,7 @@ class ConfigWindow:
         frame = NSMakeRect(x, cy, ctrl_w, 22)
         secure = NSSecureTextField.alloc().initWithFrame_(frame)
         plain = NSTextField.alloc().initWithFrame_(frame)
+        token = self._secure_state_token(f.key)
         for tf in (secure, plain):
             tf.setStringValue_(str(f.value or ""))
             tf.setFont_(NSFont.systemFontOfSize_(13))
@@ -2134,12 +2178,20 @@ class ConfigWindow:
             self._style_input_field(tf)
             if tf is plain:
                 _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
+            else:
+                _apply_vcenter_cell(tf, _get_padded_secure_cell_cls(), padding=10.0)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
-        plain.setHidden_(True)
+        revealed = token in self._revealed_secure_tokens
+        plain.setHidden_(not revealed)
+        secure.setHidden_(revealed)
         # The visible field is the one collect_form_values / set_field read.
-        self._field_widgets[f.key] = secure
+        self._field_widgets[f.key] = plain if revealed else secure
         self._secure_pair[f.key] = (secure, plain)
+
+    def _secure_state_token(self, key: str) -> tuple:
+        """Stable token for preserving secure-field reveal state across rerenders."""
+        return (self.category, self._create_kind, self.selected_identity, key)
 
     def _reserve_trailing(self, card, f, x, ry, width) -> float:
         """Render f.trailing buttons right-aligned within [x, x+width] and
@@ -2169,8 +2221,11 @@ class ConfigWindow:
         ctrl_w = max(60, rx - x - 8)
         bx = rx
         for (aid, label), bw in zip(trailing, widths):
+            btn_label = label
+            if aid == "share.reveal" and self._secure_state_token(f.key) in self._revealed_secure_tokens:
+                btn_label = "Hide"
             btn = self._styled_neutral_button(
-                label, NSMakeRect(bx, btn_y, bw, btn_h))
+                btn_label, NSMakeRect(bx, btn_y, bw, btn_h))
             if aid == "share.reveal":
                 handler = _get_action_handler_cls().alloc().initWithCallback_(
                     lambda _s, key=f.key, b=btn: self._on_reveal_password(key, b))
@@ -2224,12 +2279,14 @@ class ConfigWindow:
             return
         secure, plain = pair
         showing_plain = bool(plain.isHidden()) is False
+        token = self._secure_state_token(key)
         try:
             if showing_plain:
                 secure.setStringValue_(str(plain.stringValue() or ""))
                 plain.setHidden_(True)
                 secure.setHidden_(False)
                 self._field_widgets[key] = secure
+                self._revealed_secure_tokens.discard(token)
                 btn.setAttributedTitle_(
                     self._attr_title("Reveal", _hex_color(PALETTE["input_text"])))
             else:
@@ -2237,6 +2294,7 @@ class ConfigWindow:
                 secure.setHidden_(True)
                 plain.setHidden_(False)
                 self._field_widgets[key] = plain
+                self._revealed_secure_tokens.add(token)
                 btn.setAttributedTitle_(
                     self._attr_title("Hide", _hex_color(PALETTE["input_text"])))
         except Exception:
