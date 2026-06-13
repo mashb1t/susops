@@ -1838,7 +1838,7 @@ class ConfigWindow:
                 _on_main(lambda: self._set_settings_save_feedback())
             except Exception:
                 pass
-        self._settings_save_clear_timer = threading.Timer(3.0, _clear)
+        self._settings_save_clear_timer = threading.Timer(1.0, _clear)
         self._settings_save_clear_timer.daemon = True
         self._settings_save_clear_timer.start()
 
