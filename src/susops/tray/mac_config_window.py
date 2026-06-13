@@ -350,36 +350,63 @@ def _get_row_view_cls():
     class _SusOpsRowView(NSTableRowView):
         susopsRole = "list"
 
-        def drawSelectionInRect_(self, rect):
-            if not self.isSelected():
-                return
+        def _pillRect(self):
             b = self.bounds()
             inset_y = 0.0
             inset = ROW_PILL_INSET_X
-            radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
-            # The table view can be wider than its visible column (the row view
-            # overflows the clip), which would push the pill's right edge under
-            # the next column and make it look flush. Clamp the pill to the
-            # visible clip width so it floats with an equal margin both sides.
-            width = b.size.width
+            # Keep row visuals inside the visible clip width so they never spill
+            # under the next column when the table document is wider than shown.
+            width = float(b.size.width)
             try:
                 sv = self.enclosingScrollView()
                 if sv is not None:
-                    cw = sv.contentView().bounds().size.width
+                    cw = float(sv.contentView().bounds().size.width)
                     if cw > 0:
                         width = cw
             except Exception:
                 pass
-            r = NSMakeRect(b.origin.x + inset, b.origin.y + inset_y,
-                           width - 2 * inset,
-                           b.size.height - 2 * inset_y)
-            try:
-                accent = NSColor.controlAccentColor()
-            except Exception:
-                accent = NSColor.alternateSelectedControlColor()
-            accent.set()
+            w = max(1.0, width - 2.0 * inset)
+            return NSMakeRect(
+                float(b.origin.x) + inset,
+                float(b.origin.y) + inset_y,
+                w,
+                max(1.0, float(b.size.height) - 2.0 * inset_y),
+            )
+
+        def drawBackgroundInRect_(self, dirtyRect):
+            objc.super(_SusOpsRowView, self).drawBackgroundInRect_(dirtyRect)
+            if not DEBUG_ROW_BOUNDS:
+                return
+            radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
+            r = self._pillRect()
+            fill = _hex_color("ff0000", 0.18)
+            border = _hex_color("ff4d4d", 0.95)
+            fill.set()
             path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                r, radius, radius)
+                r, radius, radius
+            )
+            path.fill()
+            border.set()
+            path.setLineWidth_(1.0)
+            path.stroke()
+
+        def drawSelectionInRect_(self, rect):
+            if not self.isSelected():
+                return
+            radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
+            r = self._pillRect()
+            # In debug mode, selected rows use the same red geometry so red fully
+            # replaces blue and overlap issues are immediately visible.
+            if DEBUG_ROW_BOUNDS:
+                _hex_color("ff0000", 0.28).set()
+            else:
+                try:
+                    NSColor.controlAccentColor().set()
+                except Exception:
+                    NSColor.alternateSelectedControlColor().set()
+            path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                r, radius, radius
+            )
             path.fill()
 
     _row_view_cls = _SusOpsRowView
@@ -399,6 +426,7 @@ SEARCH_H = 30
 ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
+DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
 # NOT stretched to the window edge. The Enabled toggle anchors to the RIGHT
@@ -1337,16 +1365,9 @@ class ConfigWindow:
         return None
 
     def _style_debug_row_cell(self, cell) -> None:
-        """Debug visual aid: show explicit row bounds."""
-        try:
-            cell.setWantsLayer_(True)
-            layer = cell.layer()
-            layer.setBackgroundColor_(_hex_color("ff0000", 0.18).CGColor())
-            layer.setBorderWidth_(1.0)
-            layer.setBorderColor_(_hex_color("ff4d4d", 0.95).CGColor())
-            layer.setCornerRadius_(4.0)
-        except Exception:
-            pass
+        """No-op: debug row bounds are painted by the row view for exact match
+        with selection geometry."""
+        return
 
     # ------------------------------------------------------------------ #
     # Add buttons (column 2 bottom)
