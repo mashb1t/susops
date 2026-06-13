@@ -2,8 +2,8 @@
 
 Layout per docs/superpowers/specs/2026-06-13-mac-tray-3col-redesign-design.md:
 column 1 = nav (categories + Settings), column 2 = global list with search +
-add buttons, column 3 = detail/editor (placeholder in Task 2, real panes in
-Tasks 3-7).
+add buttons, column 3 = detail/editor (read-only connection pane, inline
+edit/create forms for domains/forwards/shares, settings pane).
 
 Lifecycle copies _open_live_text_window in mac.py: non-modal NSWindow,
 held-open _RegularPolicyScope, close via delegate, module-level cached
@@ -1162,7 +1162,7 @@ class ConfigWindow:
         return conn_tags[0] if conn_tags else ""
 
     # ------------------------------------------------------------------ #
-    # Column 3 (placeholder in Task 2)
+    # Column 3 - detail / editor
     # ------------------------------------------------------------------ #
 
     def _render_selection_placeholder(self) -> None:
