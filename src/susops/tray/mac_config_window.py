@@ -226,10 +226,14 @@ def _get_row_view_cls():
             if not self.isSelected():
                 return
             b = self.bounds()
-            inset_x = 4.0
+            # Left inset clears the column edge; the right inset is larger so the
+            # pill's right rounded corner stays clear of the vertical scroller
+            # gutter (~15px) and is never clipped.
+            inset_left = 4.0
+            inset_right = 16.0
             inset_y = 2.0
-            r = NSMakeRect(b.origin.x + inset_x, b.origin.y + inset_y,
-                           b.size.width - 2 * inset_x,
+            r = NSMakeRect(b.origin.x + inset_left, b.origin.y + inset_y,
+                           b.size.width - (inset_left + inset_right),
                            b.size.height - 2 * inset_y)
             try:
                 accent = NSColor.controlAccentColor()
@@ -2370,7 +2374,9 @@ class ConfigWindow:
         # keep it centered as the window resizes. A small top inset below the
         # transparent titlebar avoids a large gap above "General:".
         scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
-        scroll_top_inset = TOP_INSET + 8
+        # Extra top breathing room so "General:" sits comfortably below the
+        # titlebar rather than being clipped against the top edge.
+        scroll_top_inset = TOP_INSET + 24
         avail_h = col3_h - scroll_top_inset
         # Pin the form to the TOP: when the content is shorter than the available
         # height, size the scroll to the content and place it at the top edge so
@@ -2472,9 +2478,12 @@ class ConfigWindow:
         doc.addSubview_(lbl)
 
         options = f.get("options", [])
+        # Wider per-segment width so the three logo icons have comfortable room
+        # and read as evenly spaced, not squeezed.
+        seg_w = 72
         seg_y = lbl_y - 30
         seg = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(x, seg_y, min(width, 44 * max(1, len(options)) + 8), 26))
+            NSMakeRect(x, seg_y, min(width, seg_w * max(1, len(options)) + 8), 26))
         try:
             seg.setSegmentCount_(len(options))
         except Exception:
@@ -2489,7 +2498,7 @@ class ConfigWindow:
                         seg.setImage_forSegment_(img, i)
                 if title:
                     seg.setLabel_forSegment_(str(title), i)
-                seg.setWidth_forSegment_(40, i)
+                seg.setWidth_forSegment_(seg_w, i)
             except Exception:
                 pass
         default_idx = int(f.get("default") or 0)
@@ -2567,14 +2576,18 @@ class ConfigWindow:
                 doc.addSubview_(n)
             y = row_y - 6
 
-        # Apply button left-aligned under the port fields (in the content
-        # column, next to the fields it applies - not floating at the right).
+        # Apply button accent-blue (like Save) and right-aligned under the port
+        # fields, near the right end of the field column. Settings is staged, so
+        # Apply is always enabled (it commits the staged changes).
         from Cocoa import NSMakeRect as _R  # type: ignore[import]
         btn_w = 84
         btn_h = 28
         btn_y = y - btn_h - 2
-        btn = self._styled_neutral_button(
-            "Apply", _R(x, btn_y, btn_w, btn_h))
+        btn_x = x + width - btn_w
+        btn = self._styled_save_button(
+            "Apply", _R(btn_x, btn_y, btn_w, btn_h))
+        btn.setEnabled_(True)
+        self._restyle_save_button(btn, True)
         handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda _s: self._on_apply_settings())
         self._handlers.append(handler)
