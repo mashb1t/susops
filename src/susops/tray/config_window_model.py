@@ -296,10 +296,12 @@ def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
         Action("conn.remove", "Delete…", destructive=True),
         Action("conn.test", "Test", enabled=running),
         Action("conn.restart", "Restart", enabled=running),
-        Action("conn.stop", "Stop", enabled=running),
-        Action("conn.start", "Start", enabled=not running),
-        Action("conn.save", "Save"),
     ]
+    if running:
+        actions.append(Action("conn.stop", "Stop", enabled=True))
+    else:
+        actions.append(Action("conn.start", "Start", enabled=True))
+    actions.append(Action("conn.save", "Save"))
     return DetailSpec(
         title=conn.tag,
         status_text=status_text,

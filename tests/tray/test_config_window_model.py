@@ -345,7 +345,8 @@ def test_connection_detail_running():
     assert by_label["SOCKS Port"].kind == "text"
     assert by_label["SOCKS Port"].value == "1080"
     by_id = {a.action_id: a for a in spec.actions}
-    assert by_id["conn.start"].enabled is False
+    assert "conn.start" not in by_id
+    assert "conn.stop" in by_id
     assert by_id["conn.stop"].enabled is True
     assert by_id["conn.restart"].enabled is True
     assert by_id["conn.test"].enabled is True
@@ -364,8 +365,9 @@ def test_connection_detail_stopped():
     assert spec.status_text == "stopped"
     assert spec.status_dot == "gray"
     by_id = {a.action_id: a for a in spec.actions}
+    assert "conn.start" in by_id
+    assert "conn.stop" not in by_id
     assert by_id["conn.start"].enabled is True
-    assert by_id["conn.stop"].enabled is False
     assert by_id["conn.restart"].enabled is False
     assert by_id["conn.test"].enabled is False
     assert by_id["conn.remove"].enabled is True
