@@ -45,13 +45,19 @@ _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
 _vcenter_text_cell_cls = None
+_TEXT_CELL_FLAG_ACCESSORS = (
+    ("isEditable", "setEditable_"),
+    ("isSelectable", "setSelectable_"),
+    ("isScrollable", "setScrollable_"),
+    ("wraps", "setWraps_"),
+    ("usesSingleLineMode", "setUsesSingleLineMode_"),
+    ("lineBreakMode", "setLineBreakMode_"),
+)
 
 
 def _make_vcenter_cell_cls(base_cell_cls):
     """Build a cached NSCell subclass that vertically centers text for both
     display and edit rects."""
-    import objc  # type: ignore[import]
-
     class _SusOpsVCenterCell(base_cell_cls):
         def _baseTitleRect_(self, frame):
             try:
@@ -75,8 +81,10 @@ def _make_vcenter_cell_cls(base_cell_cls):
             except Exception:
                 pass
             text_h = max(1.0, min(float(frame.size.height), float(text_h)))
-            rect.origin.y = float(frame.origin.y) + \
-                max(0.0, (float(frame.size.height) - text_h) / 2.0)
+            rect.origin.y = (
+                float(frame.origin.y)
+                + max(0.0, (float(frame.size.height) - text_h) / 2.0)
+            )
             rect.size.height = text_h
             return rect
 
@@ -215,14 +223,7 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
             pass
         # Keep old text-field behavior (single-line editable entry) so swapping
         # the cell does not fall back to a label-like top-left layout.
-        for getter, setter in (
-            ("isEditable", "setEditable_"),
-            ("isSelectable", "setSelectable_"),
-            ("isScrollable", "setScrollable_"),
-            ("wraps", "setWraps_"),
-            ("usesSingleLineMode", "setUsesSingleLineMode_"),
-            ("lineBreakMode", "setLineBreakMode_"),
-        ):
+        for getter, setter in _TEXT_CELL_FLAG_ACCESSORS:
             try:
                 getattr(cell, setter)(getattr(old, getter)())
             except Exception:
