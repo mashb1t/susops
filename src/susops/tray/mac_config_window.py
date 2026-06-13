@@ -62,9 +62,6 @@ def _make_vcenter_cell_cls(base_cell_cls, padding: float = 0.0):
     from Foundation import NSMakeRect  # type: ignore[import]
 
     class _SusOpsVCenterCell(base_cell_cls):
-        def __init__(self):
-            super().__init__()
-            self._padding = 0.0
 
         def _baseTitleRect_(self, frame):
             try:
@@ -449,7 +446,7 @@ ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 18  # extra right breathing room before row edge
 NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
 NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X + 28  # match count inset to icon inset
-DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
+DEBUG_ROW_BOUNDS = False  # temporary visual aid: draw row pills in red
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
 # NOT stretched to the window edge. The Enabled toggle anchors to the RIGHT
