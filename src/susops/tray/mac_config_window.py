@@ -44,6 +44,72 @@ _window_delegate_cls = None
 _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
+_vcenter_text_cell_cls = None
+_vcenter_secure_cell_cls = None
+_vcenter_combo_cell_cls = None
+
+
+def _make_vcenter_cell_cls(base_cell_cls):
+    """Build a cached NSCell subclass that vertically centers text for both
+    display and edit rects."""
+    import objc  # type: ignore[import]
+
+    class _SusOpsVCenterCell(base_cell_cls):
+        def _centeredRect_(self, frame):
+            rect = objc.super(_SusOpsVCenterCell, self).drawingRectForBounds_(
+                frame)
+            delta = max(0.0, (frame.size.height - rect.size.height) / 2.0)
+            rect.origin.y += delta
+            return rect
+
+        def drawingRectForBounds_(self, frame):
+            return self._centeredRect_(frame)
+
+        def selectWithFrame_inView_editor_delegate_start_length_(
+            self, frame, view, editor, delegate, start, length
+        ):
+            objc.super(_SusOpsVCenterCell, self).selectWithFrame_inView_editor_delegate_start_length_(
+                self._centeredRect_(frame), view, editor, delegate, start, length
+            )
+
+        def editWithFrame_inView_editor_delegate_event_(
+            self, frame, view, editor, delegate, event
+        ):
+            objc.super(_SusOpsVCenterCell, self).editWithFrame_inView_editor_delegate_event_(
+                self._centeredRect_(frame), view, editor, delegate, event
+            )
+
+    return _SusOpsVCenterCell
+
+
+def _get_vcenter_text_cell_cls():
+    global _vcenter_text_cell_cls
+    if _vcenter_text_cell_cls is not None:
+        return _vcenter_text_cell_cls
+    from Cocoa import NSTextFieldCell  # type: ignore[import]
+
+    _vcenter_text_cell_cls = _make_vcenter_cell_cls(NSTextFieldCell)
+    return _vcenter_text_cell_cls
+
+
+def _get_vcenter_secure_cell_cls():
+    global _vcenter_secure_cell_cls
+    if _vcenter_secure_cell_cls is not None:
+        return _vcenter_secure_cell_cls
+    from Cocoa import NSSecureTextFieldCell  # type: ignore[import]
+
+    _vcenter_secure_cell_cls = _make_vcenter_cell_cls(NSSecureTextFieldCell)
+    return _vcenter_secure_cell_cls
+
+
+def _get_vcenter_combo_cell_cls():
+    global _vcenter_combo_cell_cls
+    if _vcenter_combo_cell_cls is not None:
+        return _vcenter_combo_cell_cls
+    from Cocoa import NSComboBoxCell  # type: ignore[import]
+
+    _vcenter_combo_cell_cls = _make_vcenter_cell_cls(NSComboBoxCell)
+    return _vcenter_combo_cell_cls
 
 
 def _truncate_tail(field) -> None:
@@ -123,6 +189,24 @@ def _get_text_delegate_cls():
 
     _text_delegate_cls = _SusOpsTextDelegate
     return _SusOpsTextDelegate
+
+
+def _apply_vcenter_cell(control, cell_cls) -> None:
+    """Swap in a vertically-centered cell while preserving common text attrs."""
+    try:
+        old = control.cell()
+        cell = cell_cls.alloc().init()
+        try:
+            cell.setFont_(old.font())
+        except Exception:
+            pass
+        try:
+            cell.setPlaceholderString_(old.placeholderString())
+        except Exception:
+            pass
+        control.setCell_(cell)
+    except Exception:
+        pass
 
 
 def _get_table_ds_cls():
@@ -1730,6 +1814,7 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f.placeholder)
                 except Exception:
                     pass
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
@@ -1780,6 +1865,7 @@ class ConfigWindow:
             for opt in f.options:
                 combo.addItemWithObjectValue_(str(opt))
             combo.setStringValue_(str(f.value or ""))
+            _apply_vcenter_cell(combo, _get_vcenter_combo_cell_cls())
             self._wire_text_dirty(combo)
             # NSComboBox selection changes do not always emit text-change
             # notifications, so wire action events too.
@@ -1808,6 +1894,7 @@ class ConfigWindow:
                 tf.cell().setPlaceholderString_(f.placeholder)
             except Exception:
                 pass
+        _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
         self._style_input_field(tf)
         self._wire_text_dirty(tf)
         card.addSubview_(tf)
@@ -1841,6 +1928,10 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f.placeholder)
                 except Exception:
                     pass
+            if tf is secure:
+                _apply_vcenter_cell(tf, _get_vcenter_secure_cell_cls())
+            else:
+                _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
@@ -2623,6 +2714,7 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f["placeholder"])
                 except Exception:
                     pass
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
             doc.addSubview_(tf)
             self._settings_widgets[key] = tf
