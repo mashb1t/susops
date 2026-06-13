@@ -146,34 +146,44 @@ def _get_padded_secure_cell_cls():
     from Cocoa import NSMakeRect, NSSecureTextFieldCell  # type: ignore[import]
 
     class _SusOpsPaddedSecureCell(NSSecureTextFieldCell):
-        def _insetRect_(self, frame):
+        def _insetCenteredRect_(self, frame):
+            try:
+                rect = objc.super(_SusOpsPaddedSecureCell, self).titleRectForBounds_(frame)
+            except Exception:
+                rect = objc.super(_SusOpsPaddedSecureCell, self).drawingRectForBounds_(frame)
+            text_h = rect.size.height
+            try:
+                size = objc.super(_SusOpsPaddedSecureCell, self).cellSizeForBounds_(frame)
+                if size is not None and getattr(size, "height", 0) > 0:
+                    text_h = min(rect.size.height, float(size.height))
+            except Exception:
+                pass
+            text_h = max(1.0, min(float(frame.size.height), float(text_h)))
             p = float(getattr(self, "_padding", 0.0))
-            if p <= 0:
-                return frame
             return NSMakeRect(
-                float(frame.origin.x) + p,
-                float(frame.origin.y),
-                max(1.0, float(frame.size.width) - p),
-                float(frame.size.height),
+                float(frame.origin.x) + max(0.0, p),
+                float(frame.origin.y) + max(0.0, (float(frame.size.height) - text_h) / 2.0),
+                max(1.0, float(frame.size.width) - max(0.0, p)),
+                text_h,
             )
 
         def drawInteriorWithFrame_inView_(self, frame, view):
             objc.super(_SusOpsPaddedSecureCell, self).drawInteriorWithFrame_inView_(
-                self._insetRect_(frame), view
+                self._insetCenteredRect_(frame), view
             )
 
         def selectWithFrame_inView_editor_delegate_start_length_(
             self, frame, view, editor, delegate, start, length
         ):
             objc.super(_SusOpsPaddedSecureCell, self).selectWithFrame_inView_editor_delegate_start_length_(
-                self._insetRect_(frame), view, editor, delegate, start, length
+                self._insetCenteredRect_(frame), view, editor, delegate, start, length
             )
 
         def editWithFrame_inView_editor_delegate_event_(
             self, frame, view, editor, delegate, event
         ):
             objc.super(_SusOpsPaddedSecureCell, self).editWithFrame_inView_editor_delegate_event_(
-                self._insetRect_(frame), view, editor, delegate, event
+                self._insetCenteredRect_(frame), view, editor, delegate, event
             )
 
     _padded_secure_cell_cls = _SusOpsPaddedSecureCell
