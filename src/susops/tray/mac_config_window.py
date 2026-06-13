@@ -241,11 +241,11 @@ CONTENT_MAX_W = 540
 CONTENT_PAD = 16
 
 # Balanced inner padding for the detail card: the same inset on all four sides
-# so controls never touch any card edge. CARD_PAD_X reserves left AND right;
+# so controls never touch any card edge. CARD_PAD_X reserves left AND right.
 # CARD_PAD_Y reserves top AND bottom.
 CARD_PAD_X = 16
 CARD_PAD_Y = 14
-# Bezeled editable controls (text/secure/combo) are 22 tall; popups 24. The
+# Bezeled editable controls (text/secure/combo) are 22 tall, popups 24. The
 # label is vertically centered on this control band. CARD_LABEL_NUDGE shifts the
 # top-drawn label text down so its baseline lines up with a bezeled field's
 # inset text (a label and a field of equal frame height do NOT center the same).
@@ -2291,7 +2291,7 @@ class ConfigWindow:
                                    fr.size.width, fr.size.height))
         doc.setFrame_(NSMakeRect(0, 0, content_w, doc_h))
 
-        # Center the capped-width form horizontally; flexible left+right margins
+        # Center the capped-width form horizontally. Flexible left+right margins
         # keep it centered as the window resizes. A small top inset below the
         # transparent titlebar avoids a large gap above "General:".
         scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
