@@ -21,6 +21,7 @@ from susops.tray.config_window_model import (
     build_forward_rows,
     build_nav,
     build_share_detail,
+    build_share_form,
     build_share_rows,
     filter_rows,
 )
@@ -528,6 +529,10 @@ def test_share_detail_running_fields_and_url():
     assert ids == ["share.delete", "share.copy_url", "share.copy_password",
                    "share.stop", "share.save"]
     assert spec.actions[0].destructive is True
+    # URL row carries a Copy button; password row carries Reveal + Copy.
+    assert by_key["url"].trailing == (("share.copy_url", "Copy"),)
+    assert by_key["password"].trailing == (("share.reveal", "Reveal"),
+                                           ("share.copy_password", "Copy"))
 
 
 def test_share_detail_stopped_manual():
@@ -546,6 +551,33 @@ def test_share_detail_connection_down():
     assert spec.status_text == "connection down"
     assert spec.status_dot == "red"
     assert "share.start" in [a.action_id for a in spec.actions]
+
+
+# ---- share create form ----
+
+def test_share_form_create_mode():
+    spec = build_share_form(["work", "home"])
+    assert spec.title == "Share File"
+    assert spec.editable is True
+    assert spec.toggle is None
+    by_key = {f.key: f for f in spec.fields}
+    assert by_key["file"].kind == "path"
+    assert by_key["file"].value == ""
+    assert by_key["file"].placeholder == "Choose a file to share…"
+    assert by_key["conn_tag"].kind == "popup"
+    assert by_key["conn_tag"].options == ["work", "home"]
+    assert by_key["conn_tag"].value == "work"
+    assert by_key["password"].kind == "text"
+    assert by_key["password"].placeholder.startswith("optional")
+    assert by_key["port"].kind == "text"
+    assert by_key["port"].placeholder == "auto"
+    assert [a.action_id for a in spec.actions] == ["share.create"]
+
+
+def test_share_form_preselects_conn_tag():
+    spec = build_share_form(["work", "home"], conn_tag="home")
+    by_key = {f.key: f for f in spec.fields}
+    assert by_key["conn_tag"].value == "home"
 
 
 # ---- fetch form ----

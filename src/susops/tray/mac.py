@@ -1644,6 +1644,35 @@ def _pick_file() -> str | None:
     return str(urls[0].path())
 
 
+def _pick_save_path() -> str | None:
+    """Show an NSSavePanel and return the chosen destination path or None.
+    Same activation-policy + floating-level handling as _pick_file so the
+    panel comes up focused on a menu-extra app."""
+    from AppKit import NSFloatingWindowLevel, NSModalResponseOK  # type: ignore[import]
+    from Cocoa import NSSavePanel  # type: ignore[import]
+    panel = NSSavePanel.savePanel()
+    try:
+        panel.setLevel_(NSFloatingWindowLevel)
+    except Exception:
+        pass
+    with _RegularPolicyScope():
+        try:
+            panel.center()
+        except Exception:
+            pass
+        try:
+            panel.makeKeyAndOrderFront_(None)
+        except Exception:
+            pass
+        result = panel.runModal()
+    if result != NSModalResponseOK:
+        return None
+    url = panel.URL()
+    if url is None:
+        return None
+    return str(url.path())
+
+
 _ABOUT_WINDOWS: dict[int, dict] = {}
 
 
@@ -2040,7 +2069,8 @@ class SusOpsMacTray(AbstractTrayApp):
         search [text]: set the search field string (empty clears) + filter.
         set-field <key> <value>: write a live col-3 form widget, mark dirty.
         add: trigger the current category's primary add button (enters create
-            mode for connections/domains/forwards).
+            mode for connections/domains/forwards/shares).
+        add-fetch: enter the fetch create form (shares' secondary button).
         confirm-next <ok|cancel>: queue the answer for the next multi-button
             panel (confirms default to cancel in debug mode otherwise).
         """
@@ -2086,6 +2116,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 if args else {"error": "usage: set-field <key> <value…>"}),
             "add": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().add()),
+            "add-fetch": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().add_fetch()),
             "confirm-next": lambda args: (
                 (_DEBUG_CONFIRM_QUEUE.append(args[0]),
                  {"ok": True, "queued": args[0]})[1]
@@ -2141,9 +2173,8 @@ class SusOpsMacTray(AbstractTrayApp):
           ("forward", conn_tag, direction, src_port)
           ("share", port)
         Destructive actions confirm first. *.save routes to save_window_form
-        with the live form values. *.create routes to create_window_item.
-        fetch.run is not rendered yet (Task 6) and resolves to a quiet
-        message."""
+        with the live form values. *.create and fetch.run route to
+        create_window_item using the window's live form values."""
         # *.create is dispatched through the window's create handler, which
         # reads _create_kind + the live form values, so it has no identity.
         if action_id.endswith(".create"):
@@ -2166,8 +2197,10 @@ class SusOpsMacTray(AbstractTrayApp):
             return
 
         if action_id == "fetch.run":
-            _show_message("Not yet available",
-                          "This action is not available yet.")
+            cw = getattr(self, "_config_window", None)
+            if cw is None or cw._create_kind != "fetch":
+                return
+            self.create_window_item("fetch", cw.collect_form_values())
             return
 
         if kind == "connection":
@@ -2248,6 +2281,8 @@ class SusOpsMacTray(AbstractTrayApp):
             self._save_forward(identity, values)
         elif kind == "domain":
             self._save_domain(identity, values)
+        elif kind == "share":
+            self._save_share(identity, values)
 
     def _clear_window_dirty_and_reselect(self, new_identity: tuple) -> None:
         """Main-thread: clear the dirty flag and reselect the new identity so
@@ -2274,6 +2309,10 @@ class SusOpsMacTray(AbstractTrayApp):
             self._create_domain(values)
         elif kind == "forward":
             self._create_forward(values)
+        elif kind == "share":
+            self._create_share(values)
+        elif kind == "fetch":
+            self._run_fetch(values)
 
     def _exit_create_and_select(self, new_identity: tuple) -> None:
         """Main-thread: leave create mode, refresh, and select the new row by
@@ -2402,6 +2441,88 @@ class SusOpsMacTray(AbstractTrayApp):
 
         self.run_in_background(_work,
                                lambda r: self._after_create(r, new_identity))
+
+    def _create_share(self, values: dict) -> None:
+        from pathlib import Path
+        file_path = (values.get("file") or "").strip()
+        conn_tag = (values.get("conn_tag") or "").strip()
+        password = (values.get("password") or "").strip()
+        port_text = str(values.get("port") or "").strip()
+        if not file_path:
+            _show_message("Missing Field", "Choose a file to share.")
+            return
+        if not conn_tag:
+            _show_message("Missing Field", "Select a connection.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "Port must be between 1 and 65535.")
+                return
+            port_int = int(port_text)
+
+        def _work():
+            try:
+                info = self.manager.share(
+                    Path(file_path), conn_tag,
+                    password=password or None,
+                    port=port_int or None)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True, "port": info.port}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Share Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._exit_create_and_select(("share", result["port"]))
+
+        self.run_in_background(_work, _done)
+
+    def _run_fetch(self, values: dict) -> None:
+        from pathlib import Path
+        conn_tag = (values.get("conn_tag") or "").strip()
+        password = (values.get("password") or "").strip()
+        port_text = str(values.get("port") or "").strip()
+        outfile = (values.get("output") or "").strip()
+        if not conn_tag:
+            _show_message("Missing Field", "Select a connection.")
+            return
+        if not port_text.isdigit() or not validate_port(int(port_text)):
+            _show_message("Invalid Port",
+                          "Port must be between 1 and 65535.")
+            return
+        if not password:
+            _show_message("Missing Field", "Password must not be empty.")
+            return
+        port_int = int(port_text)
+
+        def _work():
+            try:
+                out = Path(outfile) if outfile else None
+                path = self.manager.fetch(
+                    port=port_int, password=password,
+                    conn_tag=conn_tag, outfile=out)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True, "path": str(path)}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Fetch Failed", result["error"])
+                self._refresh_config_window()
+                return
+            # Fetch is an action, not a persistent item: leave create mode back
+            # to the shares list and report the saved path.
+            cw = getattr(self, "_config_window", None)
+            if cw is not None:
+                cw.exit_create_mode()
+            _show_message("Download Complete", f"Saved to {result['path']}")
+            self._refresh_config_window()
+
+        self.run_in_background(_work, _done)
 
     def _after_create(self, result, new_identity: tuple) -> None:
         """Main-thread create callback. Error -> alert, form stays open with its
@@ -2541,6 +2662,62 @@ class SusOpsMacTray(AbstractTrayApp):
 
         self.run_in_background(_work, _done)
 
+    def _save_share(self, identity: tuple, values: dict) -> None:
+        from pathlib import Path
+        _, old_port = identity
+        new_port_text = str(values.get("port") or "").strip()
+        new_password = (values.get("password") or "").strip()
+        if not new_port_text.isdigit() or not validate_port(int(new_port_text)):
+            _show_message("Invalid Port",
+                          "Port must be a number between 1 and 65535.")
+            return
+        new_port = int(new_port_text)
+
+        def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker. The
+            # old share is captured so rollback can re-share it verbatim.
+            info = next((s for s in self.manager.list_shares()
+                         if s.port == old_port), None)
+            if info is None:
+                return {"error": "The share no longer exists. "
+                                 "Reopen the window."}
+            old_pw = info.password
+            file_path = info.file_path
+            conn_tag = info.conn_tag
+            new_pw = new_password or old_pw
+            if not conn_tag:
+                return {"error": "This share has no connection configured."}
+            try:
+                # delete_share stops the server and removes the config entry in
+                # one call (it calls stop_share internally).
+                self.manager.delete_share(old_port)
+            except Exception as exc:
+                return {"error": f"Could not remove old share: {exc}"}
+            try:
+                self.manager.share(Path(file_path), conn_tag,
+                                   password=new_pw, port=new_port)
+            except Exception as exc:
+                # Rollback: re-share the original file on its old port/password.
+                # A rollback failure is reported, never swallowed.
+                try:
+                    self.manager.share(Path(file_path), conn_tag,
+                                       password=old_pw, port=old_port)
+                except Exception as exc2:
+                    return {"error": f"Could not save share: {exc}. "
+                                     f"WARNING: the original share could "
+                                     f"not be restored: {exc2}"}
+                return {"error": f"Could not save share: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(("share", new_port))
+
+        self.run_in_background(_work, _done)
+
     # ---- save helpers (RPC + config lookups) ----
 
     def _remove_forward_rpc(self, direction: str, src_port: int) -> None:
@@ -2570,6 +2747,13 @@ class SusOpsMacTray(AbstractTrayApp):
         if conn is None:
             return False
         return host in (getattr(conn, "pac_hosts_disabled", []) or [])
+
+    def pick_path_for_window(self, *, save: bool = False) -> str | None:
+        """Window hook: open the file picker (NSOpenPanel) or, when save=True,
+        a save panel (fetch output). Runs on the main thread - the window's
+        button handler dispatch path already runs there, and the debug action
+        path marshals via _run_on_main. Returns the chosen path or None."""
+        return _pick_save_path() if save else _pick_file()
 
     def _copy_to_pasteboard(self, text: str) -> None:
         """Put text on the general pasteboard. AppKit on the main thread.

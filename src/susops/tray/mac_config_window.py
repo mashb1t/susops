@@ -20,10 +20,12 @@ from susops.tray.config_window_model import (
     build_connection_rows,
     build_domain_form,
     build_domain_rows,
+    build_fetch_form,
     build_forward_form,
     build_forward_rows,
     build_nav,
     build_share_detail,
+    build_share_form,
     build_share_rows,
     filter_rows,
 )
@@ -282,6 +284,7 @@ class ConfigWindow:
         self._dirty = False
         self._field_widgets: dict = {}   # field key -> widget (live col-3 form)
         self._field_kinds: dict = {}     # field key -> FormField.kind
+        self._secure_pair: dict = {}     # field key -> (secure, plain) fields
         self._save_button = None         # cached Save NSButton (enable on dirty)
         self._dirty_identity = None      # identity the dirty form belongs to
         # Create mode: "connection" | "domain" | "forward" or None. While set,
@@ -1029,11 +1032,7 @@ class ConfigWindow:
         return []  # settings
 
     def _on_add_clicked(self, kind: str) -> None:
-        if kind in ("connection", "domain", "forward"):
-            self.enter_create_mode(kind)
-        else:
-            # Shares + fetch create forms land in Task 6.
-            self._render_col3_placeholder("Create form lands in Task 6.")
+        self.enter_create_mode(kind)
 
     # ------------------------------------------------------------------ #
     # Create mode
@@ -1042,7 +1041,11 @@ class ConfigWindow:
     def enter_create_mode(self, kind: str) -> None:
         """Show the inline create form for `kind` in column 3. Clears the col-2
         selection (under suppression) so no edit form competes with it. A dirty
-        create form is guarded by the discard confirm exactly like an edit."""
+        create form is guarded by the discard confirm exactly like an edit.
+
+        kind in ("connection", "domain", "forward", "share", "fetch"). Fetch is
+        not a persistent item but reuses the create-form machinery (Fetch button
+        + Cancel)."""
         if self._dirty and not self._confirm_discard():
             return
         # Capture the highlighted row's conn tag BEFORE clearing the selection
@@ -1087,13 +1090,17 @@ class ConfigWindow:
             except Exception:
                 ssh_hosts = []
             return build_connection_form(ssh_hosts)
-        # Domain/forward need a connection.
+        # Domain/forward/share/fetch need a connection.
         if not conn_tags:
             return None
         if kind == "domain":
             return build_domain_form(conn_tags, conn_tag=preselect)
         if kind == "forward":
             return build_forward_form(conn_tags, conn_tag=preselect)
+        if kind == "share":
+            return build_share_form(conn_tags, conn_tag=preselect)
+        if kind == "fetch":
+            return build_fetch_form(conn_tags)
         return None
 
     def _preselected_conn_tag(self, conn_tags):
@@ -1207,6 +1214,7 @@ class ConfigWindow:
         del self._handlers[self._permanent_handler_count:]
         self._field_widgets = {}
         self._field_kinds = {}
+        self._secure_pair = {}
         self._save_button = None
 
     def _content_column(self):
@@ -1474,7 +1482,11 @@ class ConfigWindow:
 
     def _make_control(self, card, f, x, ry, width) -> None:
         """Instantiate the editable control for FormField f, cache it under its
-        key, and wire dirty tracking. Field height/baseline aligns to ry."""
+        key, and wire dirty tracking. Field height/baseline aligns to ry.
+
+        Trailing affordances reduce the control width: path fields get a
+        Choose… button (file picker); fields with f.trailing get Copy/Reveal
+        buttons (share URL/password)."""
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
             NSColor,
@@ -1486,11 +1498,40 @@ class ConfigWindow:
         )
         kind = f.kind
         self._field_kinds[f.key] = kind
-        if kind in ("static", "path"):
-            # Static-rendered even in editable forms (e.g. share file/url/url).
+        if kind == "path":
+            # Editable-looking text showing the chosen path (set via Choose… or
+            # the debug set-field). Cached so collect_form_values reads it.
+            choose_w = 84
+            ctrl_w = max(60, width - choose_w - 8)
+            tf = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(x, ry - 3, ctrl_w, 22))
+            tf.setStringValue_(str(f.value or ""))
+            tf.setFont_(NSFont.systemFontOfSize_(13))
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(True)
+            tf.setSelectable_(True)
+            tf.setTextColor_(_hex_color(PALETTE["input_text"]))
+            if f.placeholder:
+                try:
+                    tf.cell().setPlaceholderString_(f.placeholder)
+                except Exception:
+                    pass
+            self._style_input_field(tf)
+            self._wire_text_dirty(tf)
+            card.addSubview_(tf)
+            self._field_widgets[f.key] = tf
+            self._render_choose_button(card, f, x + ctrl_w + 8, ry - 3,
+                                       choose_w)
+            return
+        # Reserve space at the right for any trailing buttons (Copy/Reveal),
+        # then render the control in the remaining width.
+        ctrl_w = self._reserve_trailing(card, f, x, ry, width)
+        if kind == "static":
+            # Static read-only text (e.g. share file/url/downloads).
             text = self._static_value_text(f)
             val = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(x, ry, width, 18))
+                NSMakeRect(x, ry, ctrl_w, 18))
             val.setStringValue_(text)
             val.setFont_(NSFont.systemFontOfSize_(13))
             val.setBezeled_(False)
@@ -1507,7 +1548,7 @@ class ConfigWindow:
         cy = ry - 3  # nudge taller bezeled controls to align baselines
         if kind == "popup":
             popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-                NSMakeRect(x, cy, width, 24), False)
+                NSMakeRect(x, cy, ctrl_w, 24), False)
             for opt in f.options:
                 popup.addItemWithTitle_(str(opt))
             if f.value:
@@ -1522,7 +1563,7 @@ class ConfigWindow:
             return
         if kind == "combo":
             combo = NSComboBox.alloc().initWithFrame_(
-                NSMakeRect(x, cy, width, 24))
+                NSMakeRect(x, cy, ctrl_w, 24))
             for opt in f.options:
                 combo.addItemWithObjectValue_(str(opt))
             combo.setStringValue_(str(f.value or ""))
@@ -1530,9 +1571,11 @@ class ConfigWindow:
             card.addSubview_(combo)
             self._field_widgets[f.key] = combo
             return
-        # text / secure
-        cls = NSSecureTextField if kind == "secure" else NSTextField
-        tf = cls.alloc().initWithFrame_(NSMakeRect(x, cy, width, 22))
+        if kind == "secure":
+            self._make_secure_control(card, f, x, cy, ctrl_w)
+            return
+        # text
+        tf = NSTextField.alloc().initWithFrame_(NSMakeRect(x, cy, ctrl_w, 22))
         tf.setStringValue_(str(f.value or ""))
         tf.setFont_(NSFont.systemFontOfSize_(13))
         tf.setBezeled_(False)
@@ -1549,6 +1592,134 @@ class ConfigWindow:
         self._wire_text_dirty(tf)
         card.addSubview_(tf)
         self._field_widgets[f.key] = tf
+
+    def _make_secure_control(self, card, f, x, cy, ctrl_w) -> None:
+        """A secure password control with a Reveal toggle: two stacked fields
+        (NSSecureTextField masked + NSTextField plain) sharing one frame, one
+        hidden. Reveal swaps which is visible (syncing the value first). The
+        VISIBLE field is cached under f.key; collect_form_values reads whichever
+        is showing."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSMakeRect,
+            NSSecureTextField,
+            NSTextField,
+        )
+        frame = NSMakeRect(x, cy, ctrl_w, 22)
+        secure = NSSecureTextField.alloc().initWithFrame_(frame)
+        plain = NSTextField.alloc().initWithFrame_(frame)
+        for tf in (secure, plain):
+            tf.setStringValue_(str(f.value or ""))
+            tf.setFont_(NSFont.systemFontOfSize_(13))
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(True)
+            tf.setSelectable_(True)
+            tf.setTextColor_(_hex_color(PALETTE["input_text"]))
+            if f.placeholder:
+                try:
+                    tf.cell().setPlaceholderString_(f.placeholder)
+                except Exception:
+                    pass
+            self._style_input_field(tf)
+            self._wire_text_dirty(tf)
+            card.addSubview_(tf)
+        plain.setHidden_(True)
+        # The visible field is the one collect_form_values / set_field read.
+        self._field_widgets[f.key] = secure
+        self._secure_pair[f.key] = (secure, plain)
+
+    def _reserve_trailing(self, card, f, x, ry, width) -> float:
+        """Render f.trailing buttons right-aligned within [x, x+width] and
+        return the control width remaining on the left. share.reveal is a local
+        toggle; every other trailing id dispatches via the tray. Empty trailing
+        returns the full width."""
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        trailing = list(getattr(f, "trailing", ()) or ())
+        if not trailing:
+            return width
+        gap = 6
+        btn_h = 22
+        # Lay buttons out from the right edge leftward, preserving spec order
+        # left-to-right.
+        widths = [max(48, 18 + 8 * len(label)) for _aid, label in trailing]
+        total = sum(widths) + gap * (len(widths) - 1)
+        rx = x + width - total
+        ctrl_w = max(60, rx - x - 8)
+        bx = rx
+        for (aid, label), bw in zip(trailing, widths):
+            btn = self._styled_neutral_button(
+                label, NSMakeRect(bx, ry - 3, bw, btn_h))
+            if aid == "share.reveal":
+                handler = _get_action_handler_cls().alloc().initWithCallback_(
+                    lambda _s, key=f.key, b=btn: self._on_reveal_password(key, b))
+            else:
+                handler = _get_action_handler_cls().alloc().initWithCallback_(
+                    lambda _s, a=aid: self._dispatch(a))
+            self._handlers.append(handler)
+            btn.setTarget_(handler)
+            btn.setAction_("fire:")
+            card.addSubview_(btn)
+            bx += bw + gap
+        return ctrl_w
+
+    def _render_choose_button(self, card, f, x, ry, width) -> None:
+        """A Choose… button beside a path field; opens a file/save panel via the
+        tray and writes the result into the path field, marking dirty."""
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        btn = self._styled_neutral_button(
+            "Choose…", NSMakeRect(x, ry, width, 22))
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s, key=f.key: self._on_choose_path(key))
+        self._handlers.append(handler)
+        btn.setTarget_(handler)
+        btn.setAction_("fire:")
+        card.addSubview_(btn)
+
+    def _on_choose_path(self, key: str) -> None:
+        """Open the file picker (save panel for the fetch output) on the main
+        thread, then write the chosen path into the field + mark dirty."""
+        save = key == "output"
+        try:
+            path = self.tray.pick_path_for_window(save=save)
+        except Exception:
+            path = None
+        if not path:
+            return
+        w = self._field_widgets.get(key)
+        if w is not None:
+            try:
+                w.setStringValue_(str(path))
+            except Exception:
+                pass
+            self._mark_dirty()
+
+    def _on_reveal_password(self, key: str, btn) -> None:
+        """Toggle the masked/plain password fields. Syncs the value from the
+        currently-visible field to the other, then swaps visibility and the
+        cached widget so collect_form_values reads the shown field."""
+        pair = self._secure_pair.get(key)
+        if pair is None:
+            return
+        secure, plain = pair
+        showing_plain = bool(plain.isHidden()) is False
+        try:
+            if showing_plain:
+                secure.setStringValue_(str(plain.stringValue() or ""))
+                plain.setHidden_(True)
+                secure.setHidden_(False)
+                self._field_widgets[key] = secure
+                btn.setAttributedTitle_(
+                    self._attr_title("Reveal", _hex_color(PALETTE["input_text"])))
+            else:
+                plain.setStringValue_(str(secure.stringValue() or ""))
+                secure.setHidden_(True)
+                plain.setHidden_(False)
+                self._field_widgets[key] = plain
+                btn.setAttributedTitle_(
+                    self._attr_title("Hide", _hex_color(PALETTE["input_text"])))
+        except Exception:
+            pass
 
     def _style_input_field(self, tf) -> None:
         """Layer-style an editable text/secure field to the mockup palette: fill
@@ -1727,14 +1898,17 @@ class ConfigWindow:
         btn_h = 30
         row_y = top_y - btn_h
 
-        # Create mode: a primary Create button (styled like Save, but ALWAYS
-        # enabled) + a neutral Cancel to its right, both right-aligned. No
-        # destructive button.
+        # Create mode: a primary Create/Fetch button (styled like Save, but
+        # ALWAYS enabled) + a neutral Cancel to its right, both right-aligned.
+        # No destructive button. Fetch reuses the same row (its action is
+        # fetch.run, not *.create).
         if self._create_kind is not None:
-            create = next((a for a in spec.actions
-                           if a.action_id.endswith(".create")), None)
-            if create is not None:
-                self._render_create_action_row(create, container, cw, row_y, btn_h)
+            primary = next((a for a in spec.actions
+                            if a.action_id.endswith(".create")
+                            or a.action_id == "fetch.run"), None)
+            if primary is not None:
+                self._render_create_action_row(primary, container, cw, row_y,
+                                               btn_h)
                 return
 
         # Save starts disabled until the form is dirty.
@@ -1980,21 +2154,39 @@ class ConfigWindow:
 
     def add(self) -> dict:
         """Debug: trigger the current category's primary add button, entering
-        create mode. Errors for categories without an inline create form yet."""
+        create mode. For shares the primary button is + Share File…."""
         specs = self._add_button_specs()
         if not specs:
             return {"error": f"no add button for category '{self.category}'"}
         kind = specs[0][1]
-        if kind not in ("connection", "domain", "forward"):
-            return {"error": f"inline create not available for '{kind}'"}
         self.enter_create_mode(kind)
+        if self._create_kind is None:
+            return {"error": f"could not enter create mode for '{kind}'"}
+        return {"ok": True, "create_kind": self._create_kind}
+
+    def add_fetch(self) -> dict:
+        """Debug: enter the fetch create form (the secondary shares button).
+        Fetch is an action, not a persistent item, but reuses create mode."""
+        self.enter_create_mode("fetch")
+        if self._create_kind is None:
+            return {"error": "could not enter fetch create mode"}
         return {"ok": True, "create_kind": self._create_kind}
 
     def set_field(self, key: str, value: str) -> dict:
         """Debug: write a value into a live col-3 form widget and mark dirty,
-        exactly as a user edit would. Returns the field's new dump value."""
+        exactly as a user edit would. Returns the field's new dump value.
+
+        `path` is an alias for the form's single path-kind field (the share
+        File / fetch Output) so tests can inject a path without the NSOpenPanel.
+        """
         if key == "protocols":
             return self._set_protocols(value)
+        if key == "path":
+            path_keys = [k for k, kind in self._field_kinds.items()
+                         if kind == "path"]
+            if not path_keys:
+                return {"error": "no path field in current form"}
+            key = path_keys[0]
         w = self._field_widgets.get(key)
         if w is None:
             return {"error": f"no field '{key}' in current form"}
