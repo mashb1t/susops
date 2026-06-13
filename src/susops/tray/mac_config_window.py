@@ -425,7 +425,7 @@ SIDEBAR_TOP_INSET = 23  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
 ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
-ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
+ROW_TEXT_RIGHT_PAD = 18  # extra right breathing room before row edge
 NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
 NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X + 28  # match count inset to icon inset
 DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
@@ -569,7 +569,6 @@ class ConfigWindow:
             NSWindow,
             NSWindowStyleMaskClosable,
             NSWindowStyleMaskFullSizeContentView,
-            NSWindowStyleMaskResizable,
             NSWindowStyleMaskTitled,
             NSWindowTitleVisible,
         )
@@ -580,7 +579,6 @@ class ConfigWindow:
         )
 
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                 | NSWindowStyleMaskResizable
                  | NSWindowStyleMaskFullSizeContentView)
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
@@ -763,6 +761,7 @@ class ConfigWindow:
                 COL2_W - 2 * ROW_PILL_INSET_X,
                 SEARCH_H,
             )
+        )
         sf.setAutoresizingMask_(2 | 8)  # WidthSizable | MinYMargin
         sf_handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda sender: self._on_search(str(sender.stringValue() or "")))
@@ -1173,7 +1172,7 @@ class ConfigWindow:
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setTextColor_(NSColor.labelColor())
-        _truncate_tail(title)
+        # _truncate_tail(title)
         cell.addSubview_(title)
         if item.count is not None:
             # Sit inside the selection pill (which floats inset ~9px from the
