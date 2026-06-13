@@ -45,6 +45,7 @@ _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
 _vcenter_text_cell_cls = None
+_vcenter_secure_cell_cls = None
 _TEXT_CELL_FLAG_ACCESSORS = (
     ("isEditable", "setEditable_"),
     ("isSelectable", "setSelectable_"),
@@ -135,6 +136,16 @@ def _get_vcenter_text_cell_cls():
 
     _vcenter_text_cell_cls = _make_vcenter_cell_cls(NSTextFieldCell)
     return _vcenter_text_cell_cls
+
+
+def _get_vcenter_secure_cell_cls():
+    global _vcenter_secure_cell_cls
+    if _vcenter_secure_cell_cls is not None:
+        return _vcenter_secure_cell_cls
+    from Cocoa import NSSecureTextFieldCell  # type: ignore[import]
+
+    _vcenter_secure_cell_cls = _make_vcenter_cell_cls(NSSecureTextFieldCell)
+    return _vcenter_secure_cell_cls
 
 
 def _truncate_tail(field) -> None:
@@ -2132,7 +2143,10 @@ class ConfigWindow:
                 except Exception:
                     pass
             self._style_input_field(tf)
-            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
+            if tf is secure:
+                _apply_vcenter_cell(tf, _get_vcenter_secure_cell_cls(), padding=10.0)
+            else:
+                _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
         plain.setHidden_(True)
