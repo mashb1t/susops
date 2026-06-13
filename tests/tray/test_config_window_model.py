@@ -340,7 +340,7 @@ def test_connection_detail_running():
     by_label = {f.label: f for f in spec.fields}
     assert by_label["Tag"].kind == "text"
     assert by_label["Tag"].value == "work"
-    assert by_label["SSH Host"].kind == "text"
+    assert by_label["SSH Host"].kind == "combo"
     assert by_label["SSH Host"].value == "user@bastion"
     assert by_label["SOCKS Port"].kind == "text"
     assert by_label["SOCKS Port"].value == "1080"
@@ -393,7 +393,7 @@ def test_connection_detail_editable_with_save():
     by_key = {f.key: f for f in spec.fields}
     assert set(by_key) >= {"tag", "ssh_host", "socks_port"}
     assert by_key["tag"].kind == "text"
-    assert by_key["ssh_host"].kind == "text"
+    assert by_key["ssh_host"].kind == "combo"
     assert by_key["socks_port"].kind == "text"
     by_id = {a.action_id: a for a in spec.actions}
     assert "conn.save" in by_id

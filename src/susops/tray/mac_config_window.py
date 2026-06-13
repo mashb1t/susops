@@ -109,6 +109,18 @@ def _get_text_delegate_cls():
             except Exception:
                 pass
 
+        def comboBoxSelectionDidChange_(self, _note):
+            try:
+                self._cb()
+            except Exception:
+                pass
+
+        def comboBoxSelectionIsChanging_(self, _note):
+            try:
+                self._cb()
+            except Exception:
+                pass
+
     _text_delegate_cls = _SusOpsTextDelegate
     return _SusOpsTextDelegate
 
@@ -263,7 +275,7 @@ def _get_row_view_cls():
 
 
 # ---- geometry ----
-WIN_W = 1080
+WIN_W = 1024
 WIN_H = 640
 MIN_W = 980
 MIN_H = 560
@@ -1305,7 +1317,12 @@ class ConfigWindow:
             if conn is None:
                 return None
             st = self._status_for(identity[1])
-            return build_connection_detail(conn, st)
+            try:
+                from susops.tray.base import get_ssh_hosts
+                ssh_hosts = get_ssh_hosts()
+            except Exception:
+                ssh_hosts = []
+            return build_connection_detail(conn, st, ssh_hosts)
         if kind == "domain":
             _, conn_tag, host = identity
             conn = self._conn_by_tag(conn_tag)
@@ -1764,6 +1781,13 @@ class ConfigWindow:
                 combo.addItemWithObjectValue_(str(opt))
             combo.setStringValue_(str(f.value or ""))
             self._wire_text_dirty(combo)
+            # NSComboBox selection changes do not always emit text-change
+            # notifications, so wire action events too.
+            handler = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s: self._mark_dirty())
+            self._handlers.append(handler)
+            combo.setTarget_(handler)
+            combo.setAction_("fire:")
             card.addSubview_(combo)
             self._field_widgets[f.key] = combo
             return
@@ -2244,6 +2268,18 @@ class ConfigWindow:
                 return str(w.titleOfSelectedItem() or "")
             except Exception:
                 return ""
+        if kind == "combo":
+            try:
+                value = str(w.stringValue() or "")
+                if value:
+                    return value
+            except Exception:
+                pass
+            try:
+                selected = w.objectValueOfSelectedItem()
+                return "" if selected is None else str(selected)
+            except Exception:
+                return ""
         try:
             return str(w.stringValue() or "")
         except Exception:
@@ -2362,7 +2398,7 @@ class ConfigWindow:
 
         def _section_label(title, sy):
             lbl = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(label_x, sy, label_w, 18))
+                NSMakeRect(label_x, sy - 18, label_w, 18))
             lbl.setStringValue_(title)
             lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
             lbl.setAlignment_(NSTextAlignmentRight)
