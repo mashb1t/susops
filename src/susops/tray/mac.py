@@ -2937,12 +2937,15 @@ class SusOpsMacTray(AbstractTrayApp):
             return self._apply_server_ports(rpc, sse, pac, ctx)
 
         def _done(err):
+            cw = getattr(self, "_config_window", None)
             if err:
+                if cw is not None:
+                    cw.mark_settings_save_failed()
                 self.show_alert("Could Not Apply Settings", err)
                 return
-            cw = getattr(self, "_config_window", None)
             if cw is not None:
                 cw.clear_settings_dirty()
+                cw.mark_settings_saved()
                 cw.refresh()
         self.run_in_background(_work, _done)
 

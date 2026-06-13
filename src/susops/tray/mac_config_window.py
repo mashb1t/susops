@@ -633,6 +633,9 @@ class ConfigWindow:
         self._settings_widgets: dict = {}   # field key -> control
         self._settings_kinds: dict = {}     # field key -> kind
         self._settings_ctx: dict = {}       # ctx from settings_field_specs
+        self._settings_status_label = None  # tiny status text next to Save
+        self._settings_save_message = ""
+        self._settings_save_error = False
         # Settings staging: all settings changes are staged locally and only
         # persist on Apply. _settings_dirty tracks pending edits so leaving the
         # category or closing the window can discard them (and revert the logo
@@ -1786,6 +1789,32 @@ class ConfigWindow:
         self._header_toggle_label = None
         self._settings_widgets = {}
         self._settings_kinds = {}
+        self._settings_status_label = None
+
+    def _set_settings_save_feedback(self, message: str = "", *, is_error: bool = False) -> None:
+        """Update the settings Save feedback state and repaint the inline label
+        when it exists."""
+        from Cocoa import NSColor  # type: ignore[import]
+
+        self._settings_save_message = str(message or "")
+        self._settings_save_error = bool(is_error)
+        lbl = self._settings_status_label
+        if lbl is None:
+            return
+        lbl.setStringValue_(self._settings_save_message)
+        if not self._settings_save_message:
+            lbl.setTextColor_(NSColor.tertiaryLabelColor())
+            return
+        if self._settings_save_error:
+            lbl.setTextColor_(NSColor.systemRedColor())
+            return
+        lbl.setTextColor_(NSColor.systemGreenColor())
+
+    def mark_settings_saved(self) -> None:
+        self._set_settings_save_feedback("Saved", is_error=False)
+
+    def mark_settings_save_failed(self) -> None:
+        self._set_settings_save_feedback("Save failed", is_error=True)
 
     def _content_column(self):
         """Create the content column: a fixed CONTENT_MAX_W view anchored
@@ -3079,7 +3108,8 @@ class ConfigWindow:
         single row. Save commits ALL staged settings (toggles + logo + login +
         ports); it is always enabled. Open Config File opens the YAML in
         $EDITOR."""
-        from Cocoa import NSMakeRect  # type: ignore[import]
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
         btn_h = 28
         # Match the button baseline to the section-label baseline used in
         # _section_label (label frame origin: section_top - 20, height: 18).
@@ -3108,6 +3138,26 @@ class ConfigWindow:
         save_btn.setTarget_(save_handler)
         save_btn.setAction_("fire:")
         doc.addSubview_(save_btn)
+
+        # Inline save feedback gives immediate visual confirmation without
+        # requiring another dialog.
+        status_x = save_x + save_w + 12
+        status_w = max(80, width - (status_x - x))
+        status = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(status_x, btn_y + 5, status_w, 16))
+        status.setStringValue_("")
+        status.setFont_(NSFont.systemFontOfSize_(11))
+        status.setBezeled_(False)
+        status.setDrawsBackground_(False)
+        status.setEditable_(False)
+        status.setSelectable_(False)
+        status.setTextColor_(NSColor.tertiaryLabelColor())
+        doc.addSubview_(status)
+        self._settings_status_label = status
+        self._set_settings_save_feedback(
+            self._settings_save_message,
+            is_error=self._settings_save_error,
+        )
         # Keep the section height consistent with other rows.
         return btn_y - 6
 
@@ -3116,6 +3166,7 @@ class ConfigWindow:
         Marks the settings pane dirty. For logo_style, show a LIVE icon preview
         (reverted on leave/close without Apply)."""
         self._settings_dirty = True
+        self._set_settings_save_feedback()
         if key == "logo_style":
             try:
                 self.tray.preview_logo_style(int(value))
@@ -3131,7 +3182,7 @@ class ConfigWindow:
         try:
             self.tray.apply_all_settings(values)
         except Exception:
-            pass
+            self.mark_settings_save_failed()
 
     def discard_settings(self) -> None:
         """Drop all staged settings changes: revert any logo icon preview to the
@@ -3189,6 +3240,7 @@ class ConfigWindow:
         except Exception:
             return {"error": f"could not set '{key}'"}
         self._settings_dirty = True
+        self._set_settings_save_feedback()
         return {"ok": True, "key": key, "value": value}
 
     def clear_settings_dirty(self) -> None:
@@ -3226,6 +3278,8 @@ class ConfigWindow:
             "settings": (self._settings_values()
                          if self.category == "settings" else None),
             "settings_dirty": bool(getattr(self, "_settings_dirty", False)),
+            "settings_save_message": str(getattr(self, "_settings_save_message", "")),
+            "settings_save_error": bool(getattr(self, "_settings_save_error", False)),
             "fields": self._dump_fields(),
             # Cumulative auto-answered modal panels (debug mode) so tests can
             # assert no unexpected dialog fired.
