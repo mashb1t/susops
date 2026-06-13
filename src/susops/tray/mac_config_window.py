@@ -111,7 +111,7 @@ def _make_vcenter_cell_cls(base_cell_cls, padding: float = 0.0):
 
         def drawInteriorWithFrame_inView_(self, frame, view):
             objc.super(_SusOpsVCenterCell, self).drawInteriorWithFrame_inView_(
-                self._centeredRect_(frame), view)
+                frame, view)
 
         def selectWithFrame_inView_editor_delegate_start_length_(
             self, frame, view, editor, delegate, start, length
