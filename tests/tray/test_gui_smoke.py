@@ -396,8 +396,10 @@ def test_inline_create_share(tray_proc):
 
 
 def test_share_detail_copy_actions(tray_proc):
-    """A selected share exposes copy_url + copy_password + delete actions, and
-    share.copy_url writes the URL to the system pasteboard."""
+    """The Copy URL / Copy Password buttons live ONLY as inline trailing
+    buttons on the URL + password rows (not in the action row, which is just
+    [Delete…] [Save]). The inline share.copy_url still writes the URL to the
+    system pasteboard."""
     from pathlib import Path
 
     from susops.client import SusOpsClient
@@ -417,9 +419,13 @@ def test_share_detail_copy_actions(tray_proc):
     assert sel.get("ok"), sel
     assert sel["selected"] == ["share", info.port]
     dump = tray_proc.send("dump-window")
-    for aid in ("share.copy_url", "share.copy_password", "share.delete"):
-        assert aid in dump["detail_actions"], dump["detail_actions"]
+    # The action row is [Delete…] [Save] - the Copy buttons are NOT here.
+    assert "share.delete" in dump["detail_actions"], dump["detail_actions"]
+    assert "share.copy_url" not in dump["detail_actions"], dump["detail_actions"]
+    assert "share.copy_password" not in dump["detail_actions"], (
+        dump["detail_actions"])
 
+    # The inline Copy button on the URL row still dispatches share.copy_url.
     assert tray_proc.send("action share.copy_url").get("ok")
     # Read the pasteboard back in-process to assert the URL string landed.
     out = subprocess.run(["pbpaste"], capture_output=True, text=True)
@@ -545,8 +551,9 @@ def test_settings_pane_renders_and_hides_list(tray_proc):
         assert key in settings, f"missing settings key {key}"
 
 
-def test_settings_toggle_instant_apply(tray_proc):
-    """Flipping a toggle persists to app_config immediately — no Apply."""
+def test_settings_staged_until_apply(tray_proc):
+    """A toggle flip is STAGED, not persisted: config is unchanged until the
+    user clicks Apply, then all staged changes persist."""
     from susops.client import SusOpsClient
     c = SusOpsClient(workspace=tray_proc.workspace)
     assert tray_proc.send("open-config settings").get("ok")
@@ -555,23 +562,70 @@ def test_settings_toggle_instant_apply(tray_proc):
         lambda d: d.get("col2_hidden") is True and d.get("settings"),
     )
     before = c.list_config().susops_app.notifications_enabled
-    # Flip notifications to the opposite of its current value via set-field;
-    # the window applies it instantly (no settings.apply action).
+    # Flip notifications via set-field; this only STAGES the change.
     target = "off" if before else "on"
     res = tray_proc.send(f"set-field notifications {target}")
     assert res.get("ok"), res
+    # The widget reflects the staged value and the pane is dirty.
+    dump = tray_proc.send("dump-window")
+    assert dump["settings"]["notifications"] == (not before)
+    assert dump["settings_dirty"] is True
+    # But config is NOT changed - nothing persisted before Apply. Give the
+    # daemon a beat to prove no write happened.
+    import time
+    time.sleep(1.0)
+    assert c.list_config().susops_app.notifications_enabled == before
+    # Apply commits the staged toggle.
+    assert tray_proc.send("action settings.apply").get("ok")
     after = _wait_for(
         lambda: c.list_config().susops_app.notifications_enabled,
         lambda v: v == (not before),
         timeout=5.0,
     )
     assert after == (not before)
-    # No alert fired (instant-apply succeeded).
+    # No alert fired (Apply succeeded) and the pane is no longer dirty.
     assert tray_proc.send("dump-window").get("alerts") == []
+    assert tray_proc.send("dump-window")["settings_dirty"] is False
+
+
+def test_settings_discard_on_leave(tray_proc):
+    """Leaving the settings category while dirty DISCARDS the staged change:
+    nothing is written to config."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config settings").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("col2_hidden") is True and d.get("settings"),
+    )
+    before = c.list_config().susops_app.notifications_enabled
+    target = "off" if before else "on"
+    assert tray_proc.send(f"set-field notifications {target}").get("ok")
+    assert tray_proc.send("dump-window")["settings_dirty"] is True
+    # Navigate away from settings (to connections) WITHOUT Apply.
+    assert tray_proc.send("select connections").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("category") == "connections",
+    )
+    # The staged change was discarded - config unchanged.
+    import time
+    time.sleep(1.0)
+    assert c.list_config().susops_app.notifications_enabled == before
+    # Re-entering settings shows the saved (unchanged) value, not dirty.
+    assert tray_proc.send("select settings").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("category") == "settings" and d.get("settings"),
+    )
+    assert dump["settings"]["notifications"] == before
+    assert dump["settings_dirty"] is False
 
 
 def test_settings_apply_ports(tray_proc):
-    """Setting a port field + the explicit Apply persists pac_server_port."""
+    """Setting a port field + the explicit Apply commits pac_server_port (Apply
+    persists ports along with everything else staged)."""
     from susops.client import SusOpsClient
     c = SusOpsClient(workspace=tray_proc.workspace)
     assert tray_proc.send("open-config settings").get("ok")
@@ -581,9 +635,10 @@ def test_settings_apply_ports(tray_proc):
     )
     port = _free_port()
     assert tray_proc.send(f"set-field pac_port {port}").get("ok")
-    # The field is written but NOT applied yet (dump reflects the widget).
+    # The field is written (staged) but NOT applied yet.
     assert str(tray_proc.send("dump-window")["settings"]["pac_port"]) == str(port)
-    assert tray_proc.send("action settings.apply_ports").get("ok")
+    assert c.list_config().pac_server_port != port
+    assert tray_proc.send("action settings.apply").get("ok")
     applied = _wait_for(
         lambda: c.list_config().pac_server_port,
         lambda v: v == port,

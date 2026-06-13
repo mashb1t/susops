@@ -461,10 +461,10 @@ def build_share_detail(info, status) -> DetailSpec:
         FormField(key="downloads", label="Downloads", kind="static",
                   value=f"{info.access_count} ok · {info.failed_count} failed"),
     ]
+    # Copy URL / Copy Password are NOT in the action row - they live as the
+    # inline trailing buttons on the URL + password FormFields above.
     actions = [
         Action("share.delete", "Delete…", destructive=True),
-        Action("share.copy_url", "Copy URL"),
-        Action("share.copy_password", "Copy Password"),
         Action("share.save", "Save"),
     ]
     # The header Enabled toggle expresses SERVING intent: ON when the share

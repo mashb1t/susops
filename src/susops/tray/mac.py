@@ -1682,14 +1682,14 @@ class SusOpsMacTray(AbstractTrayApp):
             self.create_window_item(cw._create_kind, cw.collect_form_values())
             return
 
-        # Settings-pane actions carry no identity (col 2 is hidden). The
-        # ports/config-file actions read the live pane state from the window.
-        if action_id == "settings.apply_ports":
+        # Settings-pane actions carry no identity (col 2 is hidden). Apply
+        # commits ALL staged settings at once (toggles + logo + login + ports);
+        # nothing persists until then.
+        if action_id in ("settings.apply", "settings.apply_ports"):
             cw = getattr(self, "_config_window", None)
             if cw is None:
                 return
-            rpc, sse, pac = cw.collect_server_ports()
-            self.apply_server_ports(rpc, sse, pac)
+            self.apply_all_settings(cw._settings_values())
             return
         if action_id == "settings.open_config":
             self.do_open_config_file()
@@ -1772,8 +1772,7 @@ class SusOpsMacTray(AbstractTrayApp):
                     self.show_alert("Cannot Start Share",
                                     "This share has no connection configured.")
                 else:
-                    self.do_share(info.conn_tag, info.file_path,
-                                  password=info.password, port=info.port)
+                    self._reserve_share_silent(info)
             elif action_id == "share.stop":
                 self.do_stop_share(port)
             elif action_id == "share.start":
@@ -1781,8 +1780,7 @@ class SusOpsMacTray(AbstractTrayApp):
                     self.show_alert("Cannot Start Share",
                                     "This share has no connection configured.")
                 else:
-                    self.do_share(info.conn_tag, info.file_path,
-                                  password=info.password, port=info.port)
+                    self._reserve_share_silent(info)
             elif action_id == "share.delete":
                 if _show_confirm("Delete Share",
                                  f"Delete share on port {port}?", ok="Delete"):
@@ -1792,6 +1790,36 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "share.copy_password":
                 self._copy_to_pasteboard(info.password or "")
         self._refresh_config_window()
+
+    def _reserve_share_silent(self, info) -> None:
+        """Re-serve a share from the config window with NO success popup.
+
+        The window reflects the new state on the next refresh, so a "Share
+        Started" alert is redundant noise here. Goes straight to
+        manager.share on a worker (NOT do_share, which alerts and the Linux
+        tray relies on). Errors still alert.
+        """
+        from pathlib import Path
+        conn_tag = info.conn_tag
+        file_path = info.file_path
+        password = info.password
+        port = info.port
+
+        def _work():
+            try:
+                self.manager.share(Path(file_path), conn_tag,
+                                   password=password or None,
+                                   port=port or None)
+                return None
+            except Exception as exc:
+                return str(exc)
+
+        def _done(err):
+            if err:
+                self.show_alert("Share Failed", err)
+            self._refresh_config_window()
+
+        self.run_in_background(_work, _done)
 
     # ------------------------------------------------------------------ #
     # Inline-edit save. Validation lives here (single place). Remove+re-add
@@ -2377,6 +2405,21 @@ class SusOpsMacTray(AbstractTrayApp):
         if icon_path:
             self._apply_icon_path(icon_path)
 
+    def preview_logo_style(self, idx: int) -> None:
+        """Live-preview a logo style by index WITHOUT persisting it. The config
+        is untouched; only the menu-bar icon changes. revert_logo_preview puts
+        the saved logo back if the user leaves Settings without Apply."""
+        logo_styles = list(LogoStyle)
+        if not (0 <= idx < len(logo_styles)):
+            return
+        icon_path = _get_icon_path(self.state, logo_styles[idx].value.lower())
+        if icon_path:
+            _on_main(lambda: self._apply_icon_path(icon_path))
+
+    def revert_logo_preview(self) -> None:
+        """Re-apply the saved logo's icon, undoing any live preview."""
+        _on_main(lambda: self.update_icon(self.state))
+
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
         #   RUNNING            → Start off,  Stop on,  Restart on
@@ -2641,9 +2684,10 @@ class SusOpsMacTray(AbstractTrayApp):
         }
 
         # The settings pane (mac_config_window) renders these grouped by
-        # `section`; toggles + logo + launch-at-login apply instantly, the
-        # three ports share one explicit Apply. `description` is the indented
-        # gray explainer under a checkbox (empty = no explainer row).
+        # `section`. ALL changes (toggles + logo + launch-at-login + the three
+        # ports) are staged locally and persist only on the single Apply
+        # button; leaving or closing without Apply discards them. `description`
+        # is the indented gray explainer under a checkbox (empty = no row).
         fields = [
             {"key": "launch_at_login", "label": "Launch SusOps at login", "kind": "switch",
              "default": base["launch_at_login"], "section": "General:"},
@@ -2696,8 +2740,9 @@ class SusOpsMacTray(AbstractTrayApp):
     }
 
     def _apply_setting_toggle(self, key: str, value) -> str | None:
-        """Apply ONE settings toggle instantly. Returns an error string on
-        failure (caller shows an alert + flips the control back), else None.
+        """Persist ONE settings toggle/logo/login value. Returns an error
+        string on failure, else None. Called per-field by apply_all_settings
+        when the user clicks Apply (settings are staged until then).
 
         Single update_app_config kwarg for the boolean toggles; logo_style
         resolves the segmented index back to a LogoStyle and repaints the icon;
@@ -2734,11 +2779,10 @@ class SusOpsMacTray(AbstractTrayApp):
         except Exception as exc:
             return str(exc)
 
-    def _apply_server_ports(self, rpc, sse, pac, ctx: dict) -> str | None:
-        """Validate + persist the three server ports behind the explicit Apply.
-        Returns an error string on validation failure (caller shows an alert),
-        else None. Port validation is verbatim from the old all-at-once path.
-        """
+    def _validate_server_ports(self, rpc, sse, pac, ctx: dict):
+        """Validate the three server ports WITHOUT writing. Returns
+        (error_string, None) on failure, else (None, port_ints). Port
+        validation is verbatim from the old all-at-once path."""
         current = {
             "RPC": ctx.get("rpc_port", 0),
             "SSE": ctx.get("sse_port", 0),
@@ -2750,12 +2794,22 @@ class SusOpsMacTray(AbstractTrayApp):
             try:
                 n = int(raw)
             except ValueError:
-                return f"'{raw}' is not a valid {label} port."
+                return f"'{raw}' is not a valid {label} port.", None
             if not validate_port(n, allow_zero=True):
-                return f"{label} port must be 0 (auto) or between 1 and 65535."
+                return (f"{label} port must be 0 (auto) or between 1 and "
+                        f"65535."), None
             if n != 0 and n != current[label] and not is_port_free(n):
-                return f"Port {n} is already in use ({label})."
+                return f"Port {n} is already in use ({label}).", None
             port_ints[label] = n
+        return None, port_ints
+
+    def _apply_server_ports(self, rpc, sse, pac, ctx: dict) -> str | None:
+        """Validate + persist the three server ports behind the explicit Apply.
+        Returns an error string on validation failure (caller shows an alert),
+        else None."""
+        err, port_ints = self._validate_server_ports(rpc, sse, pac, ctx)
+        if err:
+            return err
         try:
             self.manager.update_config(
                 rpc_server_port=port_ints["RPC"],
@@ -2777,39 +2831,51 @@ class SusOpsMacTray(AbstractTrayApp):
         pane always opens with live values."""
         return self._settings_fields()
 
-    def apply_setting_toggle(self, key: str, value) -> None:
-        """Instant-apply a single toggle/logo/login setting from the settings
-        pane. update_app_config is an RPC, so it runs on a worker thread; on
-        error we alert and flip the control back to its prior state on the main
-        thread. launch_at_login already runs its own background thread inside
-        _apply_setting_toggle and returns immediately."""
-        def _work():
-            return self._apply_setting_toggle(key, value)
+    # Settings field keys that are staged toggles/logo/login (everything that
+    # is not a server port). Applied per-field via _apply_setting_toggle.
+    _SETTINGS_TOGGLE_KEYS = (
+        "launch_at_login", "logo_style", "stop_on_quit", "ephemeral_ports",
+        "restore_shares", "show_bandwidth", "notifications",
+    )
 
-        def _done(err):
-            if err:
-                self.show_alert("Could Not Apply Setting", err)
-                cw = getattr(self, "_config_window", None)
-                if cw is not None:
-                    cw.revert_setting(key)
-        self.run_in_background(_work, _done)
+    def apply_all_settings(self, values: dict) -> None:
+        """Commit ALL staged settings at once behind the single Apply button:
+        toggles + logo + launch-at-login via _apply_setting_toggle, the three
+        server ports via the validated _apply_server_ports. Nothing in the pane
+        persists until this runs.
 
-    def apply_server_ports(self, rpc, sse, pac) -> None:
-        """Apply the three server ports behind the Settings Apply button. Runs
-        the validation + update_config on a worker thread; alerts on error and
-        re-renders the pane on success so the fields reflect the saved values."""
+        Port validation runs FIRST so an invalid port keeps the whole pane and
+        nothing is partially applied. On success the pane re-renders with the
+        saved values and the staging dirty flag clears. Runs on a worker thread
+        (RPCs block); alerts + re-render marshal back to the main thread."""
         _, ctx = self._settings_fields()
+        rpc = values.get("rpc_port", "")
+        sse = values.get("sse_port", "")
+        pac = values.get("pac_port", "")
 
         def _work():
+            # Validate ports up front and bail before ANY write on error so the
+            # apply is all-or-nothing (no partial commit on a bad port).
+            verr, _ = self._validate_server_ports(rpc, sse, pac, ctx)
+            if verr:
+                return verr
+            for key in self._SETTINGS_TOGGLE_KEYS:
+                if key not in values:
+                    continue
+                err = self._apply_setting_toggle(key, values[key])
+                if err:
+                    return err
+            # Ports already validated above; persist them.
             return self._apply_server_ports(rpc, sse, pac, ctx)
 
         def _done(err):
             if err:
-                self.show_alert("Could Not Apply Ports", err)
-            else:
-                cw = getattr(self, "_config_window", None)
-                if cw is not None:
-                    cw.refresh()
+                self.show_alert("Could Not Apply Settings", err)
+                return
+            cw = getattr(self, "_config_window", None)
+            if cw is not None:
+                cw.clear_settings_dirty()
+                cw.refresh()
         self.run_in_background(_work, _done)
 
     # ------------------------------------------------------------------ #

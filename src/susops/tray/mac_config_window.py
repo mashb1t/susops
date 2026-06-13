@@ -320,6 +320,7 @@ class ConfigWindow:
         self._field_kinds: dict = {}     # field key -> FormField.kind
         self._secure_pair: dict = {}     # field key -> (secure, plain) fields
         self._save_button = None         # cached Save NSButton (enable on dirty)
+        self._header_toggle_label = None  # cached header toggle word label
         self._dirty_identity = None      # identity the dirty form belongs to
         # Create mode: "connection" | "domain" | "forward" or None. While set,
         # col-2 selection is cleared and col 3 shows an inline create form with
@@ -327,12 +328,18 @@ class ConfigWindow:
         self._create_kind = None
         # Settings pane: when the Settings nav row is selected col 2 is hidden
         # and col 3 spans cols 2+3. Live setting widgets are cached here so the
-        # debug surface (dump / set-field / revert) and the ports collector can
-        # read them. None of these participate in the dirty/edit machinery.
+        # debug surface (dump / set-field) and the value collector can read
+        # them. Settings changes use their own staging flag (_settings_dirty),
+        # separate from the detail-form _dirty machinery.
         self._col2_hidden = False
         self._settings_widgets: dict = {}   # field key -> control
         self._settings_kinds: dict = {}     # field key -> kind
         self._settings_ctx: dict = {}       # ctx from settings_field_specs
+        # Settings staging: all settings changes are staged locally and only
+        # persist on Apply. _settings_dirty tracks pending edits so leaving the
+        # category or closing the window can discard them (and revert the logo
+        # preview).
+        self._settings_dirty = False
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -367,6 +374,9 @@ class ConfigWindow:
         self._on_closed()
 
     def _on_closed(self) -> None:
+        # Closing the window without Apply discards any staged settings
+        # changes (and reverts a logo icon preview to the saved logo).
+        self.discard_settings()
         if self._policy_scope is not None:
             try:
                 self._policy_scope.__exit__(None, None, None)
@@ -735,6 +745,11 @@ class ConfigWindow:
     # ------------------------------------------------------------------ #
 
     def _select_nav(self, category: str) -> None:
+        # Leaving the settings category without Apply discards staged changes
+        # (reverts the logo preview too). Real clicks also pass through
+        # _on_selection which discards; this covers the programmatic/debug path.
+        if self.category == "settings" and category != "settings":
+            self.discard_settings()
         self.category = category
         idx = next((i for i, n in enumerate(self.nav_items)
                     if n.key == category), None)
@@ -758,6 +773,10 @@ class ConfigWindow:
             row = int(self._nav_tv.selectedRow())
             if 0 <= row < len(self.nav_items):
                 new_cat = self.nav_items[row].key
+                # Leaving the settings category without Apply discards all
+                # staged settings changes (reverts the logo preview too).
+                if self.category == "settings" and new_cat != "settings":
+                    self.discard_settings()
                 if (self._dirty and new_cat != self.category):
                     if not self._confirm_discard():
                         # No: keep editing - revert nav selection to the
@@ -1008,10 +1027,12 @@ class ConfigWindow:
         text_x = 30
 
         # Badge pill on the right (rounded layer-backed text field). Inset from
-        # the column edge enough to clear the scroller gutter so the full pill
-        # shows (mockup). The selection pill insets 4px, the scroller ~14px.
+        # the column edge enough to clear the scroller gutter so the FULL
+        # rounded pill (both corners) shows clear of the vertical scroller and
+        # the cell edge (mockup). The selection pill insets 4px, the scroller
+        # overlays ~14-16px, so the pill needs a wider inset than that.
         badge_w = 0
-        badge_right_inset = 18
+        badge_right_inset = 28
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
@@ -1304,6 +1325,7 @@ class ConfigWindow:
         self._field_kinds = {}
         self._secure_pair = {}
         self._save_button = None
+        self._header_toggle_label = None
         self._settings_widgets = {}
         self._settings_kinds = {}
 
@@ -1398,12 +1420,24 @@ class ConfigWindow:
             NSMakeRect,
             NSTextField,
         )
-        label, value, action_id = spec.toggle
+        # The model toggle tuple carries a generic role label; the displayed
+        # word reflects the boolean: "Enabled" when on, "Disabled" when off.
+        _role, value, action_id = spec.toggle
         toggle_w = 40
         toggle_x = cw - toggle_w
         toggle_y = header_top - 24
-        handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda _s, aid=action_id: self._dispatch(aid))
+
+        def _on_flip(sender, aid=action_id):
+            # Optimistically flip the label word so it switches immediately
+            # without waiting for the poll re-render.
+            try:
+                on = bool(sender.state())
+            except Exception:
+                on = not value
+            self._update_header_toggle_label(on)
+            self._dispatch(aid)
+
+        handler = _get_action_handler_cls().alloc().initWithCallback_(_on_flip)
         self._handlers.append(handler)
         try:
             import AppKit  # type: ignore[import]
@@ -1433,10 +1467,11 @@ class ConfigWindow:
             btn.setAction_("fire:")
             container.addSubview_(btn)
             ctrl_left = toggle_x
-        # "Enabled" label to the LEFT of the control.
+        # "Enabled"/"Disabled" label to the LEFT of the control, reflecting the
+        # toggle state. Cached so a flip can update the word optimistically.
         lbl = NSTextField.alloc().initWithFrame_(
             NSMakeRect(ctrl_left - 70, toggle_y + 3, 62, 16))
-        lbl.setStringValue_(label)
+        lbl.setStringValue_("Enabled" if value else "Disabled")
         lbl.setFont_(NSFont.systemFontOfSize_(11))
         lbl.setAlignment_(1)  # right
         lbl.setBezeled_(False)
@@ -1444,6 +1479,7 @@ class ConfigWindow:
         lbl.setEditable_(False)
         lbl.setTextColor_(NSColor.secondaryLabelColor())
         container.addSubview_(lbl)
+        self._header_toggle_label = lbl
         # toggle_note: tertiary line right-aligned under the toggle, within the
         # content column.
         if spec.toggle_note:
@@ -1457,6 +1493,16 @@ class ConfigWindow:
             note.setEditable_(False)
             note.setTextColor_(NSColor.tertiaryLabelColor())
             container.addSubview_(note)
+
+    def _update_header_toggle_label(self, on: bool) -> None:
+        """Set the header toggle word to reflect its boolean state."""
+        lbl = getattr(self, "_header_toggle_label", None)
+        if lbl is None:
+            return
+        try:
+            lbl.setStringValue_("Enabled" if on else "Disabled")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Field-row planning: pair src_addr/src_port and dst_addr/dst_port
@@ -2205,10 +2251,12 @@ class ConfigWindow:
         self._col3_text = text
 
     # ------------------------------------------------------------------ #
-    # Settings pane (Tailscale-style, instant apply). Col 2 is hidden; this
-    # pane spans the freed area. Toggles/logo/login apply on change; the three
-    # server ports share one explicit Apply. Field spec + validation live in
-    # mac.py (self.tray); this only renders + collects.
+    # Settings pane (Tailscale-style, Apply-gated). Col 2 is hidden; this pane
+    # spans the freed area. ALL changes (toggles/logo/login/ports) stage
+    # locally and persist only on the single Apply button; leaving the category
+    # or closing the window without Apply discards them (and reverts the logo
+    # icon preview). Field spec + validation live in mac.py (self.tray); this
+    # only renders, stages, and collects.
     # ------------------------------------------------------------------ #
 
     def _enter_settings(self) -> None:
@@ -2217,6 +2265,7 @@ class ConfigWindow:
         self._dirty = False
         self._dirty_identity = None
         self._create_kind = None
+        self._settings_dirty = False
         self._set_col2_visible(False)
         self._render_settings_pane()
 
@@ -2518,15 +2567,16 @@ class ConfigWindow:
                 doc.addSubview_(n)
             y = row_y - 6
 
-        # Apply button right-aligned under the port fields.
+        # Apply button left-aligned under the port fields (in the content
+        # column, next to the fields it applies - not floating at the right).
         from Cocoa import NSMakeRect as _R  # type: ignore[import]
         btn_w = 84
         btn_h = 28
         btn_y = y - btn_h - 2
         btn = self._styled_neutral_button(
-            "Apply", _R(x + width - btn_w, btn_y, btn_w, btn_h))
+            "Apply", _R(x, btn_y, btn_w, btn_h))
         handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda _s: self._on_apply_ports())
+            lambda _s: self._on_apply_settings())
         self._handlers.append(handler)
         btn.setTarget_(handler)
         btn.setAction_("fire:")
@@ -2534,14 +2584,15 @@ class ConfigWindow:
         return btn_y
 
     def _render_config_file_row(self, doc, x, width, top) -> float:
-        """Config file row: a right-aligned "Open Config File…" button ONLY.
+        """Config file row: an "Open Config File…" button ONLY, in the content
+        column next to its section label (left-aligned where the fields start).
         No explainer sentence (user tweak)."""
         from Cocoa import NSMakeRect  # type: ignore[import]
         btn_w = 150
         btn_h = 28
         btn_y = top - btn_h
         btn = self._styled_neutral_button(
-            "Open Config File…", NSMakeRect(x + width - btn_w, btn_y, btn_w, btn_h))
+            "Open Config File…", NSMakeRect(x, btn_y, btn_w, btn_h))
         handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda _s: self._dispatch("settings.open_config"))
         self._handlers.append(handler)
@@ -2551,57 +2602,42 @@ class ConfigWindow:
         return btn_y
 
     def _on_setting_toggle(self, key: str, value) -> None:
-        """Instant-apply one toggle/logo setting via the tray (runs the RPC on a
-        worker thread; tray flips the control back on error via revert_setting).
-        For logo_style, preview the icon locally before the persist."""
-        try:
-            self.tray.apply_setting_toggle(key, value)
-        except Exception:
-            pass
-
-    def _on_apply_ports(self) -> None:
-        rpc, sse, pac = self.collect_server_ports()
-        try:
-            self.tray.apply_server_ports(rpc, sse, pac)
-        except Exception:
-            pass
-
-    def collect_server_ports(self):
-        """(rpc, sse, pac) as strings from the live settings port fields."""
-        def _v(key):
-            w = self._settings_widgets.get(key)
-            if w is None:
-                return ""
+        """Stage one toggle/logo change locally - NOTHING persists until Apply.
+        Marks the settings pane dirty. For logo_style, show a LIVE icon preview
+        (reverted on leave/close without Apply)."""
+        self._settings_dirty = True
+        if key == "logo_style":
             try:
-                return str(w.stringValue() or "")
+                self.tray.preview_logo_style(int(value))
             except Exception:
-                return ""
-        return _v("rpc_port"), _v("sse_port"), _v("pac_port")
+                pass
 
-    def revert_setting(self, key: str) -> None:
-        """Flip a settings control back to the saved value after a failed
-        instant-apply (called by the tray on the main thread)."""
+    def _on_apply_settings(self) -> None:
+        """Commit EVERYTHING staged in the settings pane at once: toggles, logo,
+        launch-at-login, and the three server ports. Port validation errors keep
+        the pane (no partial apply). On success the pane re-renders with the
+        saved values and the dirty flag clears."""
+        values = self._settings_values()
         try:
-            fields, _ = self.tray.settings_field_specs()
+            self.tray.apply_all_settings(values)
         except Exception:
+            pass
+
+    def discard_settings(self) -> None:
+        """Drop all staged settings changes: revert any logo icon preview to the
+        saved logo and clear the dirty flag. Called when leaving the settings
+        category or closing the window without Apply."""
+        if not getattr(self, "_settings_dirty", False):
             return
-        spec = next((f for f in fields if f["key"] == key), None)
-        w = self._settings_widgets.get(key)
-        if spec is None or w is None:
-            return
-        kind = self._settings_kinds.get(key)
+        self._settings_dirty = False
         try:
-            if kind == "switch":
-                w.setState_(1 if spec.get("default") else 0)
-            elif kind == "segmented":
-                w.setSelectedSegment_(int(spec.get("default") or 0))
-            elif kind == "text":
-                w.setStringValue_(str(spec.get("default") or ""))
+            self.tray.revert_logo_preview()
         except Exception:
             pass
 
     def _settings_values(self) -> dict:
-        """Snapshot of the live settings controls for the debug dump."""
+        """Snapshot of the live settings controls. Used both by the debug dump
+        and by Apply (apply_all_settings reads every staged value from here)."""
         out: dict = {}
         for key, w in self._settings_widgets.items():
             kind = self._settings_kinds.get(key)
@@ -2617,9 +2653,9 @@ class ConfigWindow:
         return out
 
     def set_settings_field(self, key: str, value: str) -> dict:
-        """Debug: write a live settings control and instant-apply it (toggles/
-        logo) exactly as a user click would. Port fields are written without
-        applying (apply via `action settings.apply_ports`)."""
+        """Debug: write a live settings control and STAGE the change exactly as
+        a user click/edit would - nothing persists until `action
+        settings.apply` (toggles, logo, ports all commit together)."""
         w = self._settings_widgets.get(key)
         if w is None:
             return {"error": f"no settings field '{key}'"}
@@ -2637,12 +2673,18 @@ class ConfigWindow:
             w.setSelectedSegment_(idx)
             self._on_setting_toggle(key, idx)
             return {"ok": True, "key": key, "value": idx}
-        # text (port): set only, apply via settings.apply_ports.
+        # text (port): stage the edit; commit via settings.apply.
         try:
             w.setStringValue_(value)
         except Exception:
             return {"error": f"could not set '{key}'"}
+        self._settings_dirty = True
         return {"ok": True, "key": key, "value": value}
+
+    def clear_settings_dirty(self) -> None:
+        """Clear the settings dirty flag (called by the tray after a successful
+        Apply commits all staged changes)."""
+        self._settings_dirty = False
 
     # ------------------------------------------------------------------ #
     # Debug surface
@@ -2673,6 +2715,7 @@ class ConfigWindow:
             "col2_hidden": bool(self._col2_hidden),
             "settings": (self._settings_values()
                          if self.category == "settings" else None),
+            "settings_dirty": bool(getattr(self, "_settings_dirty", False)),
             "fields": self._dump_fields(),
             # Cumulative auto-answered modal panels (debug mode) so tests can
             # assert no unexpected dialog fired.

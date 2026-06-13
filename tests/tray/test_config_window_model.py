@@ -548,10 +548,12 @@ def test_share_detail_running_fields_and_url():
     assert by_key["downloads"].kind == "static"
     assert by_key["downloads"].value == "3 ok · 1 failed"
     ids = [a.action_id for a in spec.actions]
-    # The Stop/Start button is gone; the header toggle replaces it.
-    assert ids == ["share.delete", "share.copy_url", "share.copy_password",
-                   "share.save"]
+    # The Stop/Start button is gone (header toggle replaces it) and the Copy
+    # URL / Copy Password buttons are gone from the action row - they live ONLY
+    # as the inline trailing buttons on the URL + password rows.
+    assert ids == ["share.delete", "share.save"]
     assert "share.stop" not in ids and "share.start" not in ids
+    assert "share.copy_url" not in ids and "share.copy_password" not in ids
     assert spec.actions[0].destructive is True
     # URL row carries a Copy button; password row carries Reveal + Copy.
     assert by_key["url"].trailing == (("share.copy_url", "Copy"),)
