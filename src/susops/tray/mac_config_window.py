@@ -957,10 +957,9 @@ class ConfigWindow:
         if item.icon:
             img = self._sf_symbol(item.icon)
             if img is not None:
-                # The 13px title text in its 20-tall frame draws toward the top,
-                # so its visual center sits ~1-2px above the frame center. Raise
-                # the icon to share that center rather than the frame center.
-                iv = NSImageView.alloc().initWithFrame_(NSMakeRect(x, 8, 18, 18))
+                # Center the icon on the same line as the title and count (both
+                # 20-tall boxes at y=5, center 15) so all three align.
+                iv = NSImageView.alloc().initWithFrame_(NSMakeRect(x, 6, 18, 18))
                 iv.setImage_(img)
                 cell.addSubview_(iv)
                 x += 24
@@ -978,7 +977,7 @@ class ConfigWindow:
             # Sit inside the selection pill (which floats inset ~9px from the
             # column edge), not in the margin outside it.
             count = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL1_W - 44, 5, 28, 20))
+                NSMakeRect(COL1_W - 55, 3, 28, 20))
             count.setStringValue_(str(item.count))
             count.setFont_(NSFont.systemFontOfSize_(12))
             count.setAlignment_(1)  # right
