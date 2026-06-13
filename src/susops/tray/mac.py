@@ -994,6 +994,13 @@ def _show_form_dialog(
     return result
 
 
+# When set (by the debug server in test mode), modal alert panels are recorded
+# and auto-answered with the default button instead of blocking on a modal run
+# loop. None in production.
+_DEBUG_ALERT_HOOK = None
+_DEBUG_ALERTS: list[tuple[str, str]] = []
+
+
 def _show_message_panel(
         title: str,
         message: str,
@@ -1020,6 +1027,19 @@ def _show_message_panel(
 
     Returns the response_code of the clicked button.
     """
+    # Headless/debug escape hatch: GUI smoke tests drive the window over the
+    # debug socket on the main thread, so a blocking runModalForWindow_ would
+    # deadlock the test harness. When a debug alert hook is installed, record
+    # the alert and return the default button's response code instead of
+    # running the modal. Production (no debug port) is unaffected.
+    if _DEBUG_ALERT_HOOK is not None:
+        try:
+            _DEBUG_ALERT_HOOK(title, message, list(buttons))
+        except Exception:
+            pass
+        idx = default_index if 0 <= default_index < len(buttons) else 0
+        return int(buttons[idx][1])
+
     from AppKit import (  # type: ignore[import]
         NSApplication,
         NSBackingStoreBuffered,
@@ -1952,6 +1972,11 @@ class SusOpsMacTray(AbstractTrayApp):
         self._debug_server = None
         debug_port = os.environ.get("SUSOPS_TRAY_DEBUG_PORT")
         if debug_port:
+            # In debug/test mode, auto-answer modal alerts (default button) so
+            # GUI smoke tests driving the window over the socket don't deadlock
+            # on a blocking runModalForWindow_.
+            global _DEBUG_ALERT_HOOK
+            _DEBUG_ALERT_HOOK = lambda t, m, _b: _DEBUG_ALERTS.append((t, m))
             from susops.tray.debug_server import TrayDebugServer
             self._debug_server = TrayDebugServer(
                 self._debug_handlers(), port=int(debug_port),
@@ -2040,6 +2065,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().dump()),
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
+            "set-field": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().set_field(
+                    args[0], " ".join(args[1:])))
+                if args else {"error": "usage: set-field <key> <value…>"}),
             "action": lambda args: (_run_on_main(
                 lambda: (self.dispatch_window_action(
                     args[0],
@@ -2095,8 +2124,15 @@ class SusOpsMacTray(AbstractTrayApp):
         if kind is None:
             return
 
-        if action_id.endswith(".save") or action_id.endswith(".create") \
-                or action_id == "fetch.run":
+        # Inline edit Save (Task 4): route *.save through save_window_form with
+        # the live form values collected from the window.
+        if action_id.endswith(".save"):
+            cw = getattr(self, "_config_window", None)
+            values = cw.collect_form_values() if cw is not None else {}
+            self.save_window_form(identity, values)
+            return
+
+        if action_id.endswith(".create") or action_id == "fetch.run":
             _show_message("Not yet available",
                           "This action is not available yet.")
             return
@@ -2164,6 +2200,176 @@ class SusOpsMacTray(AbstractTrayApp):
             elif action_id == "share.copy_password":
                 self._copy_to_pasteboard(info.password or "")
         self._refresh_config_window()
+
+    # ------------------------------------------------------------------ #
+    # Inline-edit save (Task 4): validate in one place, remove+re-add with
+    # rollback. The RPC sequence runs in the background; alerts + refresh +
+    # reselect marshal back to the main thread.
+    # ------------------------------------------------------------------ #
+
+    _DIRECTION_FROM_LABEL = {"Local (-L)": "local", "Remote (-R)": "remote"}
+
+    def save_window_form(self, identity: tuple, values: dict) -> None:
+        kind = identity[0] if identity else None
+        if kind == "forward":
+            self._save_forward(identity, values)
+        elif kind == "domain":
+            self._save_domain(identity, values)
+
+    def _clear_window_dirty_and_reselect(self, new_identity: tuple) -> None:
+        """Main-thread: clear the dirty flag and reselect the new identity so
+        the freshly-saved item is shown."""
+        cw = getattr(self, "_config_window", None)
+        if cw is None:
+            return
+        cw._dirty = False
+        cw._dirty_identity = None
+        cw.selected_identity = tuple(new_identity)
+        self._refresh_config_window()
+
+    def _save_forward(self, identity: tuple, values: dict) -> None:
+        _, old_conn_tag, old_direction, old_src_port = identity
+        # --- validation (main thread, single source of truth) ---
+        new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
+        dir_label = values.get("direction") or ""
+        new_direction = self._DIRECTION_FROM_LABEL.get(dir_label, old_direction)
+        src_addr = (values.get("src_addr") or "localhost").strip()
+        dst_addr = (values.get("dst_addr") or "localhost").strip()
+        src_txt = str(values.get("src_port") or "").strip()
+        dst_txt = str(values.get("dst_port") or "").strip()
+        protocols = values.get("protocols") or (False, False)
+        tcp, udp = bool(protocols[0]), bool(protocols[1])
+        tag = (values.get("tag") or "").strip()
+
+        if not src_txt.isdigit() or not validate_port(int(src_txt)):
+            _show_message("Invalid Source Port",
+                          "Source port must be a number between 1 and 65535.")
+            return
+        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
+            _show_message("Invalid Destination Port",
+                          "Destination port must be a number between 1 and 65535.")
+            return
+        new_src_port = int(src_txt)
+        new_dst_port = int(dst_txt)
+        if not tcp and not udp:
+            _show_message("No Protocol",
+                          "Enable at least one protocol (TCP or UDP).")
+            return
+        # Local src bind must be free when the src_port changed (or direction
+        # changed to local), so we don't collide with another listener.
+        port_changed = (new_src_port != old_src_port
+                        or new_direction != old_direction)
+        if new_direction == "local" and port_changed and not is_port_free(new_src_port):
+            _show_message("Port In Use",
+                          f"Local port {new_src_port} is already in use.")
+            return
+
+        # Capture the OLD forward so rollback can restore it verbatim.
+        old_fw = self._find_forward(old_conn_tag, old_direction, old_src_port)
+        if old_fw is None:
+            _show_message("Forward Not Found",
+                          "The forward no longer exists; reopen the window.")
+            return
+        new_fw = PortForward(tag=tag, src_addr=src_addr, src_port=new_src_port,
+                             dst_addr=dst_addr, dst_port=new_dst_port,
+                             tcp=tcp, udp=udp, enabled=bool(old_fw.enabled))
+        new_identity = ("forward", new_conn_tag, new_direction, new_src_port)
+
+        def _work():
+            try:
+                self._remove_forward_rpc(old_direction, old_src_port)
+            except Exception as exc:
+                return {"error": f"Could not remove old forward: {exc}"}
+            try:
+                self._add_forward_rpc(new_conn_tag, new_fw, new_direction)
+            except Exception as exc:
+                # Rollback: re-add the original forward to its old connection.
+                try:
+                    self._add_forward_rpc(old_conn_tag, old_fw, old_direction)
+                except Exception:
+                    pass
+                return {"error": f"Could not save forward: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
+
+    def _save_domain(self, identity: tuple, values: dict) -> None:
+        _, old_conn_tag, old_host = identity
+        new_host = (values.get("host") or "").strip()
+        new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
+        if not new_host:
+            _show_message("Invalid Host", "Host must not be empty.")
+            return
+        was_disabled = self._is_pac_host_disabled(old_conn_tag, old_host)
+        new_identity = ("domain", new_conn_tag, new_host)
+
+        def _work():
+            try:
+                self.manager.remove_pac_host(old_host, conn_tag=old_conn_tag)
+            except Exception as exc:
+                return {"error": f"Could not remove old domain: {exc}"}
+            try:
+                self.manager.add_pac_host(new_host, conn_tag=new_conn_tag)
+                if was_disabled:
+                    self.manager.set_pac_host_enabled(
+                        new_host, False, conn_tag=new_conn_tag)
+            except Exception as exc:
+                # Rollback: re-add the original host to its old connection.
+                try:
+                    self.manager.add_pac_host(old_host, conn_tag=old_conn_tag)
+                    if was_disabled:
+                        self.manager.set_pac_host_enabled(
+                            old_host, False, conn_tag=old_conn_tag)
+                except Exception:
+                    pass
+                return {"error": f"Could not save domain: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
+
+    # ---- save helpers (RPC + config lookups) ----
+
+    def _remove_forward_rpc(self, direction: str, src_port: int) -> None:
+        if direction == "local":
+            self.manager.remove_local_forward(src_port)
+        else:
+            self.manager.remove_remote_forward(src_port)
+
+    def _add_forward_rpc(self, conn_tag: str, fw: PortForward,
+                         direction: str) -> None:
+        if direction == "local":
+            self.manager.add_local_forward(conn_tag, fw)
+        else:
+            self.manager.add_remote_forward(conn_tag, fw)
+
+    def _find_forward(self, conn_tag: str, direction: str, src_port: int):
+        cfg = self.manager.list_config()
+        conn = next((c for c in cfg.connections if c.tag == conn_tag), None)
+        if conn is None:
+            return None
+        fws = conn.forwards.local if direction == "local" else conn.forwards.remote
+        return next((f for f in fws if f.src_port == src_port), None)
+
+    def _is_pac_host_disabled(self, conn_tag: str, host: str) -> bool:
+        cfg = self.manager.list_config()
+        conn = next((c for c in cfg.connections if c.tag == conn_tag), None)
+        if conn is None:
+            return False
+        return host in (getattr(conn, "pac_hosts_disabled", []) or [])
 
     def _copy_to_pasteboard(self, text: str) -> None:
         """Put text on the general pasteboard. AppKit on the main thread.

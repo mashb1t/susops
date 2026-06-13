@@ -30,6 +30,35 @@ from susops.tray.config_window_model import (
 _table_ds_cls = None
 _window_delegate_cls = None
 _action_handler_cls = None
+_text_delegate_cls = None
+
+
+def _get_text_delegate_cls():
+    """Cached NSTextField/NSComboBox delegate that flags the owner dirty on
+    every keystroke (controlTextDidChange_). One instance per render owns all
+    text/secure/combo fields; removed in the trim/clear path."""
+    global _text_delegate_cls
+    if _text_delegate_cls is not None:
+        return _text_delegate_cls
+    import objc  # type: ignore[import]
+    from Cocoa import NSObject  # type: ignore[import]
+
+    class _SusOpsTextDelegate(NSObject):
+        def initWithCallback_(self, cb):
+            self = objc.super(_SusOpsTextDelegate, self).init()
+            if self is None:
+                return None
+            self._cb = cb
+            return self
+
+        def controlTextDidChange_(self, _note):
+            try:
+                self._cb()
+            except Exception:
+                pass
+
+    _text_delegate_cls = _SusOpsTextDelegate
+    return _SusOpsTextDelegate
 
 
 def _get_table_ds_cls():
@@ -139,6 +168,12 @@ TOP_INSET = 38          # traffic lights overlay col 1; start content below them
 SEARCH_H = 24
 ADDBAR_H = 40
 
+# A1: column-3 content is constrained to a fixed-width column anchored
+# top-left, NOT stretched to the window edge. The Enabled toggle anchors to
+# the RIGHT EDGE of this content column (near the title), not the window border.
+CONTENT_MAX_W = 540
+CONTENT_PAD = 16
+
 # ---- dot colors ----
 _DOT_SELECTORS = {
     "green": "systemGreenColor",
@@ -179,6 +214,13 @@ class ConfigWindow:
         self._suppress_selection_cb = False
         self._pending_category = None  # category requested via open() pre-load
         self._detail_spec = None       # last DetailSpec rendered in col 3
+        # --- editing / dirty tracking (Task 4) ---
+        self._dirty = False
+        self._field_widgets: dict = {}   # field key -> widget (live col-3 form)
+        self._field_kinds: dict = {}     # field key -> FormField.kind
+        self._save_button = None         # cached Save NSButton (enable on dirty)
+        self._dirty_observers: list = [] # NSNotificationCenter observers to remove
+        self._dirty_identity = None      # identity the dirty form belongs to
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -467,7 +509,11 @@ class ConfigWindow:
             self._pending_category = None
             self.category = cat if cat in CATEGORIES else self.category
         self._reload_nav()
-        self._reload_list(preserve=True)
+        # While a col-3 form is dirty, cols 1-2 keep refreshing but column 3 is
+        # left untouched. _reload_list also restores col-2 selection by
+        # identity; suppress the col-3 re-render via skip_detail so the in-flight
+        # edit is not clobbered.
+        self._reload_list(preserve=True, skip_detail=self._dirty)
 
     def _reload_nav(self) -> None:
         self.nav_items = build_nav(self._cfg, self._shares)
@@ -494,8 +540,11 @@ class ConfigWindow:
             return build_share_rows(cfg, shares, statuses)
         return []  # settings has no list
 
-    def _reload_list(self, *, preserve: bool) -> None:
-        prev = self.selected_identity if preserve else None
+    def _reload_list(self, *, preserve: bool, skip_detail: bool = False) -> None:
+        # When a col-3 form is dirty (skip_detail), keep the col-2 highlight on
+        # the dirty identity and do NOT touch column 3.
+        prev = (self._dirty_identity if skip_detail
+                else (self.selected_identity if preserve else None))
         self._all_rows = self._build_category_rows()
         self.rows = filter_rows(self._all_rows, self.search_text)
         self._suppress_selection_cb = True
@@ -505,18 +554,20 @@ class ConfigWindow:
             if prev is not None:
                 target = next((i for i, r in enumerate(self.rows)
                                if r.identity == prev), None)
-            if target is None:
+            if target is None and not skip_detail:
                 target = next((i for i, r in enumerate(self.rows)
                                if r.kind == "item"), None)
             if target is not None:
                 self._select_table_row(self._list_tv, target)
-                self.selected_identity = self.rows[target].identity
-            else:
+                if not skip_detail:
+                    self.selected_identity = self.rows[target].identity
+            elif not skip_detail:
                 self.selected_identity = None
         finally:
             self._suppress_selection_cb = False
         self._rebuild_add_buttons()
-        self._render_selection_placeholder()
+        if not skip_detail:
+            self._render_selection_placeholder()
 
     def _select_table_row(self, tv, row: int) -> None:
         from Foundation import NSIndexSet  # type: ignore[import]
@@ -546,7 +597,23 @@ class ConfigWindow:
         if role == "nav":
             row = int(self._nav_tv.selectedRow())
             if 0 <= row < len(self.nav_items):
-                self.category = self.nav_items[row].key
+                new_cat = self.nav_items[row].key
+                if (self._dirty and new_cat != self.category):
+                    if not self._confirm_discard():
+                        # No: keep editing - revert nav selection to the
+                        # dirty form's category.
+                        idx = next((i for i, n in enumerate(self.nav_items)
+                                    if n.key == self.category), None)
+                        if idx is not None:
+                            self._suppress_selection_cb = True
+                            try:
+                                self._select_table_row(self._nav_tv, idx)
+                            finally:
+                                self._suppress_selection_cb = False
+                        return
+                    self._dirty = False
+                    self._dirty_identity = None
+                self.category = new_cat
                 self.selected_identity = None
                 self.search_text = ""
                 try:
@@ -557,8 +624,42 @@ class ConfigWindow:
         else:  # list
             row = int(self._list_tv.selectedRow())
             if 0 <= row < len(self.rows) and self.rows[row].kind == "item":
-                self.selected_identity = self.rows[row].identity
+                new_identity = self.rows[row].identity
+                if (self._dirty and self._dirty_identity is not None
+                        and new_identity != self._dirty_identity):
+                    if not self._confirm_discard():
+                        # No: keep editing - revert the table selection.
+                        self._reselect_dirty_row()
+                        return
+                    self._dirty = False
+                    self._dirty_identity = None
+                self.selected_identity = new_identity
                 self._render_selection_placeholder()
+
+    def _confirm_discard(self) -> bool:
+        """Modal confirm when the user navigates away from a dirty form. Returns
+        True to discard (proceed), False to keep editing."""
+        from susops.tray.mac import _show_confirm
+        try:
+            return bool(_show_confirm(
+                "Discard unsaved changes?",
+                "You have unsaved edits in this form. Discard them?",
+                ok="Discard", cancel="Keep Editing"))
+        except Exception:
+            return True
+
+    def _reselect_dirty_row(self) -> None:
+        """Restore the col-2 highlight to the dirty form's identity under the
+        selection-suppression flag (No path of the discard confirm)."""
+        target = next((i for i, r in enumerate(self.rows)
+                       if r.identity == self._dirty_identity), None)
+        if target is None:
+            return
+        self._suppress_selection_cb = True
+        try:
+            self._select_table_row(self._list_tv, target)
+        finally:
+            self._suppress_selection_cb = False
 
     def _on_search(self, text: str) -> None:
         self.search_text = text
@@ -662,8 +763,13 @@ class ConfigWindow:
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 24))
         lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, COL2_W - 20, 16))
-        lbl.setStringValue_(r.title.upper())
-        lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+        # A5: render the section title as the model emits it ("Local"/"Remote"),
+        # NOT uppercased. Medium weight, secondary color.
+        lbl.setStringValue_(r.title)
+        try:
+            lbl.setFont_(NSFont.systemFontOfSize_weight_(12, 0.23))  # medium
+        except Exception:
+            lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
         lbl.setBezeled_(False)
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
@@ -824,6 +930,10 @@ class ConfigWindow:
     # ------------------------------------------------------------------ #
 
     def _render_selection_placeholder(self) -> None:
+        # Fresh render of column 3 - any prior dirty form is being replaced, so
+        # clear the dirty flag (callers gate this behind the discard confirm).
+        self._dirty = False
+        self._dirty_identity = None
         if self.category == "settings":
             self._detail_spec = None
             self._render_col3_placeholder("Settings pane lands in Task 7.")
@@ -903,6 +1013,46 @@ class ConfigWindow:
     # Detail renderer (static presentation, editable controls land in T4)
     # ------------------------------------------------------------------ #
 
+    def _clear_col3(self) -> None:
+        """Remove all col-3 subviews + per-render handlers + dirty observers +
+        field-widget caches. Shared by every col-3 render path."""
+        from Cocoa import NSNotificationCenter  # type: ignore[import]
+        for v in list(self._col3.subviews()):
+            v.removeFromSuperview()
+        del self._handlers[self._permanent_handler_count:]
+        # Tear down NSControlTextDidChange observers so they don't leak or fire
+        # against freed widgets across renders.
+        nc = NSNotificationCenter.defaultCenter()
+        for obs in self._dirty_observers:
+            try:
+                nc.removeObserver_(obs)
+            except Exception:
+                pass
+        self._dirty_observers = []
+        self._field_widgets = {}
+        self._field_kinds = {}
+        self._save_button = None
+
+    def _content_column(self):
+        """Create the A1 content column: a fixed CONTENT_MAX_W view anchored
+        top-left with CONTENT_PAD, flexible right margin so it does NOT stretch
+        to the window edge on resize. Returns (container, content_w)."""
+        from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
+        w = self._col3.frame().size.width
+        h = self._col3.frame().size.height
+        cw = min(CONTENT_MAX_W, max(0, w - 2 * CONTENT_PAD))
+        container = NSView.alloc().initWithFrame_(
+            NSMakeRect(CONTENT_PAD, 0, cw, h))
+        try:
+            container.setWantsLayer_(True)
+            container.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+        except Exception:
+            pass
+        # Fixed left margin + height-sizable + flexible right margin (MaxXMargin).
+        container.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxXMargin
+        self._col3.addSubview_(container)
+        return container, cw
+
     def _render_detail(self, spec) -> None:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
@@ -911,32 +1061,31 @@ class ConfigWindow:
             NSTextField,
             NSView,
         )
-        for v in list(self._col3.subviews()):
-            v.removeFromSuperview()
-        del self._handlers[self._permanent_handler_count:]
+        self._clear_col3()
 
-        w = self._col3.frame().size.width
-        h = self._col3.frame().size.height
-        pad = 24
+        container, cw = self._content_column()
+        self._content_view = container
+        h = container.frame().size.height
         # Header sits just below the transparent titlebar inset.
         header_top = h - TOP_INSET - 8
 
-        # --- Header: title (left) + status line + Enabled toggle (top-right) ---
+        # --- Header: title (left) + status line + Enabled toggle (right edge of
+        #     the 540px content column, near the title) ---
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(pad, header_top - 24, w - 2 * pad - 120, 24))
+            NSMakeRect(0, header_top - 24, cw - 130, 24))
         title.setStringValue_(spec.title)
         title.setFont_(NSFont.boldSystemFontOfSize_(16))
         title.setBezeled_(False)
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setTextColor_(NSColor.labelColor())
-        self._col3.addSubview_(title)
+        container.addSubview_(title)
 
         # Status line: colored dot + status text.
         status_y = header_top - 44
         if spec.status_dot:
             dot = NSView.alloc().initWithFrame_(
-                NSMakeRect(pad, status_y + 3, 10, 10))
+                NSMakeRect(0, status_y + 3, 10, 10))
             try:
                 dot.setWantsLayer_(True)
                 dot.layer().setBackgroundColor_(
@@ -944,31 +1093,31 @@ class ConfigWindow:
                 dot.layer().setCornerRadius_(5.0)
             except Exception:
                 pass
-            self._col3.addSubview_(dot)
+            container.addSubview_(dot)
         if spec.status_text:
             stext = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(pad + 16, status_y, w - 2 * pad - 16, 16))
+                NSMakeRect(16, status_y, cw - 16, 16))
             stext.setStringValue_(spec.status_text)
             stext.setFont_(NSFont.systemFontOfSize_(11))
             stext.setBezeled_(False)
             stext.setDrawsBackground_(False)
             stext.setEditable_(False)
             stext.setTextColor_(NSColor.secondaryLabelColor())
-            self._col3.addSubview_(stext)
+            container.addSubview_(stext)
 
-        # Enabled toggle top-right.
+        # Enabled toggle anchored to the RIGHT EDGE of the content column.
         if spec.toggle is not None:
-            self._render_header_toggle(spec, w, header_top, pad)
+            self._render_header_toggle(spec, container, cw, header_top)
 
-        # --- Card with the static field grid ---
+        # --- Card with the field grid (editable controls when spec.editable) ---
         card_top = status_y - 16
-        card = self._render_field_card(spec, w, card_top, pad)
+        card = self._render_field_card(spec, container, cw, card_top)
 
         # --- Action row below the card ---
         card_bottom = card.frame().origin.y
-        self._render_action_row(spec, w, card_bottom - 14, pad)
+        self._render_action_row(spec, container, cw, card_bottom - 14)
 
-    def _render_header_toggle(self, spec, w, header_top, pad) -> None:
+    def _render_header_toggle(self, spec, container, cw, header_top) -> None:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
             NSColor,
@@ -977,7 +1126,7 @@ class ConfigWindow:
         )
         label, value, action_id = spec.toggle
         toggle_w = 40
-        toggle_x = w - pad - toggle_w
+        toggle_x = cw - toggle_w
         toggle_y = header_top - 24
         handler = _get_action_handler_cls().alloc().initWithCallback_(
             lambda _s, aid=action_id: self._dispatch(aid))
@@ -994,7 +1143,7 @@ class ConfigWindow:
             sw.setState_(1 if value else 0)
             sw.setTarget_(handler)
             sw.setAction_("fire:")
-            self._col3.addSubview_(sw)
+            container.addSubview_(sw)
             ctrl_left = toggle_x
         else:
             from AppKit import NSButton  # type: ignore[import]
@@ -1008,7 +1157,7 @@ class ConfigWindow:
             btn.setState_(1 if value else 0)
             btn.setTarget_(handler)
             btn.setAction_("fire:")
-            self._col3.addSubview_(btn)
+            container.addSubview_(btn)
             ctrl_left = toggle_x
         # "Enabled" label to the LEFT of the control.
         lbl = NSTextField.alloc().initWithFrame_(
@@ -1020,11 +1169,12 @@ class ConfigWindow:
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
         lbl.setTextColor_(NSColor.secondaryLabelColor())
-        self._col3.addSubview_(lbl)
-        # toggle_note: tertiary line right-aligned under the toggle.
+        container.addSubview_(lbl)
+        # toggle_note: tertiary line right-aligned under the toggle, within the
+        # content column.
         if spec.toggle_note:
             note = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(w - pad - 320, toggle_y - 18, 320, 14))
+                NSMakeRect(cw - 360, toggle_y - 18, 360, 14))
             note.setStringValue_(spec.toggle_note)
             note.setFont_(NSFont.systemFontOfSize_(11))
             note.setAlignment_(1)  # right
@@ -1032,11 +1182,40 @@ class ConfigWindow:
             note.setDrawsBackground_(False)
             note.setEditable_(False)
             note.setTextColor_(NSColor.tertiaryLabelColor())
-            self._col3.addSubview_(note)
+            container.addSubview_(note)
 
-    def _render_field_card(self, spec, w, card_top, pad):
-        """Layer-backed rounded card holding the static field grid. Returns the
-        card NSView so the caller can position the action row under it."""
+    # ------------------------------------------------------------------ #
+    # Field-row planning: pair src_addr/src_port and dst_addr/dst_port (A3)
+    # ------------------------------------------------------------------ #
+
+    def _plan_field_rows(self, fields):
+        """Group FormFields into render rows. src_addr+src_port collapse to one
+        "Source" row, dst_addr+dst_port to one "Destination" row (A3). Every
+        other field is its own single-control row. Returns a list of dicts:
+          {"label": str, "fields": [FormField, ...]}
+        preserving spec order. The MODEL still keeps 4 separate FormFields."""
+        by_key = {f.key: f for f in fields}
+        rows = []
+        consumed = set()
+        for f in fields:
+            if f.key in consumed:
+                continue
+            if f.key == "src_addr" and "src_port" in by_key:
+                rows.append({"label": "Source",
+                             "fields": [f, by_key["src_port"]]})
+                consumed.add("src_port")
+            elif f.key == "dst_addr" and "dst_port" in by_key:
+                rows.append({"label": "Destination",
+                             "fields": [f, by_key["dst_port"]]})
+                consumed.add("dst_port")
+            else:
+                rows.append({"label": f.label, "fields": [f]})
+        return rows
+
+    def _render_field_card(self, spec, container, cw, card_top):
+        """Layer-backed rounded card holding the field grid. Renders editable
+        controls when spec.editable, static text otherwise. Returns the card
+        NSView so the caller can position the action row under it."""
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
             NSColor,
@@ -1044,14 +1223,14 @@ class ConfigWindow:
             NSTextField,
             NSView,
         )
-        fields = list(spec.fields)
-        row_h = 28
+        plan = self._plan_field_rows(list(spec.fields))
+        row_h = 30
         v_pad = 12
-        card_h = max(row_h, len(fields) * row_h) + 2 * v_pad
-        card_w = w - 2 * pad
+        card_h = max(row_h, len(plan) * row_h) + 2 * v_pad
+        card_w = cw
         card_y = card_top - card_h
         card = NSView.alloc().initWithFrame_(
-            NSMakeRect(pad, card_y, card_w, card_h))
+            NSMakeRect(0, card_y, card_w, card_h))
         try:
             card.setWantsLayer_(True)
             base = NSColor.windowBackgroundColor()
@@ -1063,17 +1242,21 @@ class ConfigWindow:
             card.layer().setBorderColor_(NSColor.separatorColor().CGColor())
         except Exception:
             pass
-        self._col3.addSubview_(card)
+        container.addSubview_(card)
 
+        # A2: right-aligned labels in a ~110px column, 10px gap, controls right
+        # after.
         label_w = 110
         inner_pad = 14
-        value_x = inner_pad + label_w + 10
-        for i, f in enumerate(fields):
+        gap = 10
+        value_x = inner_pad + label_w + gap
+        value_w = card_w - value_x - inner_pad
+        for i, row in enumerate(plan):
             # Rows top-down inside the card.
             ry = card_h - v_pad - (i + 1) * row_h + 4
             lbl = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(inner_pad, ry, label_w, 18))
-            lbl.setStringValue_(f.label)
+            lbl.setStringValue_(row["label"])
             lbl.setFont_(NSFont.systemFontOfSize_(11))
             lbl.setAlignment_(1)  # right
             lbl.setBezeled_(False)
@@ -1082,9 +1265,62 @@ class ConfigWindow:
             lbl.setTextColor_(NSColor.secondaryLabelColor())
             card.addSubview_(lbl)
 
+            if spec.editable:
+                self._render_row_controls(card, row, value_x, ry, value_w)
+            else:
+                self._render_row_static(card, row, value_x, ry, value_w)
+        return card
+
+    def _render_row_static(self, card, row, value_x, ry, value_w) -> None:
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
+        text = " ".join(self._static_value_text(f) for f in row["fields"])
+        val = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(value_x, ry, value_w, 18))
+        val.setStringValue_(text)
+        val.setFont_(NSFont.systemFontOfSize_(13))
+        val.setBezeled_(False)
+        val.setDrawsBackground_(False)
+        val.setEditable_(False)
+        val.setSelectable_(True)
+        val.setTextColor_(NSColor.labelColor())
+        card.addSubview_(val)
+
+    def _render_row_controls(self, card, row, value_x, ry, value_w) -> None:
+        """Render one editable row. Paired Source/Destination rows place an
+        addr field (~190) + port field (~110) side by side (A3); single-field
+        rows fill the row width."""
+        fields = row["fields"]
+        if len(fields) == 2:
+            # addr + port side by side.
+            addr_f, port_f = fields
+            addr_w = 190
+            port_w = 110
+            self._make_control(card, addr_f, value_x, ry, addr_w)
+            self._make_control(card, port_f, value_x + addr_w + 10, ry, port_w)
+        else:
+            self._make_control(card, fields[0], value_x, ry, value_w)
+
+    def _make_control(self, card, f, x, ry, width) -> None:
+        """Instantiate the editable control for FormField f, cache it under its
+        key, and wire dirty tracking. Field height/baseline aligns to ry."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSComboBox,
+            NSMakeRect,
+            NSPopUpButton,
+            NSSecureTextField,
+            NSTextField,
+        )
+        kind = f.kind
+        self._field_kinds[f.key] = kind
+        if kind in ("static", "path"):
+            # Static-rendered even in editable forms (e.g. share file/url/url).
+            text = self._static_value_text(f)
             val = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(value_x, ry, card_w - value_x - inner_pad, 18))
-            val.setStringValue_(self._static_value_text(f))
+                NSMakeRect(x, ry, width, 18))
+            val.setStringValue_(text)
             val.setFont_(NSFont.systemFontOfSize_(13))
             val.setBezeled_(False)
             val.setDrawsBackground_(False)
@@ -1092,21 +1328,105 @@ class ConfigWindow:
             val.setSelectable_(True)
             val.setTextColor_(NSColor.labelColor())
             card.addSubview_(val)
+            self._field_widgets[f.key] = val
+            return
+        if kind == "check_pair":
+            self._make_check_pair(card, f, x, ry, width)
+            return
+        cy = ry - 3  # bezeled controls are taller; nudge to align baseline
+        if kind == "popup":
+            popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(x, cy, width, 24), False)
+            for opt in f.options:
+                popup.addItemWithTitle_(str(opt))
+            if f.value:
+                popup.selectItemWithTitle_(str(f.value))
+            handler = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s: self._mark_dirty())
+            self._handlers.append(handler)
+            popup.setTarget_(handler)
+            popup.setAction_("fire:")
+            card.addSubview_(popup)
+            self._field_widgets[f.key] = popup
+            return
+        if kind == "combo":
+            combo = NSComboBox.alloc().initWithFrame_(
+                NSMakeRect(x, cy, width, 24))
+            for opt in f.options:
+                combo.addItemWithObjectValue_(str(opt))
+            combo.setStringValue_(str(f.value or ""))
+            self._wire_text_dirty(combo)
+            card.addSubview_(combo)
+            self._field_widgets[f.key] = combo
+            return
+        # text / secure
+        cls = NSSecureTextField if kind == "secure" else NSTextField
+        tf = cls.alloc().initWithFrame_(NSMakeRect(x, cy, width, 22))
+        tf.setStringValue_(str(f.value or ""))
+        tf.setFont_(NSFont.systemFontOfSize_(13))
+        tf.setBezeled_(True)
+        tf.setBezelStyle_(0)  # square
+        tf.setEditable_(True)
+        tf.setSelectable_(True)
+        tf.setDrawsBackground_(True)
+        if f.placeholder:
+            try:
+                tf.cell().setPlaceholderString_(f.placeholder)
+            except Exception:
+                pass
+        self._wire_text_dirty(tf)
+        card.addSubview_(tf)
+        self._field_widgets[f.key] = tf
 
-            if f.note:
-                note = NSTextField.alloc().initWithFrame_(
-                    NSMakeRect(value_x, ry - 13, card_w - value_x - inner_pad, 12))
-                note.setStringValue_(f.note)
-                note.setFont_(NSFont.systemFontOfSize_(10))
-                note.setBezeled_(False)
-                note.setDrawsBackground_(False)
-                note.setEditable_(False)
-                note.setTextColor_(NSColor.tertiaryLabelColor())
-                card.addSubview_(note)
-        return card
+    def _make_check_pair(self, card, f, x, ry, width) -> None:
+        """TCP + UDP checkboxes side by side."""
+        from Cocoa import NSButton, NSMakeRect  # type: ignore[import]
+        tcp, udp = (f.value if isinstance(f.value, (tuple, list))
+                    else (False, False))
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s: self._mark_dirty())
+        self._handlers.append(handler)
+        tcp_btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, ry - 2, 70, 20))
+        udp_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(x + 78, ry - 2, 70, 20))
+        for btn, lbl, on in ((tcp_btn, "TCP", tcp), (udp_btn, "UDP", udp)):
+            try:
+                btn.setButtonType_(3)  # NSButtonTypeSwitch
+            except Exception:
+                pass
+            btn.setTitle_(lbl)
+            btn.setState_(1 if on else 0)
+            btn.setTarget_(handler)
+            btn.setAction_("fire:")
+            card.addSubview_(btn)
+        # Cache both under synthetic keys so the value collector can read them.
+        self._field_widgets["protocols.tcp"] = tcp_btn
+        self._field_widgets["protocols.udp"] = udp_btn
+        self._field_kinds["protocols"] = "check_pair"
+
+    def _wire_text_dirty(self, control) -> None:
+        """Attach a controlTextDidChange_ delegate that flags dirty. The
+        delegate instance is held in _handlers; observers list is unused for
+        the delegate path but the trim still clears _handlers."""
+        delegate = _get_text_delegate_cls().alloc().initWithCallback_(
+            self._mark_dirty)
+        self._handlers.append(delegate)
+        try:
+            control.setDelegate_(delegate)
+        except Exception:
+            pass
+
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+        self._dirty_identity = self.selected_identity
+        if self._save_button is not None:
+            try:
+                self._save_button.setEnabled_(True)
+            except Exception:
+                pass
 
     def _static_value_text(self, f) -> str:
-        """Render any FormField as a static string (Task 3 is read-only)."""
+        """Render any FormField as a static string (read-only rows)."""
         kind = f.kind
         if kind == "secure":
             return "••••••••"
@@ -1122,11 +1442,10 @@ class ConfigWindow:
             return "—"
         return str(f.value) if f.value not in (None, "") else "—"
 
-    def _render_action_row(self, spec, w, top_y, pad) -> None:
+    def _render_action_row(self, spec, container, cw, top_y) -> None:
         from Cocoa import NSButton, NSMakeRect  # type: ignore[import]
-        # Skip *.save in this static task (Save appears in Task 4).
-        actions = [a for a in spec.actions
-                   if not a.action_id.endswith(".save")]
+        # Save renders now (Task 4). It starts disabled until the form is dirty.
+        actions = list(spec.actions)
         btn_h = 26
         row_y = top_y - btn_h
 
@@ -1141,21 +1460,36 @@ class ConfigWindow:
             bw = max(72, 28 + 8 * len(title))
             btn = NSButton.alloc().initWithFrame_(
                 NSMakeRect(0, row_y, bw, btn_h))
-            btn.setTitle_(title)
-            btn.setBezelStyle_(1)  # NSBezelStyleRounded
-            btn.setEnabled_(bool(action.enabled))
+            btn.setBezelStyle_(1)  # NSBezelStyleRounded (standard bezel)
+            is_save = action.action_id.endswith(".save")
             if action.destructive:
+                # A4: quiet treatment - standard bezel with red attributed
+                # title text. No filled red bezel block.
+                btn.setTitle_(title)
                 try:
-                    btn.setBezelColor_(NSColor.systemRedColor())
+                    attrs = {NSForegroundColorAttributeName:
+                             NSColor.systemRedColor()}
+                    btn.setAttributedTitle_(
+                        NSAttributedString.alloc()
+                        .initWithString_attributes_(title, attrs))
                 except Exception:
-                    try:
-                        attrs = {NSForegroundColorAttributeName:
-                                 NSColor.systemRedColor()}
-                        btn.setAttributedTitle_(
-                            NSAttributedString.alloc()
-                            .initWithString_attributes_(title, attrs))
-                    except Exception:
-                        pass
+                    pass
+            elif is_save:
+                # A4: native default-button blue - setKeyEquivalent_("\r")
+                # makes AppKit render it filled-accent.
+                btn.setTitle_(title)
+                try:
+                    btn.setKeyEquivalent_("\r")
+                except Exception:
+                    pass
+            else:
+                btn.setTitle_(title)
+            # Save is enabled only when the form is dirty.
+            if is_save:
+                btn.setEnabled_(bool(self._dirty))
+                self._save_button = btn
+            else:
+                btn.setEnabled_(bool(action.enabled))
             handler = _get_action_handler_cls().alloc().initWithCallback_(
                 lambda _s, aid=action.action_id: self._dispatch(aid))
             self._handlers.append(handler)
@@ -1164,7 +1498,7 @@ class ConfigWindow:
             return btn, bw
 
         # Destructive actions on the LEFT.
-        x = pad
+        x = 0
         for a in actions:
             if not a.destructive:
                 continue
@@ -1172,24 +1506,22 @@ class ConfigWindow:
             frame = btn.frame()
             frame.origin.x = x
             btn.setFrame_(frame)
-            self._col3.addSubview_(btn)
+            container.addSubview_(btn)
             x += bw + 8
 
-        # Non-destructive actions right-aligned, in order.
+        # Non-destructive actions right-aligned (within the content column),
+        # keeping spec order left-to-right.
         non_destr = [a for a in actions if not a.destructive]
-        # Lay out from the right edge keeping spec order left-to-right.
-        widths = []
-        for a in non_destr:
-            widths.append(max(72, 28 + 8 * len(a.title)))
+        widths = [max(72, 28 + 8 * len(a.title)) for a in non_destr]
         total = sum(widths) + 8 * (len(non_destr) - 1 if non_destr else 0)
-        rx = w - pad - total
+        rx = cw - total
         for a, bw in zip(non_destr, widths):
             btn, _ = _make_button(a)
             frame = btn.frame()
             frame.origin.x = rx
             frame.size.width = bw
             btn.setFrame_(frame)
-            self._col3.addSubview_(btn)
+            container.addSubview_(btn)
             rx += bw + 8
 
     def _dispatch(self, action_id: str) -> None:
@@ -1201,17 +1533,54 @@ class ConfigWindow:
         except Exception:
             pass
 
+    # ------------------------------------------------------------------ #
+    # Form-value collection (Task 4)
+    # ------------------------------------------------------------------ #
+
+    def _read_widget(self, key: str):
+        """Current value of a live col-3 form widget by field key. text/secure/
+        combo -> str, popup -> selected title str, protocols -> (tcp, udp)."""
+        if key == "protocols":
+            tcp = self._field_widgets.get("protocols.tcp")
+            udp = self._field_widgets.get("protocols.udp")
+            return (
+                bool(tcp.state()) if tcp is not None else False,
+                bool(udp.state()) if udp is not None else False,
+            )
+        w = self._field_widgets.get(key)
+        if w is None:
+            return None
+        kind = self._field_kinds.get(key)
+        if kind == "popup":
+            try:
+                return str(w.titleOfSelectedItem() or "")
+            except Exception:
+                return ""
+        try:
+            return str(w.stringValue() or "")
+        except Exception:
+            return ""
+
+    def collect_form_values(self) -> dict:
+        """All live form widget values keyed by field key. protocols collapses
+        the two checkboxes to (tcp, udp)."""
+        values: dict = {}
+        keys = set(self._field_kinds.keys())
+        for key in keys:
+            values[key] = self._read_widget(key)
+        return values
+
     def _render_col3_placeholder(self, text: str) -> None:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
         self._detail_spec = None
-        for v in list(self._col3.subviews()):
-            v.removeFromSuperview()
-        del self._handlers[self._permanent_handler_count:]
+        self._dirty = False
+        self._dirty_identity = None
+        self._clear_col3()
         w = self._col3.frame().size.width
         h = self._col3.frame().size.height
         lbl = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(24, h - TOP_INSET - 80, w - 48, 80))
+            NSMakeRect(CONTENT_PAD, h - TOP_INSET - 80, min(CONTENT_MAX_W, w - 2 * CONTENT_PAD), 80))
         lbl.setStringValue_(text)
         lbl.setFont_(NSFont.systemFontOfSize_(13))
         lbl.setBezeled_(False)
@@ -1250,11 +1619,22 @@ class ConfigWindow:
             "detail_toggle": (bool(self._detail_spec.toggle[1])
                               if self._detail_spec.toggle else None)
             if self._detail_spec else None,
-            "dirty": False,
+            "dirty": bool(self._dirty),
+            "fields": self._dump_fields(),
             # Debug: add-button targets must survive col-3 handler trims
             # (NSButton does not retain its target).
             "addbar_handlers": len(self._addbar_handlers),
         }
+
+    def _dump_fields(self) -> dict:
+        """JSON-serializable snapshot of the live form widget values."""
+        out: dict = {}
+        for key, val in self.collect_form_values().items():
+            if isinstance(val, tuple):
+                out[key] = list(val)
+            else:
+                out[key] = val
+        return out
 
     def select(self, category: str, index: int | None = None) -> dict:
         if category not in CATEGORIES:
@@ -1279,3 +1659,40 @@ class ConfigWindow:
         self._on_search(text)
         return {"ok": True, "search": self.search_text,
                 "rows": len([r for r in self.rows if r.kind == "item"])}
+
+    def set_field(self, key: str, value: str) -> dict:
+        """Debug: write a value into a live col-3 form widget and mark dirty,
+        exactly as a user edit would. Returns the field's new dump value."""
+        if key == "protocols":
+            return self._set_protocols(value)
+        w = self._field_widgets.get(key)
+        if w is None:
+            return {"error": f"no field '{key}' in current form"}
+        kind = self._field_kinds.get(key)
+        if kind == "popup":
+            try:
+                w.selectItemWithTitle_(value)
+            except Exception:
+                return {"error": f"option '{value}' not in popup '{key}'"}
+        else:  # text / secure / combo
+            try:
+                w.setStringValue_(value)
+            except Exception:
+                return {"error": f"could not set '{key}'"}
+        self._mark_dirty()
+        return {"ok": True, "key": key, "value": self._read_widget(key)}
+
+    def _set_protocols(self, value: str) -> dict:
+        """Accept 'tcp', 'udp', 'tcp,udp', 'on', etc. Sets both checkboxes."""
+        tcp_btn = self._field_widgets.get("protocols.tcp")
+        udp_btn = self._field_widgets.get("protocols.udp")
+        if tcp_btn is None or udp_btn is None:
+            return {"error": "no protocols field in current form"}
+        tokens = {t.strip().lower() for t in value.replace("+", ",").split(",")}
+        tcp_on = "tcp" in tokens
+        udp_on = "udp" in tokens
+        tcp_btn.setState_(1 if tcp_on else 0)
+        udp_btn.setState_(1 if udp_on else 0)
+        self._mark_dirty()
+        return {"ok": True, "key": "protocols",
+                "value": [tcp_on, udp_on]}

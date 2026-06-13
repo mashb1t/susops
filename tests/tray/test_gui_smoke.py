@@ -177,3 +177,89 @@ def test_connection_detail_renders(tray_proc):
     assert dump["detail_toggle"] is True
     assert "conn.start" in dump["detail_actions"]
     assert "conn.remove" in dump["detail_actions"]
+
+
+def test_inline_edit_forward_round_trip(tray_proc):
+    """The headline edit test: select a forward, change a field, Save, and
+    confirm the new value persisted to config + the form went clean."""
+    from susops.client import SusOpsClient
+    from susops.core.config import PortForward
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_local_forward("work", PortForward(src_port=5432, dst_port=5432,
+                                            dst_addr="db.internal", tag="postgres"))
+    assert tray_proc.send("open-config forwards").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "forwards"
+        and any(r["title"] == "postgres" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select forwards 0").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is False
+
+    res = tray_proc.send("set-field dst_port 5433")
+    assert res.get("ok"), res
+    assert tray_proc.send("dump-window")["dirty"] is True
+
+    assert tray_proc.send("action forward.save").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("dirty") is False,
+        timeout=6.0,
+    )
+    assert dump["dirty"] is False
+    cfg = c.list_config()
+    assert cfg.connections[0].forwards.local[0].dst_port == 5433
+
+
+def test_dirty_suppresses_refresh(tray_proc):
+    """While a col-3 form is dirty, an external config change must NOT clobber
+    the in-flight edit. Cols 1-2 still refresh; col-3 stays put."""
+    from susops.client import SusOpsClient
+    from susops.core.config import PortForward
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_local_forward("work", PortForward(src_port=5432, dst_port=5432,
+                                            dst_addr="db.internal", tag="postgres"))
+    assert tray_proc.send("open-config forwards").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            r["title"] == "postgres" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select forwards 0").get("ok")
+    assert tray_proc.send("set-field tag xyz").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is True
+
+    # External change while the form is dirty.
+    c.add_pac_host("late.example.com", conn_tag="work")
+    time.sleep(3.0)  # well past the ~1 s poll
+    dump = tray_proc.send("dump-window")
+    assert dump["dirty"] is True
+    assert dump["fields"].get("tag") == "xyz"  # form not clobbered
+
+
+def test_inline_edit_forward_validation_keeps_form(tray_proc):
+    """Invalid src_port -> alert path, config unchanged, form stays dirty."""
+    from susops.client import SusOpsClient
+    from susops.core.config import PortForward
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_local_forward("work", PortForward(src_port=5432, dst_port=5432,
+                                            dst_addr="db.internal", tag="postgres"))
+    assert tray_proc.send("open-config forwards").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            r["title"] == "postgres" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select forwards 0").get("ok")
+    assert tray_proc.send("set-field src_port 99999").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is True
+    tray_proc.send("action forward.save")
+    time.sleep(1.0)
+    dump = tray_proc.send("dump-window")
+    assert dump["dirty"] is True  # save rejected, form kept
+    cfg = c.list_config()
+    # Original forward untouched.
+    assert [f.src_port for f in cfg.connections[0].forwards.local] == [5432]
