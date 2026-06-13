@@ -1190,7 +1190,7 @@ class ConfigWindow:
         # the cell edge (mockup). The selection pill insets 4px, the scroller
         # overlays ~14-16px, so the pill needs a wider inset than that.
         badge_w = 0
-        badge_right_inset = 28
+        badge_right_inset = 27
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
@@ -1465,7 +1465,7 @@ class ConfigWindow:
             if info is None:
                 return None
             st = self._status_for(getattr(info, "conn_tag", None))
-            return build_share_detail(info, st)
+            return build_share_detail(info, st, conn_tags)
         return None
 
     def _status_for(self, tag):

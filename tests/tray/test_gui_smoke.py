@@ -549,6 +549,44 @@ def test_inline_edit_share_port(tray_proc):
     assert Path(running[0].file_path).name == "edit-port.txt"
 
 
+def test_inline_edit_share_connection(tray_proc):
+    """Edit a share's Connection field and Save -> re-share on the new
+    connection while preserving the file and serving state."""
+    from pathlib import Path
+
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    c.add_connection("home", "user@home")
+    shared = Path(tray_proc.workspace) / "edit-conn.txt"
+    shared.write_text("hi\n")
+    info = c.share(shared, "work")
+
+    assert tray_proc.send("open-config shares").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            r["title"] == "edit-conn.txt" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select shares 0").get("ok")
+    assert tray_proc.send("set-field conn_tag home").get("ok")
+    assert tray_proc.send("dump-window")["dirty"] is True
+
+    assert tray_proc.send("action share.save").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("dirty") is False,
+        timeout=8.0,
+    )
+    assert dump["dirty"] is False
+    shares = c.list_shares()
+    running = [s for s in shares if s.running]
+    assert len(running) == 1, shares
+    assert running[0].port == info.port
+    assert running[0].conn_tag == "home"
+    assert Path(running[0].file_path).name == "edit-conn.txt"
+
+
 def test_share_header_toggle_stops_and_restarts(tray_proc):
     """The shares header Enabled toggle owns serving: it replaces the Stop/Start
     button (ON when serving) and flipping it stops then re-serves the share.

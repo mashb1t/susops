@@ -560,7 +560,7 @@ def test_forward_form_create_mode():
 
 def test_share_detail_running_fields_and_url():
     info = _share(port=44001, running=True, access_count=3, failed_count=1)
-    spec = build_share_detail(info, _status("work"))
+    spec = build_share_detail(info, _status("work"), ["work", "home"])
     assert spec.editable is True
     assert spec.title == "file.bin"
     assert spec.status_text == "running"
@@ -569,6 +569,9 @@ def test_share_detail_running_fields_and_url():
     assert spec.toggle == ("Enabled", True, "share.toggle")
     by_key = {f.key: f for f in spec.fields}
     assert by_key["file"].kind == "static"
+    assert by_key["conn_tag"].kind == "popup"
+    assert by_key["conn_tag"].value == "work"
+    assert by_key["conn_tag"].options == ["work", "home"]
     assert by_key["url"].kind == "static"
     assert by_key["url"].value == "http://localhost:44001"
     assert by_key["port"].kind == "text"

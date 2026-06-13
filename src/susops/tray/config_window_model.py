@@ -438,7 +438,7 @@ def build_forward_form(conn_tags, *, fw=None, direction=None,
     )
 
 
-def build_share_detail(info, status) -> DetailSpec:
+def build_share_detail(info, status, conn_tags=()) -> DetailSpec:
     name = Path(info.file_path).name
     if info.running:
         status_text = "running"
@@ -452,6 +452,9 @@ def build_share_detail(info, status) -> DetailSpec:
     fields = [
         FormField(key="file", label="File", kind="static",
                   value=str(info.file_path)),
+        FormField(key="conn_tag", label="Connection", kind="popup",
+                  value=getattr(info, "conn_tag", "") or "",
+                  options=list(conn_tags)),
         FormField(key="url", label="URL", kind="static",
                   value=f"http://localhost:{info.port}",
                   trailing=(("share.copy_url", "Copy"),)),

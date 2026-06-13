@@ -2268,6 +2268,7 @@ class SusOpsMacTray(AbstractTrayApp):
         _, old_port = identity
         new_port_text = str(values.get("port") or "").strip()
         new_password = (values.get("password") or "").strip()
+        requested_conn_tag = (values.get("conn_tag") or "").strip()
         if not new_port_text.isdigit() or not validate_port(int(new_port_text)):
             _show_message("Invalid Port",
                           "Port must be a number between 1 and 65535.")
@@ -2284,10 +2285,18 @@ class SusOpsMacTray(AbstractTrayApp):
                                  "Reopen the window."}
             old_pw = info.password
             file_path = info.file_path
-            conn_tag = info.conn_tag
+            old_conn_tag = (info.conn_tag or "").strip()
+            conn_tag = requested_conn_tag or old_conn_tag
             new_pw = new_password or old_pw
             if not conn_tag:
                 return {"error": "This share has no connection configured."}
+            try:
+                cfg = self.manager.list_config()
+                known_tags = {c.tag for c in cfg.connections}
+            except Exception as exc:
+                return {"error": f"Could not validate connection: {exc}"}
+            if conn_tag not in known_tags:
+                return {"error": f"Connection '{conn_tag}' does not exist."}
             try:
                 # delete_share stops the server and removes the config entry in
                 # one call (it calls stop_share internally).
@@ -2301,7 +2310,7 @@ class SusOpsMacTray(AbstractTrayApp):
                 # Rollback: re-share the original file on its old port/password.
                 # A rollback failure is reported, never swallowed.
                 try:
-                    self.manager.share(Path(file_path), conn_tag,
+                    self.manager.share(Path(file_path), old_conn_tag,
                                        password=old_pw, port=old_port)
                 except Exception as exc2:
                     return {"error": f"Could not save share: {exc}. "
