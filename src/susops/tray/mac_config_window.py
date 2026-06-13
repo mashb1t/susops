@@ -55,10 +55,17 @@ _TEXT_CELL_FLAG_ACCESSORS = (
 )
 
 
-def _make_vcenter_cell_cls(base_cell_cls):
+def _make_vcenter_cell_cls(base_cell_cls, padding: float = 0.0):
     """Build a cached NSCell subclass that vertically centers text for both
-    display and edit rects."""
+    display and edit rects, with optional left padding (can be set per-instance
+    via _padding attribute)."""
+    from Foundation import NSMakeRect  # type: ignore[import]
+
     class _SusOpsVCenterCell(base_cell_cls):
+        def __init__(self):
+            super().__init__()
+            self._padding = 0.0
+
         def _baseTitleRect_(self, frame):
             try:
                 rect = objc.super(_SusOpsVCenterCell, self).titleRectForBounds_(
@@ -86,6 +93,14 @@ def _make_vcenter_cell_cls(base_cell_cls):
                 + max(0.0, (float(frame.size.height) - text_h) / 2.0)
             )
             rect.size.height = text_h
+            # Apply left padding if set on this instance
+            try:
+                p = getattr(self, '_padding', 0.0)
+                if p > 0:
+                    rect.origin.x = float(rect.origin.x) + p
+                    rect.size.width = max(1.0, float(rect.size.width) - p)
+            except Exception:
+                pass
             return rect
 
         def titleRectForBounds_(self, frame):
@@ -204,8 +219,9 @@ def _get_text_delegate_cls():
     return _SusOpsTextDelegate
 
 
-def _apply_vcenter_cell(control, cell_cls) -> None:
-    """Swap in a vertically-centered cell while preserving common text attrs."""
+def _apply_vcenter_cell(control, cell_cls, padding: float = 0.0) -> None:
+    """Swap in a vertically-centered cell (with optional left padding) while
+    preserving common text attrs."""
     try:
         old = control.cell()
         try:
@@ -213,6 +229,11 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
         except Exception:
             value = ""
         cell = cell_cls.alloc().init()
+        # Store padding on the instance so _centeredRect_() can use it
+        try:
+            cell._padding = padding
+        except Exception:
+            pass
         try:
             cell.setFont_(old.font())
         except Exception:
@@ -223,65 +244,6 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
             pass
         # Keep old text-field behavior (single-line editable entry) so swapping
         # the cell does not fall back to a label-like top-left layout.
-        for getter, setter in _TEXT_CELL_FLAG_ACCESSORS:
-            try:
-                getattr(cell, setter)(getattr(old, getter)())
-            except Exception:
-                pass
-        control.setCell_(cell)
-        try:
-            control.setStringValue_(value)
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-def _add_text_left_padding(control, padding: float = 10.0) -> None:
-    """Add left padding to an NSTextField by creating a custom cell that insets
-    the text drawing rect by 'padding' points from the left."""
-    import objc  # type: ignore[import]
-    from Cocoa import NSTextFieldCell  # type: ignore[import]
-    from Foundation import NSMakeRect  # type: ignore[import]
-    try:
-        class _PaddedTextCell(NSTextFieldCell):
-            def drawInteriorWithFrame_inView_(self, frame, view):
-                # Inset the frame left by 'padding' points
-                padded = NSMakeRect(
-                    float(frame.origin.x) + padding,
-                    float(frame.origin.y),
-                    max(1.0, float(frame.size.width) - padding),
-                    float(frame.size.height),
-                )
-                objc.super(_PaddedTextCell, self).drawInteriorWithFrame_inView_(
-                    padded, view
-                )
-            def editWithFrame_inView_editor_delegate_event_(
-                self, frame, view, editor, delegate, event
-            ):
-                # Inset edit rect as well so cursor/selection inset matches
-                padded = NSMakeRect(
-                    float(frame.origin.x) + padding,
-                    float(frame.origin.y),
-                    max(1.0, float(frame.size.width) - padding),
-                    float(frame.size.height),
-                )
-                objc.super(_PaddedTextCell, self).editWithFrame_inView_editor_delegate_event_(
-                    padded, view, editor, delegate, event
-                )
-        old = control.cell()
-        try:
-            value = str(control.stringValue() or "")
-        except Exception:
-            value = ""
-        cell = _PaddedTextCell.alloc().init()
-        try:
-            cell.setFont_(old.font())
-        except Exception:
-            pass
-        try:
-            cell.setPlaceholderString_(old.placeholderString())
-        except Exception:
-            pass
         for getter, setter in _TEXT_CELL_FLAG_ACCESSORS:
             try:
                 getattr(cell, setter)(getattr(old, getter)())
@@ -2032,9 +1994,8 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f.placeholder)
                 except Exception:
                     pass
-            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
             self._style_input_field(tf)
-            _add_text_left_padding(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
             self._field_widgets[f.key] = tf
@@ -2112,9 +2073,8 @@ class ConfigWindow:
                 tf.cell().setPlaceholderString_(f.placeholder)
             except Exception:
                 pass
-        _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
+        _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
         self._style_input_field(tf)
-        _add_text_left_padding(tf)
         self._wire_text_dirty(tf)
         card.addSubview_(tf)
         self._field_widgets[f.key] = tf
@@ -2148,7 +2108,7 @@ class ConfigWindow:
                 except Exception:
                     pass
             self._style_input_field(tf)
-            _add_text_left_padding(tf)
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
         plain.setHidden_(True)
@@ -2930,9 +2890,8 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f["placeholder"])
                 except Exception:
                     pass
-            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
             self._style_input_field(tf)
-            _add_text_left_padding(tf)
             doc.addSubview_(tf)
             self._settings_widgets[key] = tf
             self._settings_kinds[key] = "text"
