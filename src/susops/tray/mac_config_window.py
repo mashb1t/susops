@@ -12,6 +12,15 @@ sources share one cached class via a `role` attr ("nav" / "list").
 """
 from __future__ import annotations
 
+import warnings
+
+import objc  # type: ignore[import]
+
+# Setting layer.setBackgroundColor_/setBorderColor_ with NSColor.CGColor() emits
+# a benign ObjCPointerWarning (the layer retains the CGColor, no leak). Silence
+# the known pattern so it does not spam the tray log.
+warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
+
 from susops.tray.config_window_model import (
     ListRow,
     NavItem,
@@ -35,6 +44,18 @@ _window_delegate_cls = None
 _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
+
+
+def _truncate_tail(field) -> None:
+    """Single-line + truncate an NSTextField so overflow shows an ellipsis
+    instead of a raw hard cut at the field edge. NSLineBreakByTruncatingTail = 5
+    (a label-style cell still draws the ellipsis mid-string, but never a raw
+    cut). Call after the field's string/font/color are set."""
+    try:
+        field.setUsesSingleLineMode_(True)
+        field.cell().setLineBreakMode_(5)
+    except Exception:
+        pass
 
 
 def _hex_color(hex_str: str, alpha: float = 1.0):
@@ -907,6 +928,7 @@ class ConfigWindow:
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setTextColor_(NSColor.labelColor())
+        _truncate_tail(title)
         cell.addSubview_(title)
         if item.count is not None:
             count = NSTextField.alloc().initWithFrame_(
@@ -944,6 +966,7 @@ class ConfigWindow:
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
         lbl.setTextColor_(NSColor.secondaryLabelColor())
+        _truncate_tail(lbl)
         cell.addSubview_(lbl)
         return cell
 
@@ -958,6 +981,7 @@ class ConfigWindow:
         lbl.setDrawsBackground_(False)
         lbl.setEditable_(False)
         lbl.setTextColor_(NSColor.tertiaryLabelColor())
+        _truncate_tail(lbl)
         cell.addSubview_(lbl)
         return cell
 
@@ -1019,17 +1043,19 @@ class ConfigWindow:
         title.setDrawsBackground_(False)
         title.setEditable_(False)
         title.setTextColor_(title_color)
+        _truncate_tail(title)
         cell.addSubview_(title)
 
         if r.subtitle:
             sub = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(text_x, 2, COL2_W - text_x - 12, 14))
+                NSMakeRect(text_x, 1, COL2_W - text_x - 12, 16))
             sub.setStringValue_(r.subtitle)
             sub.setFont_(NSFont.systemFontOfSize_(11))
             sub.setBezeled_(False)
             sub.setDrawsBackground_(False)
             sub.setEditable_(False)
             sub.setTextColor_(NSColor.secondaryLabelColor())
+            _truncate_tail(sub)
             cell.addSubview_(sub)
         return cell
 
