@@ -355,7 +355,7 @@ def _get_row_view_cls():
                 return
             b = self.bounds()
             inset_y = 0.0
-            inset = 9.0  # equal floating margin both sides (macOS System Settings)
+            inset = ROW_PILL_INSET_X
             radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
             # The table view can be wider than its visible column (the row view
             # overflows the clip), which would push the pill's right edge under
@@ -397,6 +397,8 @@ TOP_INSET = 38          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = 23  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
 ADDBAR_H = 40
+ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
+ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
 # NOT stretched to the window edge. The Enabled toggle anchors to the RIGHT
@@ -1114,7 +1116,7 @@ class ConfigWindow:
             NSView,
         )
         row_w = self._nav_viewport_width()
-        cell_x = 9
+        cell_x = ROW_PILL_INSET_X
         cell_w = max(40, row_w - 2 * cell_x)
         cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 30))
         self._style_debug_row_cell(cell)
@@ -1164,7 +1166,7 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell_x = 9
+        cell_x = ROW_PILL_INSET_X
         cell_w = max(40, row_w - 2 * cell_x)
         cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 24))
         self._style_debug_row_cell(cell)
@@ -1188,7 +1190,7 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell_x = 9
+        cell_x = ROW_PILL_INSET_X
         cell_w = max(40, row_w - 2 * cell_x)
         cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 18))
         self._style_debug_row_cell(cell)
@@ -1207,7 +1209,7 @@ class ConfigWindow:
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
         row_w = self._list_viewport_width()
-        cell_x = 9
+        cell_x = ROW_PILL_INSET_X
         cell_w = max(40, row_w - 2 * cell_x)
         cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 38))
         self._style_debug_row_cell(cell)
@@ -1243,10 +1245,9 @@ class ConfigWindow:
         # the cell edge (mockup). The selection pill insets 4px, the scroller
         # overlays ~14-16px, so the pill needs a wider inset than that.
         badge_w = 0
-        badge_right_inset = 27
+        badge_right_inset = ROW_PILL_INSET_X + 18
         # Keep text inside the same floating row area as the selection pill.
-        pill_right_inset = 9
-        row_right_limit = cell_w - pill_right_inset - 18
+        row_right_limit = cell_w - ROW_TEXT_RIGHT_PAD
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
@@ -1268,7 +1269,7 @@ class ConfigWindow:
                 pass
             cell.addSubview_(badge)
 
-        title_right_limit = (cell_w - badge_w - badge_right_inset - 12
+        title_right_limit = (cell_w - badge_w - badge_right_inset - 14
                              if badge_w else row_right_limit)
         title_w = max(40, title_right_limit - text_x)
         title = NSTextField.alloc().initWithFrame_(
