@@ -2609,15 +2609,14 @@ class ConfigWindow:
 
     def _render_config_file_row(self, doc, x, width, top) -> float:
         """Config file row: "Open Config File…" and the blue "Save" button on a
-        single row, aligned with the "Config file:" section label. Save commits
-        ALL staged settings (toggles + logo + login + ports); it is always
-        enabled. Open Config File opens the YAML in $EDITOR."""
+        single row. Save commits ALL staged settings (toggles + logo + login +
+        ports); it is always enabled. Open Config File opens the YAML in
+        $EDITOR."""
         from Cocoa import NSMakeRect  # type: ignore[import]
         btn_h = 28
-        # Vertically center the buttons on the "Config file:" section label
-        # (label is 18 tall, drawn at section_top - 2, so its center is at
-        # section_top + 7). Center the 28-tall buttons on that same line.
-        label_center = top + 7
+        # Match the button baseline to the section-label baseline used in
+        # _section_label (label frame origin: section_top - 20, height: 18).
+        label_center = (top - 20) + 9
         btn_y = label_center - btn_h / 2.0
         open_w = 150
         open_btn = self._styled_neutral_button(
@@ -2642,7 +2641,8 @@ class ConfigWindow:
         save_btn.setTarget_(save_handler)
         save_btn.setAction_("fire:")
         doc.addSubview_(save_btn)
-        return btn_y
+        # Keep the section height consistent with other rows.
+        return btn_y - 6
 
     def _on_setting_toggle(self, key: str, value) -> None:
         """Stage one toggle/logo change locally - NOTHING persists until Apply.
