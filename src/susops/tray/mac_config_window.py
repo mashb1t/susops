@@ -546,6 +546,7 @@ TOP_INSET = 45          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = TOP_INSET - 9  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
 ADDBAR_H = 40
+ADDBAR_BOTTOM_INSET = 4
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 18  # extra right breathing room before row edge
 NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
@@ -900,7 +901,7 @@ class ConfigWindow:
         self._search_field = sf
 
         list_top = ch - TOP_INSET - SEARCH_H - 8
-        list_h = list_top - ADDBAR_H - 8
+        list_h = list_top - ADDBAR_H - ADDBAR_BOTTOM_INSET
         tv = NSTableView.alloc().initWithFrame_(
             NSMakeRect(0, 0, COL2_W, list_h))
         col = NSTableColumn.alloc().initWithIdentifier_("list")
@@ -918,7 +919,7 @@ class ConfigWindow:
         tv.setDataSource_(ds)
         tv.setDelegate_(ds)
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, ADDBAR_H + 8, COL2_W, list_h))
+            NSMakeRect(0, ADDBAR_H + ADDBAR_BOTTOM_INSET, COL2_W, list_h))
         scroll.setDrawsBackground_(False)
         scroll.setHasHorizontalScroller_(False)
         scroll.setHasVerticalScroller_(True)
@@ -1558,7 +1559,9 @@ class ConfigWindow:
         specs = self._add_button_specs()
         if not specs:
             return
-        bar = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, ADDBAR_H))
+        bar = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, ADDBAR_BOTTOM_INSET, COL2_W, ADDBAR_H)
+        )
         bar.setAutoresizingMask_(2 | 32)  # WidthSizable | MaxYMargin
         n = len(specs)
         gap = 8
