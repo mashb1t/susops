@@ -188,6 +188,10 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
     """Swap in a vertically-centered cell while preserving common text attrs."""
     try:
         old = control.cell()
+        try:
+            value = str(control.stringValue() or "")
+        except Exception:
+            value = ""
         cell = cell_cls.alloc().init()
         try:
             cell.setFont_(old.font())
@@ -198,6 +202,10 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
         except Exception:
             pass
         control.setCell_(cell)
+        try:
+            control.setStringValue_(value)
+        except Exception:
+            pass
     except Exception:
         pass
 
