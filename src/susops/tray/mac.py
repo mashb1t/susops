@@ -1799,7 +1799,6 @@ class SusOpsMacTray(AbstractTrayApp):
         manager.share on a worker (NOT do_share, which alerts and the Linux
         tray relies on). Errors still alert.
         """
-        from pathlib import Path
         conn_tag = info.conn_tag
         file_path = info.file_path
         password = info.password
@@ -2845,9 +2844,12 @@ class SusOpsMacTray(AbstractTrayApp):
         persists until this runs.
 
         Port validation runs FIRST so an invalid port keeps the whole pane and
-        nothing is partially applied. On success the pane re-renders with the
-        saved values and the staging dirty flag clears. Runs on a worker thread
-        (RPCs block); alerts + re-render marshal back to the main thread."""
+        nothing is partially applied. Toggles are written one by one after that
+        and are NOT rolled back if a later toggle's RPC raises (each is an
+        independent app_config field and update_app_config rarely fails). On
+        success the pane re-renders with the saved values and the staging dirty
+        flag clears. Runs on a worker thread (RPCs block), alerts + re-render
+        marshal back to the main thread."""
         _, ctx = self._settings_fields()
         rpc = values.get("rpc_port", "")
         sse = values.get("sse_port", "")
