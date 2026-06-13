@@ -1277,7 +1277,10 @@ class ConfigWindow:
         # Keep text inside the same floating row area as the selection pill.
         row_right_limit = cell_w - ROW_TEXT_RIGHT_PAD
         if r.badge:
-            badge_w = max(34, 14 + 7 * len(r.badge))
+            # Cap badge width so very long connection tags cannot consume the
+            # whole row. The badge text itself tail-truncates inside this cap.
+            max_badge_w = max(34, min(140, int(cell_w * 0.48)))
+            badge_w = min(max_badge_w, max(34, 14 + 7 * len(r.badge)))
             badge = NSTextField.alloc().initWithFrame_(
                 NSMakeRect(cell_w - badge_w - badge_right_inset, badge_y, badge_w, 16))
             badge.setStringValue_(r.badge)
@@ -1295,6 +1298,7 @@ class ConfigWindow:
                 badge.layer().setCornerRadius_(8.0)
             except Exception:
                 pass
+            _truncate_tail(badge)
             cell.addSubview_(badge)
 
         title_right_limit = (cell_w - badge_w - badge_right_inset - 14
