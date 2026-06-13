@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SusOps Services Daemon RPC
-  version: 3.0.0rc2
+  version: 3.0.0rc4.dev2
   description: "Internal HTTP API exposed by the `susops-services` daemon. Frontends (CLI, TUI, tray)
     call into it via the `SusOpsClient` proxy — there is no expectation that this API be consumed by anything
     else, but documenting it makes the contract explicit and lets you build alternative clients.\n\n**Bind
@@ -26,6 +26,7 @@ paths:
         - `add_pac_host`\n- `add_remote_forward`\n- `delete_share` — Stop and permanently remove a share
         from config.\n- `fetch` — Download and decrypt a shared file via a transient local forward slave.\n\
         - `get_bandwidth`\n- `get_bandwidth_global` — Return (rx_bps, tx_bps) summed across every connection.\n\
+        - `get_bandwidth_history` — Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest).\n\
         - `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last start. Resets on
         stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n- `get_uptime`
         — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
@@ -37,14 +38,17 @@ paths:
         - `remove_pac_host`\n- `remove_remote_forward`\n- `reset`\n- `restart`\n- `set_connection_enabled`\n\
         - `set_forward_enabled` — Set the enabled flag on a forward and start/stop the live process accordingly.\n\
         - `set_pac_host_enabled`\n- `share` — Start serving an encrypted file share and persist it to
-        config.\n- `share_is_running`\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking
-        stop for TUI quit: signal all external processes immediately.\n- `stop_share` — Stop share server(s)
+        config.\n- `share_is_running`\n- `sse_client_count` — Live SSE subscriber count. Used by frontends
+        to decide whether\na stop-on-quit should actually stop, or skip because another\nfrontend is still
+        attached to the same daemon.\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking stop
+        for TUI quit: signal all external processes immediately.\n- `stop_share` — Stop share server(s)
         without removing from config (entry shows as stopped).\n- `test`\n- `test_all`\n- `test_connection`
         — Test SSH reachability for a specific connection.\n- `test_domain` — Test domain reachability
         via the specified connection's SOCKS proxy.\n- `test_forward` — Check if a port forward is active.\n\
         - `test_ssh`\n- `toggle_forward_enabled` — Toggle enabled on a forward. Returns the new enabled
         state.\n- `update_app_config`\n- `update_config` — Update top-level SusOpsConfig fields (e.g.
-        pac_server_port)."
+        pac_server_port).\n- `update_connection` — Edit a connection's tag / ssh_host / socks_proxy_port
+        in place."
       operationId: invoke
       requestBody:
         required: true
@@ -528,6 +532,36 @@ components:
       - type: number
       - type: number
       type: array
+    InvokeGetBandwidthHistory:
+      type: object
+      description: Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest).
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: get_bandwidth_history
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+          required:
+          - tag
+          additionalProperties: false
+    GetBandwidthHistoryResult:
+      items:
+        items:
+          type: number
+        type: array
+      type: array
     InvokeGetBandwidthTotals:
       type: object
       description: Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop.
@@ -760,6 +794,10 @@ components:
               default: false
               title: Tray Show Bandwidth
               type: boolean
+            notifications_enabled:
+              default: true
+              title: Notifications Enabled
+              type: boolean
           title: AppConfig
           type: object
         Connection:
@@ -916,6 +954,7 @@ components:
             logo_style: COLORED_GLASSES
             restore_shares_on_start: true
             tray_show_bandwidth: false
+            notifications_enabled: true
       title: SusOpsConfig
       type: object
     InvokeListShares:
@@ -1248,6 +1287,10 @@ components:
               default: true
               title: Enabled
               type: boolean
+            pending:
+              default: false
+              title: Pending
+              type: boolean
           required:
           - tag
           - running
@@ -1480,6 +1523,29 @@ components:
           additionalProperties: false
     ShareIsRunningResult:
       type: boolean
+    InvokeSseClientCount:
+      type: object
+      description: "Live SSE subscriber count. Used by frontends to decide whether\na stop-on-quit should
+        actually stop, or skip because another\nfrontend is still attached to the same daemon."
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: sse_client_count
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties: {}
+          additionalProperties: false
+    SseClientCountResult:
+      type: integer
     InvokeStart:
       type: object
       description: Invoke `start` on SusOpsManager.
@@ -1532,6 +1598,10 @@ components:
             enabled:
               default: true
               title: Enabled
+              type: boolean
+            pending:
+              default: false
+              title: Pending
               type: boolean
           required:
           - tag
@@ -1606,6 +1676,10 @@ components:
             enabled:
               default: true
               title: Enabled
+              type: boolean
+            pending:
+              default: false
+              title: Pending
               type: boolean
           required:
           - tag
@@ -2090,6 +2164,168 @@ components:
           description: accepts arbitrary keyword args via **kwargs
     UpdateConfigResult:
       type: 'null'
+    InvokeUpdateConnection:
+      type: object
+      description: Edit a connection's tag / ssh_host / socks_proxy_port in place.
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: update_connection
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            tag:
+              type: string
+            new_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+            ssh_host:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
+            socks_proxy_port:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
+            restart:
+              type: boolean
+              default: true
+          required:
+          - tag
+          additionalProperties: false
+    UpdateConnectionResult:
+      $defs:
+        FileShare:
+          description: A persisted file share associated with a connection.
+          properties:
+            file_path:
+              title: File Path
+              type: string
+            password:
+              title: Password
+              type: string
+            port:
+              default: 0
+              title: Port
+              type: integer
+            stopped:
+              default: false
+              title: Stopped
+              type: boolean
+          required:
+          - file_path
+          - password
+          title: FileShare
+          type: object
+        Forwards:
+          properties:
+            local:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Local
+              type: array
+            remote:
+              default: []
+              items:
+                $ref: '#/components/schemas/PortForward'
+              title: Remote
+              type: array
+          title: Forwards
+          type: object
+        PortForward:
+          properties:
+            tag:
+              default: ''
+              title: Tag
+              type: string
+            src_addr:
+              default: localhost
+              title: Src Addr
+              type: string
+            src_port:
+              title: Src Port
+              type: integer
+            dst_addr:
+              default: localhost
+              title: Dst Addr
+              type: string
+            dst_port:
+              title: Dst Port
+              type: integer
+            tcp:
+              default: true
+              title: Tcp
+              type: boolean
+            udp:
+              default: false
+              title: Udp
+              type: boolean
+            enabled:
+              default: true
+              title: Enabled
+              type: boolean
+          required:
+          - src_port
+          - dst_port
+          title: PortForward
+          type: object
+      properties:
+        tag:
+          title: Tag
+          type: string
+        ssh_host:
+          title: Ssh Host
+          type: string
+        socks_proxy_port:
+          default: 0
+          title: Socks Proxy Port
+          type: integer
+        enabled:
+          default: true
+          title: Enabled
+          type: boolean
+        forwards:
+          $ref: '#/components/schemas/Forwards'
+          default:
+            local: []
+            remote: []
+        pac_hosts:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts
+          type: array
+        pac_hosts_disabled:
+          default: []
+          items:
+            type: string
+          title: Pac Hosts Disabled
+          type: array
+        file_shares:
+          default: []
+          items:
+            $ref: '#/components/schemas/FileShare'
+          title: File Shares
+          type: array
+      required:
+      - tag
+      - ssh_host
+      title: Connection
+      type: object
     InvocationRequest:
       type: object
       oneOf:
@@ -2101,6 +2337,7 @@ components:
       - $ref: '#/components/schemas/InvokeFetch'
       - $ref: '#/components/schemas/InvokeGetBandwidth'
       - $ref: '#/components/schemas/InvokeGetBandwidthGlobal'
+      - $ref: '#/components/schemas/InvokeGetBandwidthHistory'
       - $ref: '#/components/schemas/InvokeGetBandwidthTotals'
       - $ref: '#/components/schemas/InvokeGetLogs'
       - $ref: '#/components/schemas/InvokeGetPacUrl'
@@ -2124,6 +2361,7 @@ components:
       - $ref: '#/components/schemas/InvokeSetPacHostEnabled'
       - $ref: '#/components/schemas/InvokeShare'
       - $ref: '#/components/schemas/InvokeShareIsRunning'
+      - $ref: '#/components/schemas/InvokeSseClientCount'
       - $ref: '#/components/schemas/InvokeStart'
       - $ref: '#/components/schemas/InvokeStatus'
       - $ref: '#/components/schemas/InvokeStop'
@@ -2138,6 +2376,7 @@ components:
       - $ref: '#/components/schemas/InvokeToggleForwardEnabled'
       - $ref: '#/components/schemas/InvokeUpdateAppConfig'
       - $ref: '#/components/schemas/InvokeUpdateConfig'
+      - $ref: '#/components/schemas/InvokeUpdateConnection'
       discriminator:
         propertyName: method
     InvocationResponseSuccess:

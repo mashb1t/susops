@@ -1,9 +1,25 @@
-name: Release
+name: Release (v2)
+
+# Two-phase release flow.
+#
+#   Phase 1 — automatic on git tag push (v*).
+#     Runs tests, regenerates the OpenAPI spec, builds the wheel/sdist,
+#     and attaches them to a DRAFT GitHub Release. Nothing public yet.
+#
+#   Phase 2 — fires when you click "Publish release" on that draft in
+#     the GitHub UI (release.published event).
+#     Publishes the wheel/sdist to PyPI, builds the macOS DMG and
+#     uploads it to the release, syncs the Homebrew tap, syncs AUR.
+#
+# Rollout note: while this file lives alongside .github/workflows/release.yml
+# both workflows will fire on a tag push. Deactivate one before merging:
+# either delete release.yml or comment out its `on:` triggers.
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -12,10 +28,54 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  # Tests temporarily disabled while iterating on the release flow.
-  # Re-enable by restoring the test job and adding `needs: [test]` to
-  # build-pypi and build-dmg.
-  build-pypi:
+  # ───────────────────────────────────────────────────────────────────
+  # PHASE 1 — automatic on tag push
+  # ───────────────────────────────────────────────────────────────────
+
+  test:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - run: uv sync --extra dev --extra tui
+      - run: uv run pytest -x -q -m "not gui"
+
+  stage:
+    if: github.event_name == 'push'
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.14
+      - name: Install dependencies for OpenAPI generation
+        run: uv sync --extra dev
+      - name: Regenerate OpenAPI spec
+        # Always regenerate at tag time so the artifact matches the
+        # released code, even if the committed docs/openapi.yaml drifted.
+        run: uv run python tools/gen_openapi.py
+      - run: uv build
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          files: |
+            dist/*
+            docs/openapi.yaml
+          generate_release_notes: true
+
+  # ───────────────────────────────────────────────────────────────────
+  # PHASE 2 — fires when you click "Publish release" on the draft
+  # ───────────────────────────────────────────────────────────────────
+
+  publish-pypi:
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     # Trusted-publisher OIDC: short-lived token minted per run, no secret.
     permissions:
@@ -30,22 +90,14 @@ jobs:
       - name: Install dependencies for OpenAPI generation
         run: uv sync --extra dev
       - name: Regenerate OpenAPI spec
-        # Always regenerate against the source at tag time — guarantees the
-        # spec attached to the release matches the released code, even if the
-        # committed docs/openapi.yaml was somehow stale. The PR-time freshness
-        # test (tests/test_openapi.py) already prevents that, but belt + braces.
+        # Rebuilding fresh in Phase 2 is faster than wiring up an
+        # artifact handoff from Phase 1's run.
         run: uv run python tools/gen_openapi.py
       - run: uv build
-      - name: Attach release artifacts
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            dist/*
-            docs/openapi.yaml
-          generate_release_notes: true
       - run: uv publish
 
   build-dmg:
+    if: github.event_name == 'release'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -60,15 +112,11 @@ jobs:
         run: |
           VER="${VERSION#v}"
           hdiutil create -volname "SusOps" -srcfolder dist/SusOps.app -ov -format UDZO "SusOps-${VER}-arm64.dmg"
-        env:
-          VERSION: ${{ env.VERSION }}
       - name: Upload dmg to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ env.VERSION }}
         run: |
           VER="${VERSION#v}"
-          for i in $(seq 1 12); do gh release view "$VERSION" && break || sleep 10; done
           gh release upload "$VERSION" "SusOps-${VER}-arm64.dmg" --clobber
       - uses: actions/upload-artifact@v7
         with:
@@ -77,7 +125,8 @@ jobs:
           retention-days: 1
 
   update-tap:
-    needs: [build-pypi, build-dmg]
+    if: github.event_name == 'release'
+    needs: [publish-pypi, build-dmg]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -97,13 +146,10 @@ jobs:
           path: main
       - name: Update formula and cask sha256s
         working-directory: main
-        env:
-          VERSION: ${{ env.VERSION }}
         run: |
           VER="${VERSION#v}"
-          # Install [tui] so compute_resource_shas.py sees the full runtime
-          # closure (core deps + textual/plotext) and writes accurate
-          # sha256s for every resource listed in the Formula.
+          # Install [tui] so compute_resource_shas.py sees the full
+          # runtime closure and writes accurate sha256s.
           pip install -e ".[tui]"
           python scripts/update_homebrew_sha.py "${VER}" --dmg "SusOps-${VER}-arm64.dmg"
       - name: Copy to tap
@@ -112,8 +158,6 @@ jobs:
           cp main/packaging/homebrew/Casks/susops.rb  tap/Casks/susops.rb
       - name: Commit and push
         working-directory: tap
-        env:
-          VERSION: ${{ env.VERSION }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -122,7 +166,8 @@ jobs:
           git push
 
 #   update-aur:
-#     needs: [build-pypi]
+#     if: github.event_name == 'release'
+#     needs: [publish-pypi]
 #     runs-on: ubuntu-latest
 #     steps:
 #       - uses: actions/checkout@v6
@@ -130,8 +175,6 @@ jobs:
 #         with:
 #           python-version: "3.14"
 #       - name: Update PKGBUILD
-#         env:
-#           VERSION: ${{ env.VERSION }}
 #         run: |
 #           VER="${VERSION#v}"
 #           python scripts/update_aur_pkgver.py "${VER}"
@@ -147,8 +190,6 @@ jobs:
 #       - name: Add AUR host key
 #         run: ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
 #       - name: Clone and push AUR repo
-#         env:
-#           VERSION: ${{ env.VERSION }}
 #         run: |
 #           git clone ssh://aur@aur.archlinux.org/susops.git aur-repo
 #           cp packaging/aur/PKGBUILD  aur-repo/PKGBUILD

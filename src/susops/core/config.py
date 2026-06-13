@@ -112,12 +112,14 @@ class AppConfig(BaseModel):
     logo_style: LogoStyle = LogoStyle.COLORED_GLASSES
     restore_shares_on_start: bool = True
     tray_show_bandwidth: bool = False
+    notifications_enabled: bool = True
 
     @field_validator(
         "stop_on_quit",
         "ephemeral_ports",
         "restore_shares_on_start",
         "tray_show_bandwidth",
+        "notifications_enabled",
         mode="before",
     )
     @classmethod
@@ -193,39 +195,32 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
     clicks.
     """
     import os
+    import tempfile
     path = get_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml = YAML()
     yaml.default_flow_style = False
     yaml.indent(mapping=2, sequence=4, offset=2)
-    # Convert to plain dict via model_dump, then save
     data = config.model_dump(mode='python')
-    # Convert enums to their values for serialization
     data['susops_app']['logo_style'] = config.susops_app.logo_style.value
-    # Compute the target mode BEFORE writing: preserve any user-set restrictive
-    # permissions (e.g. chmod 600 on a hardened install) since Path.replace()
-    # would otherwise clobber them with the temp file's umask-derived mode.
-    # New configs default to 0o600 — the file holds share passwords.
     try:
         target_mode = path.stat().st_mode & 0o777
     except OSError:
         target_mode = 0o600
-    # Temp file in the same directory so the rename stays on one filesystem.
-    # Open with O_EXCL so we never overwrite a leftover temp file from a
-    # crashed earlier save (would otherwise inherit its mode).
-    tmp_path = path.with_name(path.name + ".tmp")
+    # Unique tmp file per call so concurrent saves (rapid TUI start/stop runs
+    # each handler in its own executor thread) don't fight over the same name
+    # and crash on tmp.replace(path) after a peer already renamed it away.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
     try:
-        fd = os.open(
-            str(tmp_path),
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            target_mode,
-        )
         try:
             with os.fdopen(fd, 'w') as f:
                 yaml.dump(data, f)
         except Exception:
-            # fdopen owns fd on success; on failure we may need to close it
-            # if fdopen never took ownership. Best-effort.
             try:
                 os.close(fd)
             except OSError:
@@ -235,7 +230,6 @@ def save_config(config: SusOpsConfig, workspace: Path = WORKSPACE_DEFAULT) -> No
         os.chmod(tmp_path, target_mode)
         tmp_path.replace(path)
     except Exception:
-        # Best-effort cleanup of the temp file if writing failed.
         try:
             tmp_path.unlink(missing_ok=True)
         except Exception:

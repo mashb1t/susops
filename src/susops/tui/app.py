@@ -121,9 +121,16 @@ class SusOpsTuiApp(App):
 
     def action_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            # Stops SSH tunnels + share servers in the daemon; PAC stays up
-            # via stopped-marker tombstones unless the user reset.
-            self.manager.stop_quick()
+            # Skip the destructive stop when another frontend (e.g. tray)
+            # is still attached. Otherwise the still-running frontend
+            # finds its SSH masters / PAC / reconnect monitor torn out
+            # from under it and looks broken until it's restarted.
+            try:
+                other_clients = int(self.manager.sse_client_count()) - 1
+            except Exception:
+                other_clients = 0
+            if other_clients <= 0:
+                self.manager.stop_quick()
         # No detach calls — the daemon is already a separate process and
         # outlives the TUI.
         self.exit()

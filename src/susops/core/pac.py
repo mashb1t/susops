@@ -134,10 +134,20 @@ class PacServer:
     def start(self, port: int, pac_path: Path) -> None:
         """Start the PAC HTTP server on the given port.
 
-        Raises RuntimeError if already running or if port is in use.
+        No-op if already running on the same port (parallel start() callers
+        race here — facade's check-then-act on is_running() can let multiple
+        threads through). Raises RuntimeError if the port is in use by
+        something else.
         """
         if self._server is not None:
-            raise RuntimeError("PAC server is already running")
+            if self._port == port:
+                # Same port + already up: caller's intent is already satisfied.
+                self._pac_path = pac_path
+                return
+            raise RuntimeError(
+                f"PAC server already running on port {self._port}, "
+                f"refusing to also bind {port}"
+            )
 
         self._pac_path = pac_path
 

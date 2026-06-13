@@ -100,15 +100,19 @@ def test_preflight_rejects_when_another_daemon_alive(ws):
         second = subprocess.Popen(
             [sys.executable, "-m", "susops.core.services_daemon",
              "--workspace", str(ws), "--port", "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        out, err = second.communicate(timeout=5)
+        second.wait(timeout=5)
         assert second.returncode == 2, (
-            f"expected exit code 2 (another daemon alive), got {second.returncode}; "
-            f"stderr was: {err.decode()!r}"
+            f"expected exit code 2 (another daemon alive), got {second.returncode}"
         )
-        assert b"already running" in err
+        # Failure reason now lives in the workspace log file, not stderr.
+        log_path = ws / "logs" / "susops-services.log"
+        log_text = log_path.read_text() if log_path.exists() else ""
+        assert "already running" in log_text, (
+            f"expected 'already running' in log file; contents:\n{log_text}"
+        )
     finally:
         first.terminate()
         first.wait(timeout=3)
@@ -137,15 +141,19 @@ def test_preflight_rejects_when_pac_port_squatted(ws):
         proc = subprocess.Popen(
             [sys.executable, "-m", "susops.core.services_daemon",
              "--workspace", str(ws), "--port", "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        out, err = proc.communicate(timeout=5)
+        proc.wait(timeout=5)
         assert proc.returncode == 3, (
-            f"expected exit code 3 (PAC port squatted), got {proc.returncode}; "
-            f"stderr was: {err.decode()!r}"
+            f"expected exit code 3 (PAC port squatted), got {proc.returncode}"
         )
-        assert b"bound by another process" in err
+        # Failure reason now lives in the workspace log file, not stderr.
+        log_path = ws / "logs" / "susops-services.log"
+        log_text = log_path.read_text() if log_path.exists() else ""
+        assert "bound by another process" in log_text, (
+            f"expected 'bound by another process' in log file; contents:\n{log_text}"
+        )
     finally:
         squat.close()
 
@@ -205,3 +213,53 @@ def test_pid_file_claim_is_atomic_under_simultaneous_spawn(ws):
                     p.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     p.kill()
+
+
+def test_preflight_accepts_when_stale_pid_belongs_to_non_daemon(ws):
+    """Stale PID file pointing at an unrelated live process (PID reuse).
+
+    Reproduces the chaos finding: SIGKILL the daemon, an ssh fork inherits
+    the freed PID before a new daemon spawns. The stale PID file now points
+    at the impostor — a bare os.kill(pid, 0) probe sees it as alive and the
+    new daemon's preflight refuses ("another daemon alive"), wedging the
+    user for ~100 s until the impostor exits.
+
+    Fix: preflight now verifies the holder's cmdline contains
+    'services_daemon'. An unrelated process (here: pytest) is rejected
+    and the stale file is removed so the new daemon can start.
+    """
+    pids = ws / "pids"
+    pids.mkdir()
+    # Write our own PID into the daemon's pid file — pytest is alive but
+    # is decisively NOT a susops daemon.
+    (pids / "susops-services.pid").write_text(str(os.getpid()))
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "susops.core.services_daemon",
+         "--workspace", str(ws), "--port", "0"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        # New daemon should start successfully despite the stale PID file
+        # pointing at our pytest process.
+        port_file = pids / "susops-services.port"
+        for _ in range(50):
+            if port_file.exists():
+                break
+            time.sleep(0.1)
+        assert port_file.exists(), (
+            "new daemon failed to start — preflight likely treated the "
+            "impostor PID as an existing daemon"
+        )
+        # PID file should now hold the new daemon's PID, not ours.
+        new_pid = int((pids / "susops-services.pid").read_text().strip())
+        assert new_pid != os.getpid()
+        assert new_pid == proc.pid
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()

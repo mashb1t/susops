@@ -8,6 +8,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -249,7 +250,41 @@ def stop_tunnel(
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 pass
 
+    # Last-resort sweep for orphan masters bound to our socket path.
+    # Under parallel start/stop the PID file can race (start writes PID Y while
+    # stop reads stale PID X, or the reconnect monitor spawns M2 between the
+    # read and the kill), leaving an ssh -N -T -D ... ControlPath=...sock
+    # process alive until its own keepalive timeout fires ~60s later.
+    if workspace is not None:
+        _sweep_orphan_masters(tag, workspace)
+
     return stopped
+
+
+def _sweep_orphan_masters(tag: str, workspace: Path) -> None:
+    """Kill any ssh process whose argv references our ControlPath socket but
+    that ProcessManager isn't tracking. No-op if psutil is unavailable.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    sock_str = str(socket_path(tag, workspace))
+    try:
+        own_pid = os.getpid()
+    except Exception:
+        own_pid = -1
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if proc.info["pid"] == own_pid:
+                continue
+            if proc.info.get("name") != "ssh":
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            if any(sock_str in arg for arg in cmdline):
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
 
 def is_tunnel_running(tag: str, process_mgr: ProcessManager) -> bool:
@@ -282,7 +317,12 @@ def find_master_pid(tag: str, workspace: Path) -> int | None:
 def is_socket_alive(tag: str, workspace: Path) -> bool:
     """Return True if the ControlMaster socket is responsive.
 
-    Uses `ssh -O check` to verify the master is healthy.
+    Uses `ssh -O check` to verify the master is healthy. The 1s timeout
+    is tight on purpose: a healthy local control socket replies in <100ms,
+    and anything longer means the master is stuck (e.g. waiting on agent),
+    in which case we should return False quickly so callers move on. The
+    previous 3s timeout could saturate the daemon's executor pool when
+    multiple callers stalled simultaneously.
     """
     sock = socket_path(tag, workspace)
     if not sock.exists():
@@ -291,7 +331,7 @@ def is_socket_alive(tag: str, workspace: Path) -> bool:
         result = subprocess.run(
             ["ssh", "-O", "check", "-o", f"ControlPath={sock}", "placeholder"],
             capture_output=True,
-            timeout=3,
+            timeout=1,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):

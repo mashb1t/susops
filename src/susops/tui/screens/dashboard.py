@@ -96,8 +96,9 @@ def _fmt_bw_line(
         tag_width: int = 25,
         show_dot: bool = True,
         enabled: bool = True,
+        pending: bool = False,
 ) -> str:
-    dot = status_dot(running, enabled)
+    dot = status_dot(running, enabled, pending=pending)
     prefix = f"  {dot} " if show_dot else "    "
     return (
         f"{prefix}{tag:<{tag_width}}  "
@@ -176,6 +177,7 @@ class DashboardScreen(Screen):
         self._conn_data: dict = {}
         self._rx_history: dict = {}
         self._tx_history: dict = {}
+        self._last_history_append: dict[str, float] = {}
         self._idle_ticks: int = 0  # ticks since last active connection
         self._sse_active: bool = True
         self._last_config = None
@@ -290,11 +292,19 @@ class DashboardScreen(Screen):
             bw: dict[str, tuple[float, float]] = {}
             bw_totals: dict[str, tuple[float, float]] = {}
             uptimes: dict[str, float | None] = {}
+            bw_history_seed: dict[str, list] = {}
             for cs in result.connection_statuses:
                 extras[cs.tag] = mgr.get_process_info(cs.tag)
                 bw[cs.tag] = mgr.get_bandwidth(cs.tag)
                 bw_totals[cs.tag] = mgr.get_bandwidth_totals(cs.tag)
                 uptimes[cs.tag] = mgr.get_uptime(cs.tag)
+                # Only fetch persisted history for tags we haven't seeded
+                # yet — saves an RPC per tick once the chart is rolling.
+                if cs.tag not in self._rx_history:
+                    try:
+                        bw_history_seed[cs.tag] = mgr.get_bandwidth_history(cs.tag) or []
+                    except Exception:
+                        bw_history_seed[cs.tag] = []
 
             shares = mgr.list_shares()
             config = mgr.list_config()
@@ -312,7 +322,8 @@ class DashboardScreen(Screen):
             )
             return
         self.app.call_from_thread(
-            self._apply_status, result, extras, bw, bw_totals, uptimes, shares, config, reconnect
+            self._apply_status, result, extras, bw, bw_totals, uptimes, shares,
+            config, reconnect, bw_history_seed,
         )
 
     def _apply_status(
@@ -325,7 +336,9 @@ class DashboardScreen(Screen):
             shares: list,
             config,
             reconnect: dict,
+            bw_history_seed: dict | None = None,
     ) -> None:
+        bw_history_seed = bw_history_seed or {}
         self._last_config = config
         self._last_shares = shares
 
@@ -352,15 +365,39 @@ class DashboardScreen(Screen):
             }
         self._conn_data = new_conn_data
 
-        # Update rolling bandwidth history (60 samples)
+        # Update rolling bandwidth history (60 samples). Seed from the
+        # daemon's persisted history (pre-fetched by refresh_status) on
+        # first encounter so reopening the TUI doesn't reset the chart to
+        # flatlined zeros.
+        #
+        # Throttle appends to once per ~second per tag. SSE events fire many
+        # times during connection start (state, forward, share) and each
+        # triggers a refresh — appending on every refresh makes the chart
+        # scroll several samples per second and the user sees the bandwidth
+        # "speed up". The sampler itself only updates once per second, so
+        # appending faster than that just duplicates the same rate.
+        import time as _time
+        now = _time.monotonic()
         for cs in result.connection_statuses:
             tag = cs.tag
             rx, tx = bw.get(tag, (0.0, 0.0))
             if tag not in self._rx_history:
-                self._rx_history[tag] = deque([0.0] * 60, maxlen=60)
-                self._tx_history[tag] = deque([0.0] * 60, maxlen=60)
-            self._rx_history[tag].append(rx)
-            self._tx_history[tag].append(tx)
+                rx_seed = [0.0] * 60
+                tx_seed = [0.0] * 60
+                persisted = (bw_history_seed.get(tag) or [])[-60:]
+                if persisted:
+                    rx_seed[-len(persisted):] = [s[0] for s in persisted]
+                    tx_seed[-len(persisted):] = [s[1] for s in persisted]
+                self._rx_history[tag] = deque(rx_seed, maxlen=60)
+                self._tx_history[tag] = deque(tx_seed, maxlen=60)
+                self._last_history_append[tag] = now
+                self._rx_history[tag].append(rx)
+                self._tx_history[tag].append(tx)
+                continue
+            if now - self._last_history_append.get(tag, 0.0) >= 0.9:
+                self._rx_history[tag].append(rx)
+                self._tx_history[tag].append(tx)
+                self._last_history_append[tag] = now
 
         # Remove history for tags that no longer exist
         current_tags = {cs.tag for cs in result.connection_statuses}
@@ -376,7 +413,7 @@ class DashboardScreen(Screen):
 
         label_texts: list[str] = []
         for cs in result.connection_statuses:
-            dot = status_dot(cs.running, cs.enabled)
+            dot = status_dot(cs.running, cs.enabled, pending=getattr(cs, "pending", False))
             port_str = str(cs.socks_port) if cs.socks_port else "auto"
             rx, _tx = bw.get(cs.tag, (0.0, 0.0))
             label_texts.append(f"{dot} {cs.tag:<25} {port_str:<5} {_fmt_bps(rx):>7}↓")
@@ -496,7 +533,8 @@ class DashboardScreen(Screen):
         # from the "running / total" count so the total reflects what the user
         # actually expects to be up.
         enabled_data = {t: d for t, d in self._conn_data.items() if d["cs"].enabled}
-        running = sum(1 for d in enabled_data.values() if d["cs"].running)
+        running = sum(1 for d in enabled_data.values() if d["cs"].running and not getattr(d["cs"], "pending", False))
+        pending = sum(1 for d in enabled_data.values() if getattr(d["cs"], "pending", False))
         total = len(enabled_data)
         if not self._conn_data:
             return "[dim]No connections configured.[/dim]"
@@ -513,7 +551,9 @@ class DashboardScreen(Screen):
         total_fwds = f"{total_fwds_l}L {total_fwds_r}R"
 
         lines = [
-            f"[bold]All Connections[/bold]  {running} running / {total} total",
+            f"[bold]All Connections[/bold]  {running} running"
+            + (f" / [#ff8800]{pending} pending[/#ff8800]" if pending else "")
+            + f" / {total} total",
             "",
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
@@ -528,6 +568,7 @@ class DashboardScreen(Screen):
             lines.append(_fmt_bw_line(
                 tag, data["cs"].running, *data["bw"], *data["bw_total"],
                 enabled=data["cs"].enabled,
+                pending=getattr(data["cs"], "pending", False),
             ))
         return "\n".join(lines)
 
@@ -607,10 +648,13 @@ class DashboardScreen(Screen):
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
-        if cs.running:
-            status_str = "[green]● running[/green]"
-        elif not cs.enabled:
+        pending = getattr(cs, "pending", False)
+        if not cs.enabled:
             status_str = "[dim]─ disabled[/dim]"
+        elif pending:
+            status_str = "[#ff8800]◐ pending[/#ff8800]"
+        elif cs.running:
+            status_str = "[green]● running[/green]"
         else:
             status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"

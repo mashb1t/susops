@@ -11,6 +11,13 @@ SusOpsClient at the tmp-path daemon spawned by the ``daemon`` fixture
 """
 from __future__ import annotations
 
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -68,3 +75,72 @@ class _TestTrayApp(AbstractTrayApp):
 def tray(daemon):
     """Fresh tray harness wired to the fixture daemon's workspace."""
     return _TestTrayApp(workspace=daemon)
+
+
+# ---------------------------------------------------------------------------
+# Live GUI fixture (opt-in, macOS only)
+# ---------------------------------------------------------------------------
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class TrayProc:
+    def __init__(self, proc: subprocess.Popen, port: int, workspace: Path):
+        self.proc = proc
+        self.port = port
+        self.workspace = workspace
+
+    def send(self, line: str, timeout: float = 15.0) -> dict:
+        with socket.create_connection(("127.0.0.1", self.port), timeout=timeout) as s:
+            f = s.makefile("rw", encoding="utf-8")
+            f.write(line + "\n")
+            f.flush()
+            return json.loads(f.readline())
+
+
+@pytest.fixture
+def tray_proc(tmp_path: Path):
+    """Spawn a real susops-tray with isolated workspace + debug server."""
+    port = _free_port()
+    env = os.environ.copy()
+    env["SUSOPS_TRAY_WORKSPACE"] = str(tmp_path)
+    env["SUSOPS_TRAY_DEBUG_PORT"] = str(port)
+    tray_bin = Path(sys.executable).parent / "susops-tray"
+    proc = subprocess.Popen(
+        [str(tray_bin)], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    tp = TrayProc(proc, port, tmp_path)
+    deadline = time.time() + 20
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            pytest.fail(f"tray died on startup: {proc.stderr.read().decode(errors='replace')!r}")
+        try:
+            assert tp.send("ping") == {"ok": True}
+            break
+        except Exception as exc:  # noqa: BLE001 - retry until deadline
+            last_err = exc
+            time.sleep(0.25)
+    else:
+        proc.kill()
+        pytest.fail(f"debug server never came up: {last_err!r}")
+    yield tp
+    try:
+        tp.send("quit", timeout=5)
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    pid_file = tmp_path / "pids" / "susops-services.pid"
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass

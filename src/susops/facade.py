@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ from susops.core.config import (
     save_config,
 )
 from susops.core.pac import PacServer, write_pac_file
-from susops.core.ports import get_random_free_port, is_port_free
+from susops.core.ports import get_random_free_port, is_port_free, validate_port
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.socat import (
@@ -376,6 +377,11 @@ class _BandwidthSampler:
         with self._lock:
             return self._totals.get(tag, (0.0, 0.0))
 
+    def get_history(self, tag: str) -> list[list[float]]:
+        """Return the persisted (rx_bps, tx_bps) samples for *tag* (newest last)."""
+        with self._lock:
+            return list(self._history.get(tag, []))
+
     def reset_totals(self, tag: str | None = None) -> None:
         """Reset cumulative counters. Pass tag=None to reset all."""
         with self._lock:
@@ -493,6 +499,25 @@ class _ReconnectMonitor:
             self._mgr._reregister_forwards(tag)
 
 
+_TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _validate_tag(tag: str) -> None:
+    """Raise ValueError if tag is unsafe for filesystem + display use.
+
+    Bars empty, control chars, slashes, '..', leading dot/dash, and overlong
+    inputs. Tags appear in marker filenames, PID files, socket paths, log
+    lines — so they must be a strict safe-identifier subset.
+    """
+    if not isinstance(tag, str):
+        raise ValueError(f"Tag must be a string, got {type(tag).__name__}")
+    if not _TAG_PATTERN.fullmatch(tag) or ".." in tag:
+        raise ValueError(
+            f"Invalid tag {tag!r}: must match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}} "
+            "(no '..', no leading punctuation, no slashes)"
+        )
+
+
 def _stopped_marker_path(workspace: Path, tag: str) -> Path:
     """File whose existence means a tag was *intentionally* stopped.
 
@@ -505,6 +530,9 @@ def _stopped_marker_path(workspace: Path, tag: str) -> Path:
     tag in one, the other's monitor sees a dead socket and silently brings
     the tunnel back up.
     """
+    # Defense in depth: reject traversal even if a caller skipped tag validation.
+    if "/" in tag or "\\" in tag or tag in ("", ".", ".."):
+        raise ValueError(f"Unsafe tag for marker path: {tag!r}")
     return workspace / "pids" / f"susops-stopped-{tag}.marker"
 
 
@@ -541,6 +569,17 @@ class SusOpsManager:
         self._verbose = verbose
 
         self.config: SusOpsConfig = load_config(workspace)
+        # RLock around every reload→mutate→save window. Two concurrent RPC
+        # handlers (each on its own executor thread) would otherwise race:
+        # both read, both mutate, last writer wins — losing updates. RLock
+        # because some mutators delegate to other mutators (e.g. via
+        # set_connection_enabled → _update_pac path).
+        self._config_lock = threading.RLock()
+        # Separate lock around the PAC server check-then-start. Otherwise
+        # parallel start() calls all see is_running() == False, each tries
+        # to bind the same port, one wins and the rest log spurious EADDRINUSE
+        # / "PAC server is already running" errors.
+        self._pac_start_lock = threading.Lock()
         self._process_mgr = ProcessManager(workspace)
         self._pac_server = PacServer()
         self._status_server = StatusServer()
@@ -620,25 +659,59 @@ class SusOpsManager:
             print(full, file=sys.stderr)
 
     def _notify(self, title: str, body: str) -> None:
-        """Send a desktop notification. Best-effort — fails silently."""
+        """Send a desktop notification with the SusOps icon. Best-effort.
+
+        Suppressed entirely when susops_app.notifications_enabled is False
+        (tray Settings → Notifications toggle).
+        """
+        if not self.config.susops_app.notifications_enabled:
+            return
         import platform
-        import subprocess
+        from pathlib import Path
+        icon = Path(__file__).parent / "assets" / "icon.png"
         try:
             if platform.system() == "Darwin":
-                subprocess.Popen(
-                    ["osascript", "-e",
-                     f'display notification "{body}" with title "{title}"'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                self._notify_macos(title, body, icon)
             elif platform.system() == "Linux":
-                subprocess.Popen(
-                    ["notify-send", title, body],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                self._notify_linux(title, body, icon)
         except Exception:
             pass
+
+    @staticmethod
+    def _notify_macos(title: str, body: str, icon: "Path") -> None:
+        # NSUserNotification's setContentImage_ puts the SusOps icon on the
+        # right side of the banner. The source-app slot (left side) reflects
+        # the running process — bundled .app shows SusOps, raw pip install
+        # shows Python. osascript can't set either, so it loses both.
+        try:
+            from Foundation import NSUserNotification, NSUserNotificationCenter  # type: ignore
+            from AppKit import NSImage  # type: ignore
+            n = NSUserNotification.alloc().init()
+            n.setTitle_(title)
+            n.setInformativeText_(body)
+            if icon.exists():
+                img = NSImage.alloc().initWithContentsOfFile_(str(icon))
+                if img is not None:
+                    n.setContentImage_(img)
+            NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(n)
+            return
+        except Exception:
+            pass
+        # Fallback for non-PyObjC environments
+        import subprocess
+        subprocess.Popen(
+            ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    @staticmethod
+    def _notify_linux(title: str, body: str, icon: "Path") -> None:
+        import subprocess
+        cmd = ["notify-send"]
+        if icon.exists():
+            cmd += ["-i", str(icon)]
+        cmd += [title, body]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _emit(self, event: str, data: dict) -> None:
         """Emit an SSE event and log it when verbose (bandwidth excluded — too noisy)."""
@@ -651,16 +724,118 @@ class SusOpsManager:
             self.on_state_change(state)
 
     def _reload_config(self) -> None:
-        self.config = load_config(self.workspace)
+        with self._config_lock:
+            self.config = load_config(self.workspace)
 
     def _save(self) -> None:
-        save_config(self.config, self.workspace)
+        with self._config_lock:
+            save_config(self.config, self.workspace)
 
     def _replace_connection(self, updated: Connection) -> None:
         """Swap the connection with the same tag in self.config (does not save)."""
         self.config = self.config.model_copy(
             update={"connections": [updated if c.tag == updated.tag else c for c in self.config.connections]}
         )
+
+    # Auth-pending watcher timeout. 60s gives the user plenty of time to
+    # find / unlock the agent UI and approve. After that, the orphan ssh
+    # is killed so the connection doesn't stay stuck in a half-state.
+    _AUTH_WATCHER_TIMEOUT = 60.0
+
+    def _spawn_auth_watcher(self, conn: "Connection", pid: int) -> None:
+        """Wait for the ControlMaster socket asynchronously, then register
+        forwards + shares. If the socket never appears (e.g. user dismisses
+        the agent prompt) kill the orphan ssh so the connection doesn't
+        stay pinned in a "PID alive but never authenticated" state."""
+
+        def _watch() -> None:
+            sock = socket_path(conn.tag, self.workspace)
+            deadline = time.monotonic() + self._AUTH_WATCHER_TIMEOUT
+            while time.monotonic() < deadline:
+                if not is_tunnel_running(conn.tag, self._process_mgr):
+                    # User cancelled the agent prompt → ssh exited.
+                    self._error(
+                        f"[{conn.tag}] SSH master exited before authenticating "
+                        "(agent prompt cancelled?)"
+                    )
+                    self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                    return
+                # start_master() unlinks any stale socket before spawning,
+                # so socket file existence by itself means ssh authenticated
+                # and entered multiplex mode. Skip the ssh -O check
+                # subprocess here — it was hammering the daemon's executor
+                # pool 5x/sec while in pending state.
+                if sock.exists():
+                    try:
+                        self._finalize_connection_after_auth(conn, pid)
+                    except Exception as exc:
+                        self._error(f"[{conn.tag}] Post-auth setup failed: {exc}")
+                    return
+                time.sleep(0.2)
+            # Timed out — ssh master is alive but never authenticated.
+            self._error(
+                f"[{conn.tag}] SSH did not authenticate within "
+                f"{int(self._AUTH_WATCHER_TIMEOUT)}s — killing orphan master. "
+                "Approve the agent prompt next time."
+            )
+            try:
+                stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host)
+            except Exception:
+                pass
+            self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+
+        threading.Thread(
+            target=_watch, daemon=True, name=f"susops-auth-{conn.tag}",
+        ).start()
+
+    def _finalize_connection_after_auth(self, conn: "Connection", pid: int) -> None:
+        """Register forwards + start file-share servers + emit "running".
+        Called from _spawn_auth_watcher once the ControlMaster socket is up."""
+        self._register_forwards(conn)
+
+        # Start HTTP servers for config-only (stopped) shares, then forward
+        # slaves for all running share servers belonging to this connection.
+        for fs in conn.file_shares:
+            if fs.stopped:
+                continue
+            if fs.port in self._share_servers:
+                continue
+            fp = Path(fs.file_path)
+            if not fp.exists():
+                self._log(f"[{conn.tag}] Share '{fs.file_path}' not found — skipping")
+                continue
+            try:
+                srv = ShareServer()
+                raw = srv.start(file_path=fp, password=fs.password,
+                                port=fs.port, workspace=self.workspace)
+                si = ShareInfo(
+                    file_path=str(fp), port=raw.port, password=fs.password,
+                    url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
+                )
+                self._share_servers[raw.port] = (srv, si)
+                if raw.port != fs.port:
+                    self._update_file_share_port(conn.tag, fs, raw.port)
+                self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
+                self._emit("share", {
+                    "port": raw.port, "file": fp.name, "running": True, "conn_tag": conn.tag,
+                })
+            except Exception as exc:
+                self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
+
+        for share_port, (_server, share_info) in list(self._share_servers.items()):
+            if share_info.conn_tag == conn.tag:
+                fw = PortForward(
+                    src_port=share_port, dst_port=share_port,
+                    src_addr="localhost", dst_addr="localhost",
+                    tag=f"share-{share_port}",
+                )
+                try:
+                    start_forward(conn, fw, "remote", self.workspace)
+                except Exception as exc:
+                    self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
+
+        self._log(f"[{conn.tag}] Authenticated and ready")
+        self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
 
     def _register_forwards(self, conn: Connection, error_suffix: str = "") -> None:
         """Register all enabled forwards for conn through its ControlMaster.
@@ -717,6 +892,24 @@ class SusOpsManager:
             if recovered:
                 name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
                 self._process_mgr._pid_file(name).write_text(str(recovered))
+        # Pending covers two scenarios:
+        #   1. ssh master alive but socket not yet up → waiting on agent prompt
+        #   2. ssh master not alive but the reconnect monitor still intends
+        #      this tag → previous attempt failed (bad key, host down, ...)
+        #      and we're between retry ticks. Without this the UI flips to
+        #      "stopped" between retries even though the monitor is actively
+        #      reconnecting every 5s.
+        pending = False
+        if running:
+            sock = socket_path(conn.tag, self.workspace)
+            pending = not sock.exists()
+        else:
+            try:
+                with self._reconnect_monitor._lock:
+                    if conn.tag in self._reconnect_monitor._intended:
+                        pending = True
+            except Exception:
+                pass
         pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{conn.tag}")
         return ConnectionStatus(
             tag=conn.tag,
@@ -724,6 +917,7 @@ class SusOpsManager:
             pid=pid,
             socks_port=conn.socks_proxy_port,
             enabled=conn.enabled,
+            pending=pending,
         )
 
     def _ensure_socks_port(self, conn: Connection) -> Connection:
@@ -803,6 +997,11 @@ class SusOpsManager:
             # stopped (PAC is irrelevant in this case but we don't actively
             # demote RUNNING → STOPPED if it happens to be up).
             return ProcessState.STOPPED if not pac_running else ProcessState.STOPPED_PARTIALLY
+        # Any pending connection (waiting on agent prompt, or between
+        # reconnect retries) means we're not fully up, even if the ssh PID
+        # is alive. Show STOPPED_PARTIALLY so the tray icon flips to orange.
+        if any(getattr(s, "pending", False) for s in enabled_statuses):
+            return ProcessState.STOPPED_PARTIALLY
         running_count = sum(1 for s in enabled_statuses if s.running)
         total = len(enabled_statuses)
         if running_count == total and pac_running:
@@ -925,46 +1124,58 @@ class SusOpsManager:
     def _add_file_share_to_config(
             self, conn_tag: str, file_path: str, password: str, port: int
     ) -> None:
-        conn = get_connection(self.config, conn_tag)
-        if conn is None:
-            return
-        # Update existing entry (clear stopped flag on re-share) or append new
-        existing = [f for f in conn.file_shares if f.file_path == file_path]
-        if existing:
-            new_shares = [
-                fs.model_copy(update={"password": password, "port": port, "stopped": False})
-                if fs.file_path == file_path else fs
-                for fs in conn.file_shares
-            ]
-        else:
-            new_shares = list(conn.file_shares) + [
-                FileShare(file_path=file_path, password=password, port=port)
-            ]
-        self._replace_connection(conn.model_copy(update={"file_shares": new_shares}))
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, conn_tag)
+            if conn is None:
+                return
+            # Update existing entry (clear stopped flag on re-share) or append new
+            existing = [f for f in conn.file_shares if f.file_path == file_path]
+            if existing:
+                new_shares = [
+                    fs.model_copy(update={"password": password, "port": port, "stopped": False})
+                    if fs.file_path == file_path else fs
+                    for fs in conn.file_shares
+                ]
+            else:
+                new_shares = list(conn.file_shares) + [
+                    FileShare(file_path=file_path, password=password, port=port)
+                ]
+            self._replace_connection(conn.model_copy(update={"file_shares": new_shares}))
+            self._save()
 
     def _remove_file_share_from_config(self, port: int) -> None:
-        new_conns = []
-        for conn in self.config.connections:
-            updated_shares = [f for f in conn.file_shares if f.port != port]
-            if len(updated_shares) != len(conn.file_shares):
-                new_conns.append(conn.model_copy(update={"file_shares": updated_shares}))
-            else:
-                new_conns.append(conn)
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            new_conns = []
+            for conn in self.config.connections:
+                updated_shares = [f for f in conn.file_shares if f.port != port]
+                if len(updated_shares) != len(conn.file_shares):
+                    new_conns.append(conn.model_copy(update={"file_shares": updated_shares}))
+                else:
+                    new_conns.append(conn)
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
 
     def _set_file_share_stopped(self, port: int, stopped: bool) -> None:
-        """Update the stopped flag on a persisted FileShare entry."""
-        new_conns = []
-        for conn in self.config.connections:
-            updated = [
-                fs.model_copy(update={"stopped": stopped}) if fs.port == port else fs
-                for fs in conn.file_shares
-            ]
-            new_conns.append(conn.model_copy(update={"file_shares": updated}))
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        """Update the stopped flag on a persisted FileShare entry.
+
+        Reads fresh under _config_lock so a concurrent config mutation (the
+        tray poll's list_shares, another frontend) cannot be clobbered by a
+        stale in-memory write. Matches the read-modify-write pattern used by
+        the other config mutators.
+        """
+        with self._config_lock:
+            self._reload_config()
+            new_conns = []
+            for conn in self.config.connections:
+                updated = [
+                    fs.model_copy(update={"stopped": stopped}) if fs.port == port else fs
+                    for fs in conn.file_shares
+                ]
+                new_conns.append(conn.model_copy(update={"file_shares": updated}))
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -974,11 +1185,13 @@ class SusOpsManager:
         # Re-spin the in-process monitor in case a prior stop() halted it.
         self._reconnect_monitor.start()
         self._reload_config()
-        connections = (
-            [get_connection(self.config, tag)] if tag
-            else list(self.config.connections)
-        )
-        connections = [c for c in connections if c is not None]
+        if tag is not None:
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+            connections = [conn]
+        else:
+            connections = list(self.config.connections)
 
         if not connections:
             return StartResult(success=False, message="No connections configured")
@@ -1011,53 +1224,14 @@ class SusOpsManager:
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
 
-                self._register_forwards(conn)
-
-                # Start HTTP servers for config-only (stopped) shares, then forward slaves
-                # for all running share servers belonging to this connection.
-                for fs in conn.file_shares:
-                    if fs.stopped:
-                        continue  # user manually stopped — do not auto-restart
-                    if fs.port in self._share_servers:
-                        continue  # already running
-                    fp = Path(fs.file_path)
-                    if not fp.exists():
-                        self._log(f"[{conn.tag}] Share '{fs.file_path}' not found — skipping")
-                        continue
-                    try:
-                        srv = ShareServer()
-                        raw = srv.start(file_path=fp, password=fs.password,
-                                        port=fs.port, workspace=self.workspace)
-                        si = ShareInfo(
-                            file_path=str(fp), port=raw.port, password=fs.password,
-                            url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
-                        )
-                        self._share_servers[raw.port] = (srv, si)
-                        if raw.port != fs.port:
-                            self._update_file_share_port(conn.tag, fs, raw.port)
-                        self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
-                        self._emit("share", {
-                            "port": raw.port,
-                            "file": fp.name,
-                            "running": True,
-                            "conn_tag": conn.tag,
-                        })
-                    except Exception as exc:
-                        self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
-
-                for share_port, (_server, share_info) in list(self._share_servers.items()):
-                    if share_info.conn_tag == conn.tag:
-                        fw = PortForward(
-                            src_port=share_port,
-                            dst_port=share_port,
-                            src_addr="localhost",
-                            dst_addr="localhost",
-                            tag=f"share-{share_port}",
-                        )
-                        try:
-                            start_forward(conn, fw, "remote", self.workspace)
-                        except Exception as exc:
-                            self._log(f"[{conn.tag}] Share forward {share_port} failed: {exc}")
+                # Forwards and share-forwards can only register once the
+                # ControlMaster socket exists — i.e. after ssh has finished
+                # authenticating. With a 1Password / Bitwarden prompt that
+                # can take 30s+. Watch in the background so start() returns
+                # immediately; the watcher emits state events as the SSH
+                # session moves through pending → running → (or stopped on
+                # timeout / cancelled prompt).
+                self._spawn_auth_watcher(conn, pid)
 
                 statuses.append(ConnectionStatus(
                     tag=conn.tag, running=True, pid=pid,
@@ -1079,28 +1253,27 @@ class SusOpsManager:
                 statuses.append(ConnectionStatus(tag=conn.tag, running=False))
                 self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
 
-        if not self._pac_server.is_running():
-            cross_port = self._read_pac_port_file()
-            if cross_port and self._probe_port(cross_port):
-                self._log(f"PAC server already running (cross-process) on port {cross_port}")
-                # Regenerate PAC file so cross-process server picks up the new connection
-                self._update_pac()
+        with self._pac_start_lock:
+            if not self._pac_server.is_running():
+                cross_port = self._read_pac_port_file()
+                if cross_port and self._probe_port(cross_port):
+                    self._log(f"PAC server already running (cross-process) on port {cross_port}")
+                    self._update_pac()
+                else:
+                    if cross_port:
+                        self._remove_pac_port_file()
+                    try:
+                        self._reload_config()
+                        pac_port = self._ensure_pac_port()
+                        pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
+                        self._pac_server.start(pac_port, pac_path)
+                        self._write_pac_port_file(self._pac_server.get_port())
+                        self._log(f"PAC server started on port {pac_port}")
+                    except Exception as exc:
+                        self._error(f"PAC server failed: {exc}")
+                        errors.append(f"PAC server failed: {exc}")
             else:
-                if cross_port:
-                    self._remove_pac_port_file()
-                try:
-                    self._reload_config()
-                    pac_port = self._ensure_pac_port()
-                    pac_path = write_pac_file(self.config, self.workspace, active_tags=self._active_tags())
-                    self._pac_server.start(pac_port, pac_path)
-                    self._write_pac_port_file(self._pac_server.get_port())
-                    self._log(f"PAC server started on port {pac_port}")
-                except Exception as exc:
-                    self._error(f"PAC server failed: {exc}")
-                    errors.append(f"PAC server failed: {exc}")
-        else:
-            # PAC already running in-process — regenerate to include new connection's hosts
-            self._update_pac()
+                self._update_pac()
 
         # Start status server if not already running
         self.ensure_sse_status_server()
@@ -1386,11 +1559,13 @@ class SusOpsManager:
         errors = []
 
         ephemeral = self.config.susops_app.ephemeral_ports
-        connections = (
-            [get_connection(self.config, tag)] if tag
-            else list(self.config.connections)
-        )
-        connections = [c for c in connections if c is not None]
+        if tag is not None:
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+            connections = [conn]
+        else:
+            connections = list(self.config.connections)
         for conn in connections:
             try:
                 # Write the stopped marker BEFORE killing the tunnel — that
@@ -1457,7 +1632,15 @@ class SusOpsManager:
             self._reconnect_monitor.stop()
 
         self._save()
-        self._emit_state(self._compute_state())
+        final_state = self._compute_state()
+        self._emit_state(final_state)
+        # SSE event so cross-process frontends recompute their icon. The
+        # per-connection emit at stop_tunnel() time fired BEFORE PAC was
+        # stopped, so any status() racing with it would see PAC still
+        # running and return STOPPED_PARTIALLY. This second emit fires
+        # after PAC has been torn down so the recompute settles on the
+        # final aggregate.
+        self._emit("state", {"aggregate": final_state.value})
         return StopResult(
             success=not errors,
             message="; ".join(errors) if errors else "Stopped",
@@ -1490,63 +1673,146 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0) -> Connection:
-        self._reload_config()
-        if get_connection(self.config, tag) is not None:
-            raise ValueError(f"Connection '{tag}' already exists")
-        conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port)
-        self.config = self.config.model_copy(
-            update={"connections": list(self.config.connections) + [conn]}
-        )
-        self._save()
-        # Clear any leftover stopped-marker from a previous connection with
-        # the same tag — otherwise the new connection would never reconnect.
+        _validate_tag(tag)
+        if not (isinstance(ssh_host, str) and ssh_host.strip()):
+            raise ValueError("ssh_host must be a non-empty string")
+        if socks_port != 0 and not validate_port(socks_port, allow_zero=True):
+            raise ValueError(f"Invalid socks_port {socks_port}: must be 0 or 1-65535")
+        with self._config_lock:
+            self._reload_config()
+            if get_connection(self.config, tag) is not None:
+                raise ValueError(f"Connection '{tag}' already exists")
+            conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port)
+            self.config = self.config.model_copy(
+                update={"connections": list(self.config.connections) + [conn]}
+            )
+            self._save()
         _clear_stopped_marker(self.workspace, tag)
         self._log(f"Added connection '{tag}' → {ssh_host}")
         return conn
 
     def remove_connection(self, tag: str) -> None:
-        self._reload_config()
-        conn = get_connection(self.config, tag)
-        if conn is None:
-            raise ValueError(f"Connection '{tag}' not found")
-        # Write the stopped marker before killing the tunnel so any other
-        # process's reconnect monitor doesn't bring it back up while we're
-        # mid-remove.
-        _write_stopped_marker(self.workspace, tag)
-        stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
-        stop_all_udp_forwards_for_connection(tag, self._process_mgr)
-        self._reconnect_monitor.mark_stopped(tag)
-        self.config = self.config.model_copy(
-            update={"connections": [c for c in self.config.connections if c.tag != tag]}
-        )
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+            _write_stopped_marker(self.workspace, tag)
+            stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+            stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+            self._reconnect_monitor.mark_stopped(tag)
+            self.config = self.config.model_copy(
+                update={"connections": [c for c in self.config.connections if c.tag != tag]}
+            )
+            self._save()
         self._log(f"Removed connection '{tag}'")
 
     def set_connection_enabled(self, tag: str, enabled: bool) -> None:
-        self._reload_config()
-        conn = get_connection(self.config, tag)
-        if conn is None:
-            raise ValueError(f"Connection '{tag}' not found")
-        self._replace_connection(conn.model_copy(update={"enabled": enabled}))
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+            self._replace_connection(conn.model_copy(update={"enabled": enabled}))
+            self._save()
         self._log(f"[{tag}] {'enabled' if enabled else 'disabled'}")
         if enabled:
             # Re-enabling clears any leftover "stopped" marker so reconnect
             # monitors will watch this tag again.
             _clear_stopped_marker(self.workspace, tag)
-            return
-        # Disabling = intentional stop. Write the marker BEFORE killing the
-        # tunnel so a parallel process's monitor doesn't try to revive it.
-        _write_stopped_marker(self.workspace, tag)
-        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
-            stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
-            stop_all_udp_forwards_for_connection(tag, self._process_mgr)
-            self._bw_sampler.reset_totals(tag)
-            self._start_times.pop(tag, None)
-            self._reconnect_monitor.mark_stopped(tag)
-            self._emit("state", {"tag": tag, "running": False, "pid": None})
-            # Regenerate PAC after stopping so this connection's hosts are removed
-            self._update_pac()
+        else:
+            # Disabling = intentional stop. Write the marker BEFORE killing the
+            # tunnel so a parallel process's monitor doesn't try to revive it.
+            _write_stopped_marker(self.workspace, tag)
+            if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
+                stop_tunnel(tag, self._process_mgr, self.workspace, conn.ssh_host)
+                stop_all_udp_forwards_for_connection(tag, self._process_mgr)
+                self._bw_sampler.reset_totals(tag)
+                self._start_times.pop(tag, None)
+                self._reconnect_monitor.mark_stopped(tag)
+                if not self._active_tags():
+                    write_pac_file(self.config, self.workspace, active_tags=set())
+                    self._stop_pac_server(
+                        errors=[], keep_ports=True, ephemeral=False,
+                        context="last enabled connection disabled",
+                    )
+                else:
+                    self._update_pac()
+        # Always emit a state event so frontends recompute their aggregate
+        # icon — the enabled-set drives _compute_state's "partial vs running"
+        # decision even when the per-connection running status didn't change.
+        running = is_tunnel_running(tag, self._process_mgr)
+        pid = self._process_mgr.get_pid(f"{SSH_PROCESS_PREFIX}-{tag}") if running else None
+        self._emit("state", {"tag": tag, "running": running, "pid": pid})
+
+    def update_connection(
+            self,
+            tag: str,
+            *,
+            new_tag: str | None = None,
+            ssh_host: str | None = None,
+            socks_proxy_port: int | None = None,
+            restart: bool = True,
+    ) -> Connection:
+        """Edit a connection's tag / ssh_host / socks_proxy_port in place.
+
+        Unlike remove + re-add, this preserves the connection's children
+        (forwards, pac_hosts, pac_hosts_disabled, file_shares, enabled) via
+        model_copy — remove_connection cascades and would drop them.
+
+        If the connection was running and restart=True, the tunnel is torn
+        down under the OLD tag and brought back up under the NEW config so a
+        renamed/re-pointed connection picks up the change immediately.
+        """
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+
+            target_tag = (new_tag if new_tag is not None else tag).strip()
+            if not target_tag:
+                raise ValueError("Tag must be a non-empty string")
+            if target_tag != tag:
+                _validate_tag(target_tag)
+                if get_connection(self.config, target_tag) is not None:
+                    raise ValueError(f"Connection '{target_tag}' already exists")
+
+            new_host = (ssh_host if ssh_host is not None else conn.ssh_host).strip()
+            if not new_host:
+                raise ValueError("ssh_host must be a non-empty string")
+
+            new_port = conn.socks_proxy_port if socks_proxy_port is None else int(socks_proxy_port)
+            if not validate_port(new_port, allow_zero=True):
+                raise ValueError(f"Invalid socks_proxy_port {new_port}: must be 0 or 1-65535")
+            if new_port != 0 and new_port != conn.socks_proxy_port and not is_port_free(new_port):
+                raise ValueError(f"SOCKS port {new_port} is already in use")
+
+            was_running = (
+                    is_tunnel_running(tag, self._process_mgr)
+                    or is_socket_alive(tag, self.workspace)
+            )
+
+            updated = conn.model_copy(update={
+                "tag": target_tag,
+                "ssh_host": new_host,
+                "socks_proxy_port": new_port,
+            })
+            self.config = self.config.model_copy(update={
+                "connections": [updated if c.tag == tag else c for c in self.config.connections]
+            })
+            self._save()
+
+        self._update_pac()
+        if was_running and restart:
+            # Tear down under the OLD tag (its PID/socket/shares/forwards), then
+            # bring it back up under the NEW config. Outside the config lock —
+            # stop/start acquire their own locks.
+            self.stop(tag=tag)
+            self.start(tag=target_tag)
+        self._log(f"[{tag}] Updated → tag={target_tag} host={new_host} socks={new_port}")
+        self._emit_state(self._compute_state())
+        return updated
 
     def _update_pac(self) -> None:
         """Write the PAC file and reload the in-process server if running."""
@@ -1585,70 +1851,73 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_pac_host(self, host: str, conn_tag: str | None = None) -> None:
-        self._reload_config()
-        default = get_default_connection(self.config)
-        tag = conn_tag or (default.tag if default else None)
-        if tag is None:
-            raise ValueError("No connections configured")
-        conn = get_connection(self.config, tag)
-        if conn is None:
-            raise ValueError(f"Connection '{tag}' not found")
-        if host in conn.pac_hosts:
-            raise ValueError(f"Host '{host}' already in PAC list for '{tag}'")
-        self._replace_connection(conn.model_copy(update={"pac_hosts": list(conn.pac_hosts) + [host]}))
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            default = get_default_connection(self.config)
+            tag = conn_tag or (default.tag if default else None)
+            if tag is None:
+                raise ValueError("No connections configured")
+            conn = get_connection(self.config, tag)
+            if conn is None:
+                raise ValueError(f"Connection '{tag}' not found")
+            if host in conn.pac_hosts:
+                raise ValueError(f"Host '{host}' already in PAC list for '{tag}'")
+            self._replace_connection(conn.model_copy(update={"pac_hosts": list(conn.pac_hosts) + [host]}))
+            self._save()
         self._update_pac()
         self._log(f"[{tag}] Added PAC host '{host}'")
         self._emit_state(self._compute_state())
 
     def remove_pac_host(self, host: str, conn_tag: str | None = None) -> None:
-        self._reload_config()
-        found = False
-        new_conns = []
-        for conn in self.config.connections:
-            if host in conn.pac_hosts and (conn_tag is None or conn.tag == conn_tag):
-                found = True
-                new_conns.append(
-                    conn.model_copy(update={"pac_hosts": [h for h in conn.pac_hosts if h != host]})
-                )
-            else:
-                new_conns.append(conn)
-        if not found:
-            scope = f" in connection '{conn_tag}'" if conn_tag else " in any PAC list"
-            raise ValueError(f"Host '{host}' not found{scope}")
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            found = False
+            new_conns = []
+            for conn in self.config.connections:
+                if host in conn.pac_hosts and (conn_tag is None or conn.tag == conn_tag):
+                    found = True
+                    new_conns.append(
+                        conn.model_copy(update={"pac_hosts": [h for h in conn.pac_hosts if h != host]})
+                    )
+                else:
+                    new_conns.append(conn)
+            if not found:
+                scope = f" in connection '{conn_tag}'" if conn_tag else " in any PAC list"
+                raise ValueError(f"Host '{host}' not found{scope}")
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
         self._update_pac()
         self._log(f"Removed PAC host '{host}'")
         self._emit_state(self._compute_state())
 
     def set_pac_host_enabled(self, host: str, enabled: bool, conn_tag: str | None = None) -> None:
-        self._reload_config()
-        found = False
-        new_conns = []
-        conn_tag_label = f"[{conn_tag}] " if conn_tag else ""
-        for conn in self.config.connections:
-            if conn_tag and conn.tag != conn_tag:
-                new_conns.append(conn)
-                continue
-            if enabled and host in conn.pac_hosts_disabled:
-                found = True
-                new_conns.append(conn.model_copy(update={
-                    "pac_hosts": list(conn.pac_hosts) + [host],
-                    "pac_hosts_disabled": [h for h in conn.pac_hosts_disabled if h != host],
-                }))
-            elif not enabled and host in conn.pac_hosts:
-                found = True
-                new_conns.append(conn.model_copy(update={
-                    "pac_hosts": [h for h in conn.pac_hosts if h != host],
-                    "pac_hosts_disabled": list(conn.pac_hosts_disabled) + [host],
-                }))
-            else:
-                new_conns.append(conn)
-        if not found:
-            raise ValueError(f"{conn_tag_label}PAC host '{host}' not found")
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            found = False
+            new_conns = []
+            conn_tag_label = f"[{conn_tag}] " if conn_tag else ""
+            for conn in self.config.connections:
+                if conn_tag and conn.tag != conn_tag:
+                    new_conns.append(conn)
+                    continue
+                if enabled and host in conn.pac_hosts_disabled:
+                    found = True
+                    new_conns.append(conn.model_copy(update={
+                        "pac_hosts": list(conn.pac_hosts) + [host],
+                        "pac_hosts_disabled": [h for h in conn.pac_hosts_disabled if h != host],
+                    }))
+                elif not enabled and host in conn.pac_hosts:
+                    found = True
+                    new_conns.append(conn.model_copy(update={
+                        "pac_hosts": [h for h in conn.pac_hosts if h != host],
+                        "pac_hosts_disabled": list(conn.pac_hosts_disabled) + [host],
+                    }))
+                else:
+                    new_conns.append(conn)
+            if not found:
+                raise ValueError(f"{conn_tag_label}PAC host '{host}' not found")
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
         self._update_pac()
         self._log(f"{conn_tag_label}PAC host '{host}' {'enabled' if enabled else 'disabled'}")
         self._emit_state(self._compute_state())
@@ -1658,24 +1927,29 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _add_forward(self, conn_tag: str, fw: PortForward, direction: str) -> None:
-        self._reload_config()
-        conn = get_connection(self.config, conn_tag)
-        if conn is None:
-            raise ValueError(f"Connection '{conn_tag}' not found")
-        if direction == "local":
-            if any(f.src_port == fw.src_port for f in conn.forwards.local):
-                raise ValueError(f"Local forward on port {fw.src_port} already exists")
-            new_fwds = conn.forwards.model_copy(
-                update={"local": list(conn.forwards.local) + [fw]}
-            )
-        else:
-            if any(f.src_port == fw.src_port for f in conn.forwards.remote):
-                raise ValueError(f"Remote forward on port {fw.src_port} already exists")
-            new_fwds = conn.forwards.model_copy(
-                update={"remote": list(conn.forwards.remote) + [fw]}
-            )
-        self._replace_connection(conn.model_copy(update={"forwards": new_fwds}))
-        self._save()
+        if not validate_port(fw.src_port):
+            raise ValueError(f"Invalid src_port {fw.src_port}: must be 1-65535")
+        if not validate_port(fw.dst_port):
+            raise ValueError(f"Invalid dst_port {fw.dst_port}: must be 1-65535")
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, conn_tag)
+            if conn is None:
+                raise ValueError(f"Connection '{conn_tag}' not found")
+            if direction == "local":
+                if any(f.src_port == fw.src_port for f in conn.forwards.local):
+                    raise ValueError(f"Local forward on port {fw.src_port} already exists")
+                new_fwds = conn.forwards.model_copy(
+                    update={"local": list(conn.forwards.local) + [fw]}
+                )
+            else:
+                if any(f.src_port == fw.src_port for f in conn.forwards.remote):
+                    raise ValueError(f"Remote forward on port {fw.src_port} already exists")
+                new_fwds = conn.forwards.model_copy(
+                    update={"remote": list(conn.forwards.remote) + [fw]}
+                )
+            self._replace_connection(conn.model_copy(update={"forwards": new_fwds}))
+            self._save()
         self._log(f"[{conn_tag}] Added {direction} forward {fw.src_port}→{fw.dst_port}")
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
@@ -1687,32 +1961,33 @@ class SusOpsManager:
         self._maybe_start_forward_live(conn_tag, fw, "remote")
 
     def _remove_forward(self, src_port: int, direction: str) -> None:
-        self._reload_config()
-        found = False
-        new_conns = []
-        for conn in self.config.connections:
-            fwds = conn.forwards.local if direction == "local" else conn.forwards.remote
-            updated_fwds = [f for f in fwds if f.src_port != src_port]
-            if len(updated_fwds) != len(fwds):
-                found = True
-                removed_fw = next(f for f in fwds if f.src_port == src_port)
-                key = "local" if direction == "local" else "remote"
-                new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
-                new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
-                fw_tag = removed_fw.tag or f"{direction}-{src_port}"
-                if removed_fw.tcp:
-                    cancel_forward(conn, removed_fw, direction, self.workspace)
-                stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
-                self._emit("forward", {
-                    "tag": conn.tag, "fw_tag": fw_tag,
-                    "direction": direction, "running": False,
-                })
-            else:
-                new_conns.append(conn)
-        if not found:
-            raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found")
-        self.config = self.config.model_copy(update={"connections": new_conns})
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            found = False
+            new_conns = []
+            for conn in self.config.connections:
+                fwds = conn.forwards.local if direction == "local" else conn.forwards.remote
+                updated_fwds = [f for f in fwds if f.src_port != src_port]
+                if len(updated_fwds) != len(fwds):
+                    found = True
+                    removed_fw = next(f for f in fwds if f.src_port == src_port)
+                    key = "local" if direction == "local" else "remote"
+                    new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
+                    new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
+                    fw_tag = removed_fw.tag or f"{direction}-{src_port}"
+                    if removed_fw.tcp:
+                        cancel_forward(conn, removed_fw, direction, self.workspace)
+                    stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
+                    self._emit("forward", {
+                        "tag": conn.tag, "fw_tag": fw_tag,
+                        "direction": direction, "running": False,
+                    })
+                else:
+                    new_conns.append(conn)
+            if not found:
+                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found")
+            self.config = self.config.model_copy(update={"connections": new_conns})
+            self._save()
         self._log(f"Removed {direction} forward on port {src_port}")
 
     def remove_local_forward(self, src_port: int) -> None:
@@ -1727,14 +2002,25 @@ class SusOpsManager:
         If enabling and the connection is running, the forward slave is started immediately.
         If disabling, the forward slave is stopped (if running).
         """
+        with self._config_lock:
+            self._reload_config()
+            conn = get_connection(self.config, conn_tag)
+            if conn is None:
+                raise ValueError(f"Connection {conn_tag!r} not found")
+            forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
+            for fw in forwards:
+                if fw.src_port == src_port:
+                    fw.enabled = enabled
+                    self._save()
+                    break
+            else:
+                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found in '{conn_tag}'")
+        # Re-bind conn/fw for the live-start path below (they're now stale references to
+        # objects under self.config which may have been replaced by reload).
         conn = get_connection(self.config, conn_tag)
-        if conn is None:
-            raise ValueError(f"Connection {conn_tag!r} not found")
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
             if fw.src_port == src_port:
-                fw.enabled = enabled
-                self._save()
                 fw_tag = fw.tag or f"{direction}-{src_port}"
                 self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
                 if enabled and (
@@ -1924,20 +2210,23 @@ class SusOpsManager:
                 failed_count=server.failed_count,
             ))
 
-        # Config-only stopped shares (persisted but server not running in this process)
-        self._reload_config()
-        for conn in self.config.connections:
-            for fs in conn.file_shares:
-                if fs.port not in running_ports:
-                    result.append(ShareInfo(
-                        file_path=fs.file_path,
-                        port=fs.port,
-                        password=fs.password,
-                        url=f"http://localhost:{fs.port}",
-                        conn_tag=conn.tag,
-                        running=False,
-                        stopped=fs.stopped,
-                    ))
+        # Config-only stopped shares (persisted but server not running in this
+        # process). Reload under the lock so a concurrent share/stop_share
+        # config write is not interleaved or clobbered.
+        with self._config_lock:
+            self._reload_config()
+            for conn in self.config.connections:
+                for fs in conn.file_shares:
+                    if fs.port not in running_ports:
+                        result.append(ShareInfo(
+                            file_path=fs.file_path,
+                            port=fs.port,
+                            password=fs.password,
+                            url=f"http://localhost:{fs.port}",
+                            conn_tag=conn.tag,
+                            running=False,
+                            stopped=fs.stopped,
+                        ))
 
         return result
 
@@ -2143,6 +2432,19 @@ class SusOpsManager:
         """Return cumulative (rx_bytes, tx_bytes) since last start. Resets on stop."""
         return self._bw_sampler.get_totals(tag)
 
+    def get_bandwidth_history(self, tag: str) -> list[list[float]]:
+        """Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest)."""
+        return self._bw_sampler.get_history(tag)
+
+    def sse_client_count(self) -> int:
+        """Live SSE subscriber count. Used by frontends to decide whether
+        a stop-on-quit should actually stop, or skip because another
+        frontend is still attached to the same daemon."""
+        try:
+            return int(self._status_server.client_count())
+        except Exception:
+            return 0
+
     def get_bandwidth_global(self) -> tuple[float, float]:
         """Return (rx_bps, tx_bps) summed across every connection."""
         rx_total = 0.0
@@ -2216,11 +2518,12 @@ class SusOpsManager:
         return self.config.susops_app
 
     def update_app_config(self, **kwargs) -> None:
-        self._reload_config()
-        self.config = self.config.model_copy(
-            update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
-        )
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            self.config = self.config.model_copy(
+                update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
+            )
+            self._save()
 
     def update_config(self, **kwargs) -> None:
         """Update top-level SusOpsConfig fields (e.g. pac_server_port).
@@ -2232,6 +2535,7 @@ class SusOpsManager:
         — needed by RPC clients that can't touch private methods or rebind
         the config attribute directly.
         """
-        self._reload_config()
-        self.config = self.config.model_copy(update=kwargs)
-        self._save()
+        with self._config_lock:
+            self._reload_config()
+            self.config = self.config.model_copy(update=kwargs)
+            self._save()

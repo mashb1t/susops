@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -22,7 +23,22 @@ from typing import Any
 from susops.core.rpc_protocol import InvocationRequest, InvocationResponse
 
 _WORKSPACE_DEFAULT = Path.home() / ".susops"
-_DAEMON_SPAWN_TIMEOUT = 5.0
+# 15s rather than 5s gives headroom for slow init paths (ssh agent
+# prompts, network probes) on top of the daemon's "publish port first,
+# restore async" startup ordering. Frontends will still detect a truly
+# dead daemon quickly because they poll the port file every 100ms — the
+# timeout only fires for genuine hangs.
+_DAEMON_SPAWN_TIMEOUT = 15.0
+
+# Backoff to avoid pegging CPU and filling logs when the daemon
+# repeatedly exits during startup (e.g. corrupt config, PAC port
+# squatted). On a fast-fail (daemon exits within FAST_FAIL_WINDOW_S of
+# spawn), the next ensure_daemon_running call within BACKOFF_S sleeps
+# until the window expires before retrying.
+_FAST_FAIL_WINDOW_S = 2.0
+_BACKOFF_S = 5.0
+_last_fast_fail: float = 0.0
+_last_fast_fail_lock = threading.Lock()
 
 
 class DaemonUnavailableError(RuntimeError):
@@ -44,16 +60,38 @@ def _read_port(workspace: Path) -> int | None:
         return None
 
 
+def _pid_is_susops_daemon(pid: int) -> bool:
+    """True only if PID belongs to a live process whose cmdline matches a
+    services_daemon invocation. Defends against PID reuse: SIGKILLing the
+    daemon under load can let an ssh fork (or any other short-lived child)
+    inherit the freed PID, and a bare `os.kill(pid, 0)` liveness probe
+    would then falsely report the daemon as up.
+    """
+    try:
+        import psutil
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return "susops.core.services_daemon" in cmdline or "susops-services" in cmdline
+
+
 def _is_daemon_alive(workspace: Path) -> bool:
     pid_file = _pid_path(workspace)
     if not pid_file.exists():
         return False
     try:
         pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)  # signal 0 = liveness probe
-        return True
     except (OSError, ValueError):
         return False
+    return _pid_is_susops_daemon(pid)
 
 
 def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
@@ -65,17 +103,50 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
     (PAC port squatted, peer daemon alive, …) is surfaced to the caller
     instead of getting buried under a generic "didn't come up" message.
     """
+    global _last_fast_fail
     if _is_daemon_alive(workspace):
         port = _read_port(workspace)
         if port:
             return port
+        # Daemon claimed its PID file but hasn't published the port yet.
+        # Wait for it instead of spawning a competitor that would race the
+        # O_EXCL claim and exit rc=2 ("another daemon is already running").
+        deadline = time.monotonic() + _DAEMON_SPAWN_TIMEOUT
+        while time.monotonic() < deadline:
+            if not _is_daemon_alive(workspace):
+                break  # died mid-startup, fall through to spawn a new one
+            port = _read_port(workspace)
+            if port:
+                return port
+            time.sleep(0.1)
+        else:
+            raise DaemonUnavailableError(
+                "An existing susops-services daemon is alive but never "
+                "published an RPC port. Try `kill " +
+                (_pid_path(workspace).read_text().strip() or "<pid>") +
+                "` and start again."
+            )
 
+    # If we recently fast-failed a spawn (daemon exited within
+    # _FAST_FAIL_WINDOW_S of starting), wait out the backoff window
+    # before respawning. Prevents tight respawn loops when something is
+    # structurally broken (corrupt config, PAC port squatted, etc.).
+    with _last_fast_fail_lock:
+        since_last = time.monotonic() - _last_fast_fail
+    if since_last < _BACKOFF_S:
+        time.sleep(_BACKOFF_S - since_last)
+
+    # DEVNULL (not PIPE) for stderr — the daemon writes its log to
+    # ~/.susops/logs/susops-services.log directly. Capturing as a pipe
+    # would back up once the daemon's log volume exceeded the kernel
+    # buffer (~64 KB on macOS) and freeze every subsequent log call.
+    spawn_start = time.monotonic()
     proc = subprocess.Popen(
         [sys.executable, "-m", "susops.core.services_daemon",
          "--workspace", str(workspace)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
@@ -86,17 +157,29 @@ def ensure_daemon_running(workspace: Path = _WORKSPACE_DEFAULT) -> int:
             if port:
                 return port
         # If the daemon exited (e.g. preflight rejected it), don't keep
-        # polling — surface the reason and bail out immediately.
+        # polling — surface the reason and bail out immediately. The
+        # daemon's log file is the new source of truth for failure
+        # reasons (stderr is no longer piped — see Popen above).
         rc = proc.poll()
         if rc is not None:
+            # Fast fail = structural problem. Record the timestamp so the
+            # next ensure_daemon_running call within _BACKOFF_S sleeps
+            # before retrying.
+            if time.monotonic() - spawn_start < _FAST_FAIL_WINDOW_S:
+                with _last_fast_fail_lock:
+                    _last_fast_fail = time.monotonic()
+            log_path = workspace / "logs" / "susops-services.log"
+            tail = ""
             try:
-                _, err = proc.communicate(timeout=0.5)
-                stderr = err.decode(errors="replace").strip() if err else ""
+                if log_path.exists():
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()[-15:]
+                        tail = "".join(lines).strip()
             except Exception:
-                stderr = ""
+                pass
             msg = (
                     f"Daemon exited during startup (rc={rc})"
-                    + (f":\n{stderr}" if stderr else "")
+                    + (f":\n{tail}" if tail else "")
             )
             raise DaemonUnavailableError(msg)
         time.sleep(0.1)

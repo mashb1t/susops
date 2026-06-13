@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="assets/icon.png" alt="Menu" height="200" />
+    <img src="src/susops/assets/icon.png" alt="Menu" height="200" />
 </p>
 
 # SusOps - SSH Utilities & SOCKS5 Operations
@@ -184,33 +184,27 @@ flowchart TD
 ### pip
 
 ```bash
-# CLI only (no TUI, no tray)
+# CLI + daemon (no TUI, no tray)
 pip install susops
 
 # TUI
 pip install "susops[tui]"
 
-# TUI + encrypted file sharing
-pip install "susops[tui,share]"
-
-# Linux tray (system GTK3 packages must be installed separately)
-pip install "susops[tui,share,tray-linux]"
-
 # macOS tray
-pip install "susops[tui,share,tray-mac]"
+pip install "susops[tui,tray-mac]"
 ```
 
-UDP port forwarding has no Python dependencies, install `socat` via your system package manager:
+The Linux tray needs system packages (`python3-gi`, `gtk3`, `libayatana-appindicator`); see below. UDP port forwarding also needs a system package (`socat`).
 
 ```bash
-# macOS
+# macOS — socat for UDP forwarding
 brew install socat
 
-# Arch Linux
-sudo pacman -S socat
+# Arch Linux — Linux tray + socat
+sudo pacman -S python-gobject gtk3 libayatana-appindicator socat
 
-# Ubuntu / Debian
-sudo apt install socat
+# Ubuntu / Debian — Linux tray + socat
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1 socat
 ```
 
 ### Arch Linux (AUR)
@@ -297,7 +291,7 @@ susops
 
 ### Screens
 
-**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot, SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
+**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `◐` orange pending, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
 - **Stats** — CPU%, memory, active connections, PID for the selected connection
 - **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
 - **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
@@ -418,8 +412,10 @@ susops reset [--force]    # Kill all processes, wipe ~/.susops workspace
 |------|---------|
 | `0` | Success / all running |
 | `1` | Error |
-| `2` | Partial (some services stopped) |
+| `2` | Partial (some services stopped, or any connection pending) |
 | `3` | All stopped |
+
+A connection is **pending** when its SSH master is alive but the ControlMaster socket isn't up yet — typically while ssh-agent is waiting on a key unlock, or between reconnect attempts. `start` returns as soon as the master spawns; auth then completes asynchronously up to 60 s later. Slow agent prompts (Vaultwarden, 1Password, hardware keys) no longer freeze the UI.
 
 ---
 
@@ -443,7 +439,35 @@ susops-tray
 
 Requires `rumps`: `pip install "susops[tray-mac]"`
 
-The tray icon reflects the current state (running/partial/stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. Both tray implementations support the same feature set via native dialogs:
+The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
+
+**Note: the macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described below is macOS-only for now; the Linux tray keeps the classic submenu structure.
+
+### macOS tray
+
+The macOS tray has a slim menu with a unified **config window** (open with Settings… ⌘, or from the tray menu):
+
+Slim menu items:
+- **Status line** — shows current connection state
+- **Settings… ⌘,** — opens the unified config window
+- **Start / Stop / Restart Proxy** — bulk lifecycle for all connections
+- **Show Status** — print current state to stdout
+- **Show Logs** — open the log directory
+- **Launch Browser ▸** — submenu: Chrome or Firefox with the PAC URL pre-configured
+- **Reset All** — kill all processes and wipe the workspace
+- **About SusOps**
+- **Quit ⌘Q**
+
+The **config window** is a 3-column Tailscale-style editor (nav / list / detail) with a dark skin and instant-apply settings:
+
+- **Column 1 — nav.** Categories with live counts: **Connections / Domains / Forwards / Shares**, plus **Settings** pinned at the bottom. Selecting a category drives the list.
+- **Column 2 — list.** A search field on top filters the rows for the selected category. Forwards split into **Local** and **Remote** sections (each with a one-line explainer); shares show download counts. Each row carries a colored run-state dot (green active, amber pending, gray stopped/inactive, red error/connection-down) and a connection badge; disabled rows render dimmed. A context-aware add button sits at the bottom (`+ Add Connection`, `+ Add Domain / IP / CIDR`, `+ Add Forward`, or `Share File…` / `Fetch…`).
+- **Column 3 — detail / editor.** A header with the title, a colored status line, and an **Enabled** toggle in the top-right (applies instantly). The body is a card holding the form: forwards, domains, and shares are **edited inline** (change a field and **Save**) — no remove-and-re-enter. The same `+` buttons open inline **create forms** in this column (file/folder pickers still use the native chooser). Shares expose a copyable `http://localhost:PORT` URL and password. Per-item actions live in the action row (**Delete…** on the left, **Test** / **Save** on the right).
+- **Settings** spans columns 2–3: grouped toggles (launch at login, stop on quit, random SSH ports, restore shares, show bandwidth, notifications, logo style) that **apply instantly**, the RPC / SSE / PAC server ports behind a single **Apply** button, and an **Open Config File…** button.
+
+### Linux tray
+
+The Linux tray keeps the classic submenu menu structure:
 
 - **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
 - **Start / Stop / Restart All** — bulk lifecycle operations across all connections
@@ -534,7 +558,11 @@ Both can be `true` simultaneously — susops will start an SSH slave for TCP and
 
 ### Port assignment
 
-Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config to pin it.
+Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config to pin it. Ports outside `1–65535` are rejected on `add`.
+
+### Tag format
+
+Connection tags must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (no slashes, no `..`, no leading punctuation). Tags appear in PID-file names, socket paths, log lines, and PAC keys, so the format is intentionally strict.
 
 ### Workspace
 
@@ -650,7 +678,7 @@ sudo apt install socat      # Ubuntu / Debian
 
 ### Enabling UDP on a forward
 
-Set `udp: true` in the forward config, or check "UDP" in the TUI/tray add-forward dialog:
+Set `udp: true` in the forward config, or check "UDP" in the TUI/tray forward form:
 
 ```yaml
 forwards:
@@ -842,7 +870,40 @@ susops
 # Run the CLI
 susops ps
 susops ls
+
+# Build local pypi + brew artifacts (mirrors CI, no upload)
+scripts/build-local.sh pypi      # wheel + sdist
+scripts/build-local.sh brew      # SusOps.app + .dmg (macOS only)
+scripts/build-local.sh install-pypi   # install wheel into a throwaway venv
+scripts/build-local.sh install-brew   # copy SusOps.app to /Applications
 ```
+
+### Tray development (macOS)
+
+Run a dev tray instance against an isolated workspace without touching your live `~/.susops` setup:
+
+```bash
+# Isolated workspace (avoids any conflict with a running user tray)
+WS=$(mktemp -d /tmp/susops-dev.XXXX)
+SUSOPS_TRAY_WORKSPACE=$WS SUSOPS_TRAY_DEBUG_PORT=7799 .venv/bin/susops-tray &
+
+# Drive the tray via the debug command server
+.venv/bin/python tools/tray_debug.py 7799 ping
+.venv/bin/python tools/tray_debug.py 7799 dump-menu        # full menu JSON
+.venv/bin/python tools/tray_debug.py 7799 open-config       # open the Settings window
+.venv/bin/python tools/tray_debug.py 7799 screenshot /tmp/tray.png
+.venv/bin/python tools/tray_debug.py 7799 quit
+```
+
+`SUSOPS_TRAY_WORKSPACE` points the tray at a different workspace directory (separate config, PID files, sockets) so it never touches `~/.susops`. `SUSOPS_TRAY_DEBUG_PORT` starts a localhost command server on that port; `tools/tray_debug.py` is the client. Supported commands: `ping`, `dump-menu`, `open-config [gear]`, `select <conn> <section> <index>`, `dump-window`, `screenshot <path>`, `action <name>`, `open-about`, `quit`.
+
+### GUI smoke tests (macOS)
+
+```bash
+SUSOPS_RUN_GUI_TESTS=1 .venv/bin/pytest -m gui -v
+```
+
+Seven smoke tests launch a real tray instance (using `SUSOPS_TRAY_WORKSPACE` + `SUSOPS_TRAY_DEBUG_PORT` internally), drive it through the debug server, and assert menu structure and window content. Skipped automatically on Linux and when `SUSOPS_RUN_GUI_TESTS` is unset.
 
 ### Project layout
 
@@ -919,7 +980,7 @@ brew tap mashb1t/susops
 brew install susops
 ```
 
-The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_with_resources` to create an isolated Python environment with all dependencies. The cask at `packaging/homebrew/Casks/susops.rb` is for a future `.dmg` distribution of `SusOps.app`.
+The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_with_resources` to create an isolated Python environment for the CLI + TUI. The cask at `packaging/homebrew/Casks/susops.rb` installs `SusOps.app` (PyInstaller bundle) for the macOS tray — `brew install --cask susops`.
 
 **Note:** Resource sha256 checksums in the formula must be updated for each release. Generate them with:
 

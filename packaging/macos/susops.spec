@@ -1,18 +1,37 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_all
+
+# PyInstaller 6 resolves Analysis() paths relative to the spec's directory,
+# not the cwd. Anchor everything to SPECPATH so the spec keeps working
+# regardless of where pyinstaller is invoked from.
+SPEC_DIR = os.path.abspath(SPECPATH)
+REPO_ROOT = os.path.abspath(os.path.join(SPEC_DIR, "..", ".."))
+ASSETS = os.path.join(REPO_ROOT, "src", "susops", "assets")
+# .icns is a PyInstaller build asset (not used at runtime), kept next to
+# the spec and committed so CI doesn't need to regenerate it on each run.
+ICNS = os.path.join(SPEC_DIR, "susops.icns")
+
+import sys
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
+from susops import __version__ as SUSOPS_VERSION
 
 rumps_datas, rumps_binaries, rumps_hiddenimports = collect_all("rumps")
 
 a = Analysis(
-    ["packaging/macos/entry_tray.py"],
-    pathex=["."],
+    [os.path.join(SPEC_DIR, "entry_tray.py")],
+    pathex=[REPO_ROOT],
     binaries=rumps_binaries,
-    datas=rumps_datas,
+    # Bundle the package's assets at susops/assets/ inside the app so the
+    # runtime Path(__file__).parent.parent / "assets" resolution lands them.
+    datas=rumps_datas + [(ASSETS, "susops/assets")],
     hiddenimports=rumps_hiddenimports + [
         "objc",
         "Foundation",
         "AppKit",
         "Cocoa",
+        "susops",
+        "susops.client",
         "susops.tray",
         "susops.tray.mac",
         "susops.tray.base",
@@ -22,6 +41,20 @@ a = Analysis(
         "susops.core.ports",
         "susops.core.types",
         "susops.core.process",
+        # Daemon path — the bundle re-execs itself with -m
+        # susops.core.services_daemon to spawn the daemon, so the
+        # daemon module + everything it pulls in must be bundled.
+        "susops.core.services_daemon",
+        "susops.core.rpc_server",
+        "susops.core.rpc_protocol",
+        "susops.core.status",
+        "susops.core.pac",
+        "susops.core.share",
+        "susops.core.socat",
+        "susops.core.ssh_config",
+        "susops.core.browsers",
+        "aiohttp",
+        "cryptography",
     ],
     hookspath=[],
     hooksconfig={},
@@ -47,7 +80,7 @@ exe = EXE(
     target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
-    icon="assets/susops.icns",
+    icon=ICNS,
 )
 
 coll = COLLECT(
@@ -63,10 +96,10 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="SusOps.app",
-    icon="assets/susops.icns",
+    icon=ICNS,
     bundle_identifier="net.odt.susops",
     info_plist={
-        "CFBundleShortVersionString": "3.0.0-rc2",
+        "CFBundleShortVersionString": SUSOPS_VERSION,
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },

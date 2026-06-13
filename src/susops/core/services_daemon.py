@@ -86,17 +86,21 @@ def _preflight(workspace: Path, log: "logging.Logger") -> None:
         # Won the race uncontested.
         pass
     else:
-        # File exists. Is the holder alive?
+        # File exists. Is the holder alive AND actually our daemon?
+        # PID reuse (an ssh fork inheriting the freed PID after we kill -9
+        # the daemon) would otherwise wedge us in a refusal loop until the
+        # impostor exits. Reuse the same identity check the client does.
         pid_file = _pid_path(workspace)
         try:
             existing_pid = int(pid_file.read_text().strip())
-            os.kill(existing_pid, 0)  # liveness probe
         except (OSError, ValueError):
-            # Stale PID file. Remove + retry the atomic claim once.
+            existing_pid = None
+        from susops.client import _pid_is_susops_daemon
+        if existing_pid is None or not _pid_is_susops_daemon(existing_pid):
+            # Stale (or impostor) PID file. Remove + retry the atomic claim.
             pid_file.unlink(missing_ok=True)
             _port_path(workspace).unlink(missing_ok=True)
             if not _claim_pid_file(workspace):
-                # Some other daemon claimed it between our cleanup and retry.
                 log.error(
                     "another susops-services daemon raced us to start. "
                     "Try again — or run "
@@ -153,9 +157,28 @@ def main() -> int:
     args = parser.parse_args()
     workspace = Path(args.workspace)
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [services] %(message)s")
+    # Route logging + raw stderr to a workspace-local file. With stderr
+    # piped from the spawner (client.py used stderr=PIPE) the kernel's
+    # 64 KB pipe buffer would fill within minutes of daemon logging,
+    # blocking every subsequent log call — including ones running on
+    # executor threads serving RPC requests. Result: freeze.
+    log_path = workspace / "logs" / "susops-services.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [services] %(message)s",
+        handlers=[logging.FileHandler(log_path, mode="a", encoding="utf-8")],
+        force=True,
+    )
     log = logging.getLogger("susops.services")
+    # Anything that bypasses logging (raw `print`, tracebacks) also goes
+    # to the log file rather than the spawner's pipe.
+    try:
+        _stderr_redirect = open(log_path, "a", buffering=1, encoding="utf-8")
+        sys.stderr = _stderr_redirect
+        sys.stdout = _stderr_redirect
+    except Exception:
+        pass
 
     # Install signal handlers BEFORE preflight: SIGTERM arriving in the
     # window between claiming the PID file and entering the try block
@@ -177,7 +200,17 @@ def main() -> int:
         from susops.core.rpc_server import serve
         from susops.facade import SusOpsManager
 
-        mgr = SusOpsManager(workspace=workspace, _enable_background_threads=True)
+        # Defer the SSH/PAC/share probes (_restore_*) until AFTER the RPC
+        # port is bound and the port file is written. Those probes can
+        # block on the ssh agent (e.g. 1Password approval prompt) for
+        # several seconds, and frontends only give up after _DAEMON_SPAWN_TIMEOUT.
+        # By publishing the port first, the daemon is "alive" to frontends
+        # immediately regardless of how slow the agent decides to be.
+        mgr = SusOpsManager(
+            workspace=workspace,
+            _enable_background_threads=True,
+            _skip_restore=True,
+        )
         # CLI `--port` wins. Fall back to the configured `rpc_server_port`,
         # then 0 (auto-allocate). When we auto-allocate, persist the bound
         # port back to config so subsequent spawns reuse it.
@@ -198,6 +231,24 @@ def main() -> int:
         # backoff for several seconds after a fresh daemon spawn.
         sse_port = mgr.ensure_sse_status_server()
 
+        # Now that the daemon is reachable (RPC + SSE), run the deferred
+        # restore work in a background thread so slow ssh-agent prompts
+        # don't keep the daemon process pinned during startup.
+        def _restore_in_background() -> None:
+            try:
+                mgr._restore_pac()
+                if mgr.config.susops_app.restore_shares_on_start:
+                    mgr._restore_shares()
+                mgr._restore_reconnect_monitor()
+            except Exception:
+                log.exception("Background restore failed")
+
+        threading.Thread(
+            target=_restore_in_background,
+            daemon=True,
+            name="susops-restore",
+        ).start()
+
         # Surface daemon-startup details in the in-memory log buffer too so
         # they show up in the TUI Logs tab and the tray Logs window — the
         # `log.info` calls only land on the daemon process's stderr.
@@ -211,13 +262,16 @@ def main() -> int:
             pass
 
         # Idle-shutdown. Exit when the last SSE client disconnects AND there's
-        # no in-flight work (no SSH masters, no shares, no PAC, no watched
-        # connections). Startup gets a small grace so a frontend that calls
-        # ensure_daemon_running() has time to make its first SSE connection
-        # before the periodic check fires.
+        # no in-flight work AND that state holds for _IDLE_CONSECUTIVE_TICKS
+        # consecutive checks. Requiring multiple ticks defends against the
+        # "SSE flap during reconnect → momentary client_count==0 → daemon
+        # exits → frontend respawns it" churn that bit us during heavy
+        # reconnect activity.
         _IDLE_STARTUP_GRACE_S = 3.0
         _IDLE_CHECK_INTERVAL_S = 5.0
+        _IDLE_CONSECUTIVE_TICKS = 3
         startup_time = _time.monotonic()
+        idle_streak = 0  # consecutive ticks where _should_exit() was True
 
         def _should_exit() -> bool:
             if _time.monotonic() - startup_time < _IDLE_STARTUP_GRACE_S:
@@ -229,19 +283,12 @@ def main() -> int:
             return mgr.is_idle()
 
         def _on_clients_changed(count: int) -> None:
-            # Fast path — react immediately when the last SSE client drops.
-            # The periodic check below handles the "no SSE was ever opened"
-            # case (e.g. `susops ps` fires one RPC and exits).
+            # No fast-path exit here anymore — the watcher's consecutive-tick
+            # requirement covers genuine quiescence and rejects flap events
+            # without us having to special-case them.
+            nonlocal idle_streak
             if count > 0:
-                return
-            if _should_exit():
-                msg = "Last client disconnected and no work pending — shutting down"
-                log.info(msg)
-                try:
-                    mgr._log(msg)
-                except Exception:
-                    pass
-                stop_event.set()
+                idle_streak = 0
 
         mgr._status_server.on_clients_changed = _on_clients_changed
         # Surface SSE connect/disconnect in the in-memory log buffer so the
@@ -249,19 +296,26 @@ def main() -> int:
         mgr._status_server.on_log = mgr._log
 
         def _idle_watcher() -> None:
+            nonlocal idle_streak
             while not stop_event.is_set():
                 if stop_event.wait(_IDLE_CHECK_INTERVAL_S):
                     return
                 if _should_exit():
-                    msg = (f"Idle for {_IDLE_CHECK_INTERVAL_S:.0f}s with "
-                           f"no clients — shutting down")
-                    log.info(msg)
-                    try:
-                        mgr._log(msg)
-                    except Exception:
-                        pass
-                    stop_event.set()
-                    return
+                    idle_streak += 1
+                    if idle_streak >= _IDLE_CONSECUTIVE_TICKS:
+                        msg = (
+                            f"Idle for {_IDLE_CHECK_INTERVAL_S * idle_streak:.0f}s "
+                            f"({idle_streak} consecutive checks) — shutting down"
+                        )
+                        log.info(msg)
+                        try:
+                            mgr._log(msg)
+                        except Exception:
+                            pass
+                        stop_event.set()
+                        return
+                else:
+                    idle_streak = 0
 
         threading.Thread(
             target=_idle_watcher, daemon=True, name="susops-idle-watcher",

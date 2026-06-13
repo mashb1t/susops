@@ -508,13 +508,14 @@ def cmd_guide(args, m) -> int:
     print()
 
     # apt / apt-get  (Linux only — no native SOCKS5 support)
-    if not is_macos:
-        print("# apt / apt-get")
-        print(f"sudo {proxy_cmd} apt-get install <pkg>")
-        print("# permanent alias (add to ~/.zshrc):")
-        print("# alias sudo='sudo '  # allows sudo to expand aliases")
-        print(f"alias susops-apt='{proxy_cmd} apt-get'")
-        print()
+    print("# apt / apt-get")
+    if is_macos:
+        print("# Linux only (shown for cross-platform shell profile consistency)")
+    print(f"sudo {proxy_cmd} apt-get install <pkg>")
+    print("# permanent alias (add to ~/.zshrc):")
+    print("# alias sudo='sudo '  # allows sudo to expand aliases")
+    print(f"alias susops-apt='{proxy_cmd} apt-get'")
+    print()
 
     # Docker  (Go's net/http supports SOCKS5 via ALL_PROXY natively)
     print("# Docker")
@@ -535,6 +536,7 @@ def cmd_guide(args, m) -> int:
     # Generic wrapper
     if is_macos:
         print("# Generic (socksify — install: brew install dante)")
+        print("# Linux equivalent: proxychains4")
         print(f"SOCKS_SERVER=127.0.0.1:{port_label} socksify <any-command>")
     else:
         print("# Generic (proxychains4)")

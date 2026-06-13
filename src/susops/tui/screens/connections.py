@@ -331,7 +331,7 @@ class ConnectionsScreen(Screen):
         mgr = self.app.manager  # type: ignore[attr-defined]
         try:
             status_result = mgr.status()
-            status_map = {cs.tag: cs.running for cs in status_result.connection_statuses}
+            status_map = {cs.tag: cs for cs in status_result.connection_statuses}
         except Exception:
             status_map = {}
         self.app.call_from_thread(self._reload, status_map)
@@ -341,18 +341,28 @@ class ConnectionsScreen(Screen):
         if status_map is None:
             try:
                 status_result = self.app.manager.status()  # type: ignore[attr-defined]
-                status_map = {cs.tag: cs.running for cs in status_result.connection_statuses}
+                status_map = {cs.tag: cs for cs in status_result.connection_statuses}
             except Exception:
                 status_map = {}
 
         mgr = self.app.manager  # type: ignore[attr-defined]
         config = mgr.list_config()
 
+        def _running(tag: str) -> bool:
+            cs = status_map.get(tag)
+            return bool(getattr(cs, "running", False))
+
+        def _pending(tag: str) -> bool:
+            cs = status_map.get(tag)
+            return bool(getattr(cs, "pending", False))
+
         conn_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
-            running = status_map.get(conn.tag, False)
+            running = _running(conn.tag)
+            pending = _pending(conn.tag)
             conn_rows.append((
-                (status_dot(running, conn.enabled), conn.tag, conn.ssh_host,
+                (status_dot(running, conn.enabled, pending=pending),
+                 conn.tag, conn.ssh_host,
                  str(conn.socks_proxy_port) if conn.socks_proxy_port else "auto",
                  str(len(conn.pac_hosts)),
                  str(len(conn.forwards.local) + len(conn.forwards.remote))),
@@ -362,7 +372,7 @@ class ConnectionsScreen(Screen):
 
         pac_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
-            conn_running = status_map.get(conn.tag, False)
+            conn_running = _running(conn.tag)
             # Merge enabled + disabled hosts and sort alphabetically per
             # connection — without this, toggling a host's enabled flag
             # moves it across the enabled/disabled boundary in the table.
@@ -385,7 +395,7 @@ class ConnectionsScreen(Screen):
 
         local_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
-            conn_running = status_map.get(conn.tag, False)
+            conn_running = _running(conn.tag)
             for fw in conn.forwards.local:
                 dot = _fw_dot(mgr, fw, conn.tag, "local", conn_running)
                 local_rows.append((
@@ -397,7 +407,7 @@ class ConnectionsScreen(Screen):
 
         remote_rows: list[tuple[tuple, str | None]] = []
         for conn in config.connections:
-            conn_running = status_map.get(conn.tag, False)
+            conn_running = _running(conn.tag)
             for fw in conn.forwards.remote:
                 dot = _fw_dot(mgr, fw, conn.tag, "remote", conn_running)
                 remote_rows.append((

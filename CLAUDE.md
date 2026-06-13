@@ -39,6 +39,13 @@ susops stop
 
 # Launch tray app (Linux; requires system GTK3 packages)
 susops-tray
+
+# Dev/test env vars for the macOS tray
+# SUSOPS_TRAY_WORKSPACE   — workspace override (avoids colliding with a live instance)
+# SUSOPS_TRAY_DEBUG_PORT  — enables the debug command server on that TCP port
+#   commands: ping, dump-menu, open-about, open-config, select, dump-window, action, screenshot, quit
+#   client:   python tools/tray_debug.py <port> <cmd>
+# GUI smoke tests (macOS only): SUSOPS_RUN_GUI_TESTS=1 pytest -m gui
 ```
 
 ## Architecture
@@ -75,9 +82,12 @@ src/susops/
       share.py             # file share + fetch with ModalScreen dialogs
       config_editor.py     # read-only YAML viewer, press e to open $EDITOR
   tray/
-    base.py          # AbstractTrayApp — all shared business logic
-    linux.py         # GTK3 implementation of abstract methods
-    mac.py           # rumps implementation of abstract methods
+    base.py               # AbstractTrayApp — all shared business logic
+    linux.py              # GTK3 implementation of abstract methods
+    mac.py                # rumps implementation of abstract methods
+    mac_config_window.py  # ConfigWindow — 3-column macOS config window (nav / list / detail-editor, raw AppKit)
+    config_window_model.py # pure-python v2 view-model: NavItem/ListRow/FormField/DetailSpec builders (no AppKit, reused by tests)
+    debug_server.py       # opt-in localhost TCP command server for driving the tray in tests/dev loops
 ```
 
 ### Component Relations
@@ -217,6 +227,8 @@ Key implementation notes:
 **Select widget values.** In Textual 8.x, an empty Select returns `Select.NULL` (a `NoSelection` instance), not `Select.BLANK`. Always check `isinstance(val, str)` rather than `val is not Select.BLANK` when reading Select values.
 
 **Tray abstraction.** `AbstractTrayApp.do_*` methods contain all business logic. Platform subclasses implement `update_icon`, `update_menu_sensitivity`, `show_alert`, `show_output_dialog`, `run_in_background`, and `schedule_poll`. Linux uses `Gtk.ComboBoxText(has_entry=True)` for bind address combos (read via `get_child().get_text()`). macOS uses sequential `rumps.Window` text prompts.
+
+**macOS tray divergence.** The macOS tray uses a unified `ConfigWindow` (slim menu, Settings… ⌘, opens it) — an AppKit NSWindow laid out as a 3-column Tailscale-style editor: column 1 nav (Connections / Domains / Forwards / Shares + Settings), column 2 a searchable list with colored run-state dots and connection badges, column 3 a detail/editor pane. Forwards, domains, and shares are edited **inline** (change fields + Save with remove/re-add rollback); the `+` buttons open inline create forms; settings apply instantly (ports behind one Apply). This replaced the v1 per-connection tabbed window and its modal add/share/fetch dialogs. `mac_config_window.py` owns the AppKit layer; `config_window_model.py` builds the pure-python v2 view-models consumed by the window (no AppKit, reused by tests). The Linux tray keeps the classic menu-dialog approach.
 
 ## Config & Runtime State
 

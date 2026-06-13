@@ -664,6 +664,15 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid.attach(sw_bw, 1, row, 1, 1)
         row += 1
 
+        # Desktop Notifications
+        lbl = Gtk.Label(label="Desktop Notifications:", xalign=1.0)
+        lbl.set_width_chars(24)
+        grid.attach(lbl, 0, row, 1, 1)
+        sw_notif = Gtk.Switch(halign=Gtk.Align.START)
+        sw_notif.set_active(ac.notifications_enabled)
+        grid.attach(sw_notif, 1, row, 1, 1)
+        row += 1
+
         # Logo Style
         lbl = Gtk.Label(label="Logo Style:", xalign=1.0)
         lbl.set_width_chars(24)
@@ -753,6 +762,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 ephemeral_ports=sw_eph.get_active(),
                 restore_shares_on_start=sw_restore.get_active(),
                 tray_show_bandwidth=sw_bw.get_active(),
+                notifications_enabled=sw_notif.get_active(),
                 logo_style=new_logo,
             )
             self.refresh_bandwidth_title()
@@ -1500,7 +1510,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
             box.add(vbox)
 
             # Static logo at the top, if available.
-            icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+            icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
             if icon_path.exists():
                 try:
                     from gi.repository import GdkPixbuf  # type: ignore[import]
@@ -1569,6 +1579,11 @@ class SusOpsLinuxTray(AbstractTrayApp):
                     })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
+                        # Refresh state on every (re)connect — without this the
+                        # tray keeps its last cached state after a daemon
+                        # restart and only updates when the new daemon happens
+                        # to emit a state event.
+                        self._GLib.idle_add(self._on_sse_state)
                         buf = ""
                         for raw in resp:
                             line = raw.decode("utf-8", errors="replace")

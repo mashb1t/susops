@@ -81,6 +81,11 @@ class ConnectionStatus:
     pid: Optional[int] = None
     socks_port: int = 0
     enabled: bool = True
+    # ssh master spawned but ControlMaster socket not yet alive — almost
+    # always means "waiting for the user to approve the agent prompt".
+    # Frontends should render this with a distinct glyph (e.g. yellow /
+    # spinner) so it's clear the connection isn't usable yet.
+    pending: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

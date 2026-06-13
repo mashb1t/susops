@@ -10,7 +10,6 @@ file-open panel for share, and a custom About panel.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import threading
 from pathlib import Path
@@ -49,7 +48,7 @@ def _get_icon_path(state: ProcessState, logo_style: str = "colored_glasses") -> 
     return get_icon_path(state, logo_style=logo_style, variant=variant, prefer_png=True)
 
 
-_STATUS_ICONS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons" / "status"
+_STATUS_ICONS_DIR = Path(__file__).parent.parent / "assets" / "icons" / "status"
 
 _STATUS_ICON_NAMES = {
     ProcessState.RUNNING: "running",
@@ -87,10 +86,7 @@ def _find_installed_browsers() -> list[tuple[str, str, bool]]:
 # Module-level NSObject helper for live segment preview
 # ---------------------------------------------------------------------------
 
-_segmented_handler_cls = None
-_switch_handler_cls = None
 _main_dispatcher_cls = None
-_button_handler_cls = None
 _tagged_button_handler_cls = None
 _window_close_delegate_cls = None
 _url_handler_cls = None
@@ -155,38 +151,6 @@ def _get_url_handler_cls():
     return _URLHandler
 
 
-def _get_button_handler_cls():
-    """Lazily build the NSObject subclass used to handle OK/Cancel buttons on form panels.
-
-    The handler stops the NSApplication modal session with a response code:
-      1 = OK, 0 = Cancel.
-    """
-    global _button_handler_cls
-    if _button_handler_cls is not None:
-        return _button_handler_cls
-
-    import objc  # type: ignore[import]
-    from Cocoa import NSObject  # type: ignore[import]
-
-    class _ButtonHandler(NSObject):
-        def okClicked_(self, _):
-            try:
-                from AppKit import NSApplication  # type: ignore[import]
-                NSApplication.sharedApplication().stopModalWithCode_(1)
-            except Exception:
-                pass
-
-        def cancelClicked_(self, _):
-            try:
-                from AppKit import NSApplication  # type: ignore[import]
-                NSApplication.sharedApplication().stopModalWithCode_(0)
-            except Exception:
-                pass
-
-    _button_handler_cls = _ButtonHandler
-    return _ButtonHandler
-
-
 def _get_tagged_button_handler_cls():
     """Lazily build the NSObject subclass that stops the modal with the sender's tag."""
     global _tagged_button_handler_cls
@@ -234,60 +198,6 @@ def _get_window_close_delegate_cls():
     return _WindowCloseDelegate
 
 
-def _get_segmented_handler_cls():
-    """Lazily build the NSObject subclass used as target for segmented controls."""
-    global _segmented_handler_cls
-    if _segmented_handler_cls is not None:
-        return _segmented_handler_cls
-
-    import objc  # type: ignore[import]
-    from Cocoa import NSObject  # type: ignore[import]
-
-    class _SegmentedHandler(NSObject):
-        def initWithCallback_(self, callback):
-            self = objc.super(_SegmentedHandler, self).init()
-            if self is None:
-                return None
-            self._cb = callback
-            return self
-
-        def segmentChanged_(self, sender):
-            try:
-                self._cb(sender.selectedSegment())
-            except Exception:
-                pass
-
-    _segmented_handler_cls = _SegmentedHandler
-    return _SegmentedHandler
-
-
-def _get_switch_handler_cls():
-    """Lazily build the NSObject subclass used as target for NSSwitch buttons."""
-    global _switch_handler_cls
-    if _switch_handler_cls is not None:
-        return _switch_handler_cls
-
-    import objc  # type: ignore[import]
-    from Cocoa import NSObject  # type: ignore[import]
-
-    class _SwitchHandler(NSObject):
-        def initWithCallback_(self, callback):
-            self = objc.super(_SwitchHandler, self).init()
-            if self is None:
-                return None
-            self._cb = callback
-            return self
-
-        def switchChanged_(self, sender):
-            try:
-                self._cb(bool(sender.state()))
-            except Exception:
-                pass
-
-    _switch_handler_cls = _SwitchHandler
-    return _SwitchHandler
-
-
 def _get_main_dispatcher_cls():
     """Lazily build the NSObject subclass used to dispatch callables onto the main thread."""
     global _main_dispatcher_cls
@@ -331,6 +241,77 @@ def _on_main(callable_) -> None:
             callable_()
         except Exception:
             pass
+
+
+def _run_on_main(fn, timeout: float = 5.0) -> dict:
+    """Run fn on the main thread, wait for the result. For debug-server
+    handlers, which run on socket threads but must touch AppKit."""
+    if threading.current_thread() is threading.main_thread():
+        return {"error": "_run_on_main must be called off the main thread"}
+    box: dict = {}
+    done = threading.Event()
+
+    def _wrap():
+        try:
+            box["value"] = fn()
+        except Exception as exc:
+            box["value"] = {"error": str(exc)}
+        finally:
+            done.set()
+
+    _on_main(_wrap)
+    if not done.wait(timeout):
+        return {"error": "main-thread timeout"}
+    value = box.get("value")
+    return value if isinstance(value, dict) else {"value": value}
+
+
+def _menu_tree(menu) -> list:
+    """Walk a rumps Menu/MenuItem mapping into a JSON-able tree."""
+    tree: list = []
+    try:
+        items = list(menu.values())
+    except Exception:
+        return tree
+    for item in items:
+        title = getattr(item, "title", None)
+        if item is None or title is None:
+            tree.append({"separator": True})
+            continue
+        node: dict = {"title": str(title)}
+        ns = getattr(item, "_menuitem", None)
+        if ns is not None:
+            try:
+                node["enabled"] = bool(ns.isEnabled())
+                key = str(ns.keyEquivalent() or "")
+                if key:
+                    node["key"] = key
+            except Exception:
+                pass
+        try:
+            children = _menu_tree(item)
+        except Exception:
+            children = []
+        if children:
+            node["children"] = children
+        tree.append(node)
+    return tree
+
+
+def _screenshot_window(window, path: str) -> dict:
+    """Render `window`'s content view to a PNG, in-process (no TCC needed)."""
+    from AppKit import NSBitmapImageFileTypePNG  # type: ignore[import]
+    view = window.contentView()
+    bounds = view.bounds()
+    rep = view.bitmapImageRepForCachingDisplayInRect_(bounds)
+    if rep is None:
+        return {"error": "could not create bitmap rep"}
+    view.cacheDisplayInRect_toBitmapImageRep_(bounds, rep)
+    data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, None)
+    if data is None or not data.writeToFile_atomically_(path, True):
+        return {"error": f"could not write {path}"}
+    return {"ok": True, "path": path,
+            "width": int(rep.pixelsWide()), "height": int(rep.pixelsHigh())}
 
 
 # ---------------------------------------------------------------------------
@@ -516,435 +497,15 @@ class _RegularPolicyScope:
         return False
 
 
-def _make_label(text: str, x: float, y: float, w: float, h: float, *, right: bool = True):
-    from Cocoa import NSTextField, NSMakeRect  # type: ignore[import]
-    lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
-    lbl.setStringValue_(text)
-    lbl.setBezeled_(False)
-    lbl.setDrawsBackground_(False)
-    lbl.setEditable_(False)
-    lbl.setSelectable_(False)
-    lbl.setAlignment_(2 if right else 0)  # 2 = right, 0 = left
-    return lbl
-
-
-def _show_form_dialog(
-        title: str,
-        fields: list[dict],
-        *,
-        ok_title: str = "OK",
-        cancel_title: str = "Cancel",
-        informative: str | None = None,
-        icon_path: str | None = None,
-) -> dict | None:
-    """Show a multi-field modal NSPanel form.
-
-    Built as a floating NSPanel + NSApplication.runModalForWindow_ rather than
-    NSAlert+accessoryView — the latter has focus/window-order quirks in
-    menu-extra (LSUIElement) rumps apps that can leave the dialog invisible
-    while the main thread is blocked in runModal.
-
-    fields: list of dicts with keys:
-        - key:     str (result key)
-        - label:   str (display label; trailing colon recommended)
-        - kind:    "text" | "secure" | "popup" | "combo" | "switch" | "segmented"
-        - default: default value (str for text/secure, str for popup/combo selection,
-                   bool for switch, int index for segmented)
-        - options: list — required for popup/combo/segmented
-        - hint:    optional placeholder text (text/secure/combo)
-        - on_change: optional callback(index) for live preview (segmented)
-
-    Returns dict {key: value} or None if cancelled.
-    """
-    from AppKit import (  # type: ignore[import]
-        NSApplication,
-        NSBackingStoreBuffered,
-        NSFloatingWindowLevel,
-        NSImage,
-        NSImageScaleProportionallyDown,
-        NSOffState,
-        NSOnState,
-        NSPanel,
-        NSRegularControlSize,
-        NSSegmentSwitchTrackingSelectOne,
-        NSSwitchButton,
-        NSWindowStyleMaskClosable,
-        NSWindowStyleMaskTitled,
-    )
-    from Cocoa import (  # type: ignore[import]
-        NSButton,
-        NSComboBox,
-        NSMakeRect,
-        NSPopUpButton,
-        NSSecureTextField,
-        NSSegmentedControl,
-        NSTextField,
-    )
-
-    # Layout constants tuned to match susops-mac's GenericFieldPanel:
-    #   - 40-px row pitch (24-px field + 16-px gap)
-    #   - 80x30 buttons positioned at the edges of the input column
-    #   - Cancel on the left (just outside the input column), OK on the right
-    LABEL_W = 160
-    LABEL_GAP = 10
-    INPUT_W = 200
-    ROW_H = 24
-    ROW_GAP = 16
-    PAD_X = 16
-    PAD_TOP = 16
-    BUTTON_H = 30
-    BUTTON_W = 80
-    BUTTON_BOTTOM = 16
-    GAP_BEFORE_BUTTONS = 16
-    BUTTON_AREA = GAP_BEFORE_BUTTONS + BUTTON_H + BUTTON_BOTTOM
-
-    rows = len(fields)
-    # Info rows can be multi-line; estimate their extra height so the panel
-    # is tall enough.
-    info_extra_h = 0
-    for f in fields:
-        if f.get("kind") == "info":
-            text_value = str(f.get("default", "") or "")
-            line_count = text_value.count("\n") + 1
-            info_h = max(ROW_H, line_count * 16 + 4)
-            info_extra_h += max(0, info_h - ROW_H)
-    fields_h = rows * ROW_H + max(0, rows - 1) * ROW_GAP + info_extra_h
-    content_w = PAD_X + LABEL_W + LABEL_GAP + INPUT_W + PAD_X
-    content_h = PAD_TOP + fields_h + BUTTON_AREA
-
-    style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(0, 0, content_w, content_h),
-        style,
-        NSBackingStoreBuffered,
-        False,
-    )
-    panel.setTitle_(title)
-    panel.setReleasedWhenClosed_(False)
-    panel.setHidesOnDeactivate_(False)
-    panel.setLevel_(NSFloatingWindowLevel)
-    # NSPanel default is becomesKeyOnlyIfNeeded=YES which can prevent the
-    # panel from becoming key for our modal — explicitly disable it so
-    # text fields receive keystrokes.
-    try:
-        panel.setBecomesKeyOnlyIfNeeded_(False)
-    except Exception:
-        pass
-
-    content = panel.contentView()
-    widgets: dict[str, object] = {}
-    handlers: list = []
-
-    label_x = PAD_X
-    input_x = PAD_X + LABEL_W + LABEL_GAP
-
-    # Layout top-to-bottom (content view uses bottom-left origin).
-    y = content_h - PAD_TOP - ROW_H
-    for f in fields:
-        key = f["key"]
-        kind = f.get("kind", "text")
-        default = f.get("default", "")
-        options = f.get("options") or []
-        hint = f.get("hint")
-        on_change = f.get("on_change")
-
-        lbl = _make_label(f.get("label", ""), label_x, y, LABEL_W, ROW_H, right=True)
-        content.addSubview_(lbl)
-
-        if kind == "text":
-            # Use full ROW_H height — text fields shorter than ~22 px don't
-            # receive keyboard input correctly on macOS (cursor can't fit).
-            field = NSTextField.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            field.setStringValue_(str(default) if default is not None else "")
-            field.setEditable_(True)
-            field.setSelectable_(True)
-            field.setEnabled_(True)
-            field.setBezeled_(True)
-            if hint:
-                try:
-                    field.cell().setPlaceholderString_(hint)
-                except Exception:
-                    pass
-            content.addSubview_(field)
-            widgets[key] = field
-
-        elif kind == "secure":
-            field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            field.setStringValue_(str(default) if default is not None else "")
-            field.setEditable_(True)
-            field.setSelectable_(True)
-            field.setEnabled_(True)
-            field.setBezeled_(True)
-            if hint:
-                try:
-                    field.cell().setPlaceholderString_(hint)
-                except Exception:
-                    pass
-            content.addSubview_(field)
-            widgets[key] = field
-
-        elif kind == "popup":
-            popup = NSPopUpButton.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            popup.setPullsDown_(False)
-            titles = [str(o) for o in options]
-            popup.addItemsWithTitles_(titles)
-            if default is not None and str(default) in titles:
-                popup.selectItemWithTitle_(str(default))
-            elif titles:
-                popup.selectItemAtIndex_(0)
-            content.addSubview_(popup)
-            widgets[key] = popup
-
-        elif kind == "combo":
-            combo = NSComboBox.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            combo.addItemsWithObjectValues_([str(o) for o in options])
-            # Enable inline autocomplete against the list (so typing "myh"
-            # completes to "myhost" from ~/.ssh/config et al).
-            try:
-                combo.setCompletes_(True)
-            except Exception:
-                pass
-            if default:
-                combo.setStringValue_(str(default))
-            # Leave blank if no explicit default so the placeholder shows and
-            # the user can immediately type/autocomplete.
-            if hint:
-                try:
-                    combo.cell().setPlaceholderString_(hint)
-                except Exception:
-                    pass
-            content.addSubview_(combo)
-            widgets[key] = combo
-
-        elif kind == "switch":
-            btn = NSButton.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            btn.setButtonType_(NSSwitchButton)
-            btn.setTitle_("")
-            btn.setState_(NSOnState if default else NSOffState)
-            if on_change is not None:
-                cls = _get_switch_handler_cls()
-                handler = cls.alloc().initWithCallback_(on_change)
-                handlers.append(handler)
-                btn.setTarget_(handler)
-                btn.setAction_("switchChanged:")
-            content.addSubview_(btn)
-            widgets[key] = btn
-
-        elif kind == "segmented":
-            seg = NSSegmentedControl.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            seg.setSegmentCount_(len(options))
-            seg.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
-            seg.setControlSize_(NSRegularControlSize)
-            for idx, opt in enumerate(options):
-                if isinstance(opt, tuple):
-                    label_text, image_path = opt
-                else:
-                    label_text, image_path = str(opt), None
-                if image_path and os.path.exists(image_path):
-                    try:
-                        img = NSImage.alloc().initWithContentsOfFile_(image_path)
-                        if img is not None:
-                            img.setSize_((24, 24))
-                            seg.setImage_forSegment_(img, idx)
-                            try:
-                                seg.cell().setImageScaling_forSegment_(NSImageScaleProportionallyDown, idx)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                try:
-                    seg.setLabel_forSegment_(label_text, idx)
-                except Exception:
-                    pass
-            try:
-                seg.setSelectedSegment_(int(default) if default is not None else 0)
-            except Exception:
-                pass
-            if on_change is not None:
-                cls = _get_segmented_handler_cls()
-                handler = cls.alloc().initWithCallback_(on_change)
-                handlers.append(handler)
-                seg.setTarget_(handler)
-                seg.setAction_("segmentChanged:")
-            content.addSubview_(seg)
-            widgets[key] = seg
-
-        elif kind == "info":
-            # Multi-line static note spanning both columns. Used for the
-            # "Host can be: domain / IP / CIDR" hint in susops-mac's
-            # AddHostPanel. The label column is left empty for this kind.
-            text_value = str(default) if default is not None else ""
-            line_count = text_value.count("\n") + 1
-            info_h = max(ROW_H, line_count * 16 + 4)
-            # Remove the empty right-aligned label that the outer loop already
-            # placed for this row (we want the info text to span full width).
-            try:
-                content.subviews()[-1].removeFromSuperview()
-            except Exception:
-                pass
-            info_y = y + (ROW_H - info_h)
-            info = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(label_x, info_y, content_w - 2 * PAD_X, info_h)
-            )
-            info.setStringValue_(text_value)
-            info.setBezeled_(False)
-            info.setDrawsBackground_(False)
-            info.setEditable_(False)
-            info.setSelectable_(False)
-            info.setAlignment_(0)  # left
-            try:
-                cell = info.cell()
-                cell.setWraps_(True)
-                cell.setLineBreakMode_(0)
-            except Exception:
-                pass
-            content.addSubview_(info)
-            widgets[key] = info
-            # Bump the row stride if this info row is taller than ROW_H.
-            extra = max(0, info_h - ROW_H)
-            y -= extra
-
-        else:
-            field = NSTextField.alloc().initWithFrame_(NSMakeRect(input_x, y, INPUT_W, ROW_H))
-            content.addSubview_(field)
-            widgets[key] = field
-
-        y -= ROW_H + ROW_GAP
-
-    # OK + Cancel buttons in the bottom-right corner.
-    button_handler = _get_button_handler_cls().alloc().init()
-    handlers.append(button_handler)
-
-    # susops-mac places Cancel at the left edge of the input column and OK at
-    # the right edge — visually anchoring both buttons within the same vertical
-    # band as the input fields.
-    cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(
-        input_x, BUTTON_BOTTOM, BUTTON_W, BUTTON_H,
-    ))
-    cancel_btn.setTitle_(cancel_title)
-    cancel_btn.setBezelStyle_(1)
-    cancel_btn.setKeyEquivalent_("\x1b")  # Esc
-    cancel_btn.setTarget_(button_handler)
-    cancel_btn.setAction_("cancelClicked:")
-    content.addSubview_(cancel_btn)
-
-    ok_btn = NSButton.alloc().initWithFrame_(NSMakeRect(
-        input_x + INPUT_W - BUTTON_W, BUTTON_BOTTOM, BUTTON_W, BUTTON_H,
-    ))
-    ok_btn.setTitle_(ok_title)
-    ok_btn.setBezelStyle_(1)
-    ok_btn.setKeyEquivalent_("\r")  # Enter — default button
-    ok_btn.setTarget_(button_handler)
-    ok_btn.setAction_("okClicked:")
-    content.addSubview_(ok_btn)
-
-    # Initial first responder + Tab navigation across all interactive widgets.
-    # NSPanel needs setInitialFirstResponder_ so the first field is focused
-    # when the panel becomes key — otherwise text fields appear "inactive" and
-    # the user has to click into them before typing.
-    keyable = [
-        widgets.get(f["key"])
-        for f in fields
-        if widgets.get(f["key"]) is not None
-           and f.get("kind", "text") in ("text", "secure", "combo", "popup", "switch", "segmented")
-    ]
-    for i in range(len(keyable) - 1):
-        try:
-            keyable[i].setNextKeyView_(keyable[i + 1])
-        except Exception:
-            pass
-    if keyable:
-        try:
-            panel.setInitialFirstResponder_(keyable[0])
-            keyable[-1].setNextKeyView_(keyable[0])  # cycle Tab
-        except Exception:
-            pass
-
-    # Title-bar X / Cmd-W → treat as cancel. Without this delegate, closing
-    # the panel via X just hides the window without stopping the modal
-    # session, so the app stays in modal mode forever (menu greyed out,
-    # no further dialogs can open).
-    close_delegate = _get_window_close_delegate_cls().alloc().init()
-    handlers.append(close_delegate)
-    panel.setDelegate_(close_delegate)
-
-    # Show + run modal inside _RegularPolicyScope — no-op when running from
-    # `.venv/bin/` (already .regular), switches accessory→regular for the
-    # bundled .app so the panel reliably receives key-window focus.
-    with _RegularPolicyScope():
-        panel.center()
-        panel.makeKeyAndOrderFront_(None)
-        if keyable:
-            try:
-                panel.makeFirstResponder_(keyable[0])
-            except Exception:
-                pass
-        try:
-            response = NSApplication.sharedApplication().runModalForWindow_(panel)
-        finally:
-            try:
-                panel.setDelegate_(None)
-            except Exception:
-                pass
-            try:
-                panel.orderOut_(None)
-            except Exception:
-                pass
-            try:
-                panel.close()
-            except Exception:
-                pass
-
-    if response != 1:
-        handlers.clear()
-        return None
-
-    result: dict = {}
-    for f in fields:
-        key = f["key"]
-        kind = f.get("kind", "text")
-        w = widgets.get(key)
-        if w is None:
-            continue
-        if kind in ("text", "secure"):
-            result[key] = str(w.stringValue()).strip()
-        elif kind == "combo":
-            result[key] = str(w.stringValue()).strip()
-        elif kind == "popup":
-            item = w.titleOfSelectedItem()
-            result[key] = str(item) if item is not None else ""
-        elif kind == "switch":
-            result[key] = bool(w.state())
-        elif kind == "segmented":
-            result[key] = int(w.selectedSegment())
-        else:
-            result[key] = ""
-
-    handlers.clear()
-    return result
-
-
-def _show_pick_dialog(
-        title: str,
-        label: str,
-        items: list[str],
-        *,
-        ok_title: str = "Select",
-        cancel_title: str = "Cancel",
-) -> str | None:
-    """Show an NSAlert with a single NSPopUpButton; returns selected item or None."""
-    if not items:
-        _show_message("Nothing to Select", "The list is empty.")
-        return None
-    result = _show_form_dialog(
-        title,
-        [{"key": "value", "label": label, "kind": "popup", "options": items, "default": items[0]}],
-        ok_title=ok_title,
-        cancel_title=cancel_title,
-    )
-    if result is None:
-        return None
-    return result.get("value") or None
+# Debug-server test mode. Modal alert panels are recorded and auto-answered
+# instead of blocking on a modal run loop, because GUI smoke tests drive the
+# window over the debug socket on the main thread. Policy: single-button
+# panels answer with their only button. Multi-button panels (confirms) answer
+# with CANCEL unless an explicit answer was queued via `confirm-next`, so a
+# destructive default can never fire by accident. False in production.
+_DEBUG_ALERT_MODE = False
+_DEBUG_ALERTS: list[dict] = []         # [{"title": ..., "answered": label}]
+_DEBUG_CONFIRM_QUEUE: list[str] = []   # queued "ok"/"cancel" for next confirms
 
 
 def _show_message_panel(
@@ -961,8 +522,8 @@ def _show_message_panel(
     (the alert window comes up in an unfocused state and is invisible to the
     user, leaving the main thread blocked in a modal that can't be dismissed —
     Ctrl+C in the launching terminal won't even kill the Python process).
-    We sidestep NSAlert entirely and build the same kind of NSPanel that
-    _show_form_dialog uses (it's the proven path).
+    We sidestep NSAlert entirely and build a floating NSPanel driven by
+    runModalForWindow_ (the proven path).
 
     buttons: list of (label, response_code) — leftmost button is buttons[0].
              Idiomatic order on macOS is: rightmost = default (primary),
@@ -973,6 +534,25 @@ def _show_message_panel(
 
     Returns the response_code of the clicked button.
     """
+    # Headless/debug escape hatch. A blocking runModalForWindow_ would
+    # deadlock the test harness, so in debug mode the panel is recorded and
+    # auto-answered. Single-button panels use their only button. Multi-button
+    # panels answer with CANCEL unless `confirm-next` queued an explicit
+    # answer, so a destructive default can never fire by accident.
+    if _DEBUG_ALERT_MODE:
+        eff_cancel = cancel_index if cancel_index is not None \
+            else len(buttons) - 1
+        if len(buttons) == 1:
+            idx = 0
+        elif _DEBUG_CONFIRM_QUEUE:
+            answer = _DEBUG_CONFIRM_QUEUE.pop(0)
+            idx = default_index if answer == "ok" else eff_cancel
+        else:
+            idx = eff_cancel
+        idx = idx if 0 <= idx < len(buttons) else 0
+        _DEBUG_ALERTS.append({"title": title, "answered": buttons[idx][0]})
+        return int(buttons[idx][1])
+
     from AppKit import (  # type: ignore[import]
         NSApplication,
         NSBackingStoreBuffered,
@@ -1567,6 +1147,35 @@ def _pick_file() -> str | None:
     return str(urls[0].path())
 
 
+def _pick_save_path() -> str | None:
+    """Show an NSSavePanel and return the chosen destination path or None.
+    Same activation-policy + floating-level handling as _pick_file so the
+    panel comes up focused on a menu-extra app."""
+    from AppKit import NSFloatingWindowLevel, NSModalResponseOK  # type: ignore[import]
+    from Cocoa import NSSavePanel  # type: ignore[import]
+    panel = NSSavePanel.savePanel()
+    try:
+        panel.setLevel_(NSFloatingWindowLevel)
+    except Exception:
+        pass
+    with _RegularPolicyScope():
+        try:
+            panel.center()
+        except Exception:
+            pass
+        try:
+            panel.makeKeyAndOrderFront_(None)
+        except Exception:
+            pass
+        result = panel.runModal()
+    if result != NSModalResponseOK:
+        return None
+    url = panel.URL()
+    if url is None:
+        return None
+    return str(url.path())
+
+
 _ABOUT_WINDOWS: dict[int, dict] = {}
 
 
@@ -1653,7 +1262,7 @@ def _show_about_panel(version: str = "", *, icon_state=None) -> None:
     url_handlers: list = []
 
     # ── App icon (centered at top) — static assets/icon.png ──
-    icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icon.png"
+    icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
     y_icon = win_h - icon_size - 14
     if icon_path.exists():
         try:
@@ -1894,7 +1503,6 @@ class SusOpsMacTray(AbstractTrayApp):
             template=False,
             quit_button=None,
         )
-        self._active_shares: list = []
         # Tri-state cache for launch-at-login: None until the background probe finishes.
         # Synchronous osascript would block the main thread (and can trigger a TCC prompt
         # the first time), so we never query it from the menu callback.
@@ -1902,6 +1510,20 @@ class SusOpsMacTray(AbstractTrayApp):
         self._refresh_launch_at_login_async()
         self._build_menu()
         self._register_appearance_observer()
+        self._config_window = None  # created lazily by _ensure_config_window
+        self._debug_server = None
+        debug_port = os.environ.get("SUSOPS_TRAY_DEBUG_PORT")
+        if debug_port:
+            # Auto-answer modal alerts in test mode (see _DEBUG_ALERT_MODE) so
+            # GUI smoke tests driving the window over the socket don't
+            # deadlock on a blocking runModalForWindow_.
+            global _DEBUG_ALERT_MODE
+            _DEBUG_ALERT_MODE = True
+            from susops.tray.debug_server import TrayDebugServer
+            self._debug_server = TrayDebugServer(
+                self._debug_handlers(), port=int(debug_port),
+            )
+            self._debug_server.start()
 
     def _refresh_launch_at_login_async(self) -> None:
         def _probe():
@@ -1933,6 +1555,868 @@ class SusOpsMacTray(AbstractTrayApp):
             )
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ #
+    # Debug server (opt-in, SUSOPS_TRAY_DEBUG_PORT)
+    # ------------------------------------------------------------------ #
+
+    def _debug_handlers(self) -> dict:
+        """Debug-server command table (ping, dump-menu, open-about, open-config,
+        select, dump-window, search, set-field, add, confirm-next, action,
+        screenshot, quit). Every UI-touching handler marshals via _run_on_main.
+
+        open-config [category]: category key (connections/domains/forwards/
+            shares/settings) or omitted.
+        select <category> [index]: switch nav, then select the index-th
+            selectable item row in column 2.
+        search [text]: set the search field string (empty clears) + filter.
+        set-field <key> <value>: write a live col-3 form widget, mark dirty.
+        add: trigger the current category's primary add button (enters create
+            mode for connections/domains/forwards/shares).
+        add-fetch: enter the fetch create form (shares' secondary button).
+        confirm-next <ok|cancel>: queue the answer for the next multi-button
+            panel (confirms default to cancel in debug mode otherwise).
+        """
+
+        def _screenshot(args):
+            if not args:
+                return {"error": "usage: screenshot <path>"}
+            path = args[0]
+
+            def _shot():
+                win = self._debug_target_window()
+                if win is None:
+                    return {"error": "no window open"}
+                return _screenshot_window(win, path)
+
+            return _run_on_main(_shot)
+
+        def _quit(args):
+            _on_main(lambda: self._rumps.quit_application())
+            return {"ok": True}
+
+        return {
+            "ping": lambda args: {"ok": True},
+            "dump-menu": lambda args: _run_on_main(
+                lambda: {"menu": _menu_tree(self._app.menu)}),
+            "open-about": lambda args: _run_on_main(
+                lambda: (_show_about_panel(), {"ok": True})[1]),
+            "open-config": lambda args: _run_on_main(
+                lambda: (self._ensure_config_window().open(args[0] if args else None),
+                         {"ok": True})[1]),
+            "select": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().select(
+                    args[0],
+                    int(args[1]) if len(args) > 1 else None))
+                if args else {"error": "usage: select <category> [index]"}),
+            "dump-window": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().dump()),
+            "search": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().set_search(" ".join(args))),
+            "set-field": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().set_field(
+                    args[0], " ".join(args[1:])))
+                if args else {"error": "usage: set-field <key> <value…>"}),
+            "add": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().add()),
+            "add-fetch": lambda args: _run_on_main(
+                lambda: self._ensure_config_window().add_fetch()),
+            "confirm-next": lambda args: (
+                (_DEBUG_CONFIRM_QUEUE.append(args[0]),
+                 {"ok": True, "queued": args[0]})[1]
+                if args and args[0] in ("ok", "cancel")
+                else {"error": "usage: confirm-next <ok|cancel>"}),
+            "action": lambda args: (_run_on_main(
+                lambda: (self.dispatch_window_action(
+                    args[0],
+                    tuple(self._ensure_config_window().selected_identity or ())),
+                    {"ok": True})[1])
+                if args else {"error": "usage: action <action_id>"}),
+            "screenshot": _screenshot,
+            "quit": _quit,
+        }
+
+    def _debug_target_window(self):
+        """Window the screenshot command captures: the config window when open,
+        else any open About or live panel."""
+        cw = getattr(self, "_config_window", None)
+        if cw is not None and cw.is_open():
+            return cw.window
+        for store in (_ABOUT_WINDOWS, _LIVE_WINDOWS):
+            for entry in store.values():
+                return entry["panel"]
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Config window
+    # ------------------------------------------------------------------ #
+
+    def _ensure_config_window(self):
+        if self._config_window is None:
+            from susops.tray.mac_config_window import ConfigWindow
+            self._config_window = ConfigWindow(self)
+        return self._config_window
+
+    def _show_config_window(self, tab: str | None = None) -> None:
+        def _open():
+            self._ensure_config_window().open(tab)
+        _on_main(_open)
+
+    def dispatch_window_action(self, action_id: str, identity: tuple) -> None:
+        """Map a detail-pane action id onto the corresponding do_* method.
+
+        v2: conn_tag is read from the identity tuple, never window state.
+          ("connection", tag)
+          ("domain", conn_tag, host)
+          ("forward", conn_tag, direction, src_port)
+          ("share", port)
+        Destructive actions confirm first. *.save routes to save_window_form
+        with the live form values. *.create and fetch.run route to
+        create_window_item using the window's live form values."""
+        # *.create is dispatched through the window's create handler, which
+        # reads _create_kind + the live form values, so it has no identity.
+        if action_id.endswith(".create"):
+            cw = getattr(self, "_config_window", None)
+            if cw is None or cw._create_kind is None:
+                return
+            self.create_window_item(cw._create_kind, cw.collect_form_values())
+            return
+
+        # Settings-pane actions carry no identity (col 2 is hidden). Apply
+        # commits ALL staged settings at once (toggles + logo + login + ports);
+        # nothing persists until then.
+        if action_id in ("settings.apply", "settings.apply_ports"):
+            cw = getattr(self, "_config_window", None)
+            if cw is None:
+                return
+            self.apply_all_settings(cw._settings_values())
+            return
+        if action_id == "settings.open_config":
+            self.do_open_config_file()
+            return
+
+        kind = identity[0] if identity else None
+        if kind is None:
+            return
+
+        # Route *.save through save_window_form with the live form values
+        # collected from the window.
+        if action_id.endswith(".save"):
+            cw = getattr(self, "_config_window", None)
+            values = cw.collect_form_values() if cw is not None else {}
+            self.save_window_form(identity, values)
+            return
+
+        if action_id == "fetch.run":
+            cw = getattr(self, "_config_window", None)
+            if cw is None or cw._create_kind != "fetch":
+                return
+            self.create_window_item("fetch", cw.collect_form_values())
+            return
+
+        if kind == "connection":
+            conn_tag = identity[1]
+            if action_id == "conn.start":
+                self.do_start_connection(conn_tag)
+            elif action_id == "conn.stop":
+                self.do_stop_connection(conn_tag)
+            elif action_id == "conn.restart":
+                self.do_restart_connection(conn_tag)
+            elif action_id == "conn.test":
+                self.do_test_connection(conn_tag)
+            elif action_id == "conn.toggle":
+                self.do_toggle_connection_enabled(conn_tag)
+            elif action_id == "conn.remove":
+                if _show_confirm("Delete Connection",
+                                 f"Delete connection '{conn_tag}' and all its "
+                                 f"domains, forwards and shares?", ok="Delete"):
+                    self.do_remove_connection(conn_tag)
+        elif kind == "domain":
+            _, conn_tag, host = identity
+            if action_id == "domain.test":
+                self.do_test_domain(host, conn_tag)
+            elif action_id == "domain.toggle":
+                self.do_toggle_pac_host_enabled(host)
+            elif action_id == "domain.remove":
+                if _show_confirm("Delete Domain", f"Delete '{host}'?", ok="Delete"):
+                    self.do_remove_pac_host(host)
+        elif kind == "forward":
+            _, conn_tag, direction, src_port = identity
+            if action_id == "forward.test":
+                self.do_test_forward(conn_tag, src_port, direction)
+            elif action_id == "forward.toggle":
+                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+            elif action_id == "forward.remove":
+                if _show_confirm("Delete Forward",
+                                 f"Delete :{src_port} ({direction})?", ok="Delete"):
+                    if direction == "local":
+                        self.do_remove_local_forward(src_port)
+                    else:
+                        self.do_remove_remote_forward(src_port)
+        elif kind == "share":
+            port = identity[1]
+            info = next((s for s in self.manager.list_shares()
+                         if s.port == port), None)
+            if info is None:
+                pass  # vanished; refresh below handles it
+            elif action_id == "share.toggle":
+                # Flip serving on/off. Decide by the live in-memory `running`
+                # state (reliable) rather than the persisted `stopped` flag,
+                # which a concurrent list_shares poll can clobber at the daemon
+                # (facade thread-safety bug, tracked separately): currently
+                # serving -> stop; not serving -> re-share. Merges the old
+                # share.stop/share.start.
+                if info.running:
+                    self.do_stop_share(port)
+                elif not info.conn_tag:
+                    self.show_alert("Cannot Start Share",
+                                    "This share has no connection configured.")
+                else:
+                    self._reserve_share_silent(info)
+            elif action_id == "share.stop":
+                self.do_stop_share(port)
+            elif action_id == "share.start":
+                if not info.conn_tag:
+                    self.show_alert("Cannot Start Share",
+                                    "This share has no connection configured.")
+                else:
+                    self._reserve_share_silent(info)
+            elif action_id == "share.delete":
+                if _show_confirm("Delete Share",
+                                 f"Delete share on port {port}?", ok="Delete"):
+                    self.do_delete_share(port)
+            elif action_id == "share.copy_url":
+                self._copy_to_pasteboard(f"http://localhost:{port}")
+            elif action_id == "share.copy_password":
+                self._copy_to_pasteboard(info.password or "")
+        self._refresh_config_window()
+
+    def _reserve_share_silent(self, info) -> None:
+        """Re-serve a share from the config window with NO success popup.
+
+        The window reflects the new state on the next refresh, so a "Share
+        Started" alert is redundant noise here. Goes straight to
+        manager.share on a worker (NOT do_share, which alerts and the Linux
+        tray relies on). Errors still alert.
+        """
+        conn_tag = info.conn_tag
+        file_path = info.file_path
+        password = info.password
+        port = info.port
+
+        def _work():
+            try:
+                self.manager.share(Path(file_path), conn_tag,
+                                   password=password or None,
+                                   port=port or None)
+                return None
+            except Exception as exc:
+                return str(exc)
+
+        def _done(err):
+            if err:
+                self.show_alert("Share Failed", err)
+            self._refresh_config_window()
+
+        self.run_in_background(_work, _done)
+
+    # ------------------------------------------------------------------ #
+    # Inline-edit save. Validation lives here (single place). Remove+re-add
+    # with rollback runs on a worker thread. Alerts, refresh and reselect
+    # marshal back to the main thread. On any error the form stays dirty.
+    # ------------------------------------------------------------------ #
+
+    _DIRECTION_FROM_LABEL = {"Local (-L)": "local", "Remote (-R)": "remote"}
+
+    def save_window_form(self, identity: tuple, values: dict) -> None:
+        kind = identity[0] if identity else None
+        if kind == "connection":
+            self._save_connection(identity, values)
+        elif kind == "forward":
+            self._save_forward(identity, values)
+        elif kind == "domain":
+            self._save_domain(identity, values)
+        elif kind == "share":
+            self._save_share(identity, values)
+
+    def _clear_window_dirty_and_reselect(self, new_identity: tuple) -> None:
+        """Main-thread: clear the dirty flag and reselect the new identity so
+        the freshly-saved item is shown."""
+        cw = getattr(self, "_config_window", None)
+        if cw is None:
+            return
+        cw._dirty = False
+        cw._dirty_identity = None
+        cw.selected_identity = tuple(new_identity)
+        self._refresh_config_window()
+
+    # ------------------------------------------------------------------ #
+    # Inline create. Pure-input validation lives here (single place),
+    # mirroring save_window_form. The add runs on a worker thread. Alerts,
+    # refresh and reselect marshal back to the main thread. On any error the
+    # create form stays open with its edits.
+    # ------------------------------------------------------------------ #
+
+    def create_window_item(self, kind: str, values: dict) -> None:
+        if kind == "connection":
+            self._create_connection(values)
+        elif kind == "domain":
+            self._create_domain(values)
+        elif kind == "forward":
+            self._create_forward(values)
+        elif kind == "share":
+            self._create_share(values)
+        elif kind == "fetch":
+            self._run_fetch(values)
+
+    def _exit_create_and_select(self, new_identity: tuple) -> None:
+        """Main-thread: leave create mode, refresh, and select the new row by
+        identity. No success alert - the selected new row is the feedback."""
+        cw = getattr(self, "_config_window", None)
+        if cw is None:
+            return
+        cw._create_kind = None
+        cw._dirty = False
+        cw._dirty_identity = None
+        cw.selected_identity = tuple(new_identity)
+        self._refresh_config_window()
+
+    def _create_connection(self, values: dict) -> None:
+        tag = (values.get("tag") or "").strip()
+        ssh_host = (values.get("ssh_host") or "").strip()
+        port_text = str(values.get("socks_port") or "").strip()
+        if not tag:
+            _show_message("Missing Field", "Connection Tag must not be empty.")
+            return
+        if not ssh_host:
+            _show_message("Missing Field", "SSH Host must not be empty.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "SOCKS Proxy Port must be between 1 and 65535.")
+                return
+            port_int = int(port_text)
+            if not is_port_free(port_int):
+                _show_message("Port In Use",
+                              f"Port {port_int} is already in use.")
+                return
+
+        new_identity = ("connection", tag)
+        # Auto-start the new connection when the proxy is already running,
+        # matching do_add_connection's behavior (but without its alert).
+        autostart = self.state == ProcessState.RUNNING
+
+        def _work():
+            try:
+                self.manager.add_connection(tag, ssh_host, port_int)
+            except Exception as exc:
+                return {"error": str(exc)}
+            if autostart:
+                try:
+                    self.manager.start(tag=tag)
+                except Exception as exc:
+                    return {"error": f"Connection added but failed to "
+                                     f"start: {exc}"}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _create_domain(self, values: dict) -> None:
+        host = (values.get("host") or "").strip()
+        conn_tag = (values.get("conn_tag") or "").strip()
+        if not host:
+            _show_message("Missing Field", "Host must not be empty.")
+            return
+        if not conn_tag:
+            _show_message("Missing Field", "Select a connection.")
+            return
+
+        new_identity = ("domain", conn_tag, host)
+
+        def _work():
+            try:
+                self.manager.add_pac_host(host, conn_tag=conn_tag)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _create_forward(self, values: dict) -> None:
+        conn_tag = (values.get("conn_tag") or "").strip()
+        dir_label = values.get("direction") or ""
+        direction = self._DIRECTION_FROM_LABEL.get(dir_label, "local")
+        remote = direction == "remote"
+        src_addr = (values.get("src_addr") or "localhost").strip()
+        dst_addr = (values.get("dst_addr") or "localhost").strip()
+        src_txt = str(values.get("src_port") or "").strip()
+        dst_txt = str(values.get("dst_port") or "").strip()
+        protocols = values.get("protocols") or (False, False)
+        tcp, udp = bool(protocols[0]), bool(protocols[1])
+        tag = (values.get("tag") or "").strip()
+
+        if not conn_tag:
+            _show_message("No Connection", "Select a connection.")
+            return
+        if not tcp and not udp:
+            _show_message("Protocol Required",
+                          "Select at least one protocol (TCP or UDP).")
+            return
+        if not src_txt.isdigit() or not validate_port(int(src_txt)):
+            _show_message("Invalid Source Port",
+                          "Source port must be a number between 1 and 65535.")
+            return
+        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
+            _show_message("Invalid Destination Port",
+                          "Destination port must be a number between 1 and "
+                          "65535.")
+            return
+        src_port = int(src_txt)
+        dst_port = int(dst_txt)
+        if not remote and not is_port_free(src_port):
+            _show_message("Port In Use",
+                          f"Local port {src_port} is already in use.")
+            return
+
+        new_identity = ("forward", conn_tag, direction, src_port)
+
+        def _work():
+            fw = PortForward(tag=tag, src_addr=src_addr, src_port=src_port,
+                             dst_addr=dst_addr, dst_port=dst_port,
+                             tcp=tcp, udp=udp)
+            try:
+                self._add_forward_rpc(conn_tag, fw, direction)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True}
+
+        self.run_in_background(_work,
+                               lambda r: self._after_create(r, new_identity))
+
+    def _create_share(self, values: dict) -> None:
+        from pathlib import Path
+        file_path = (values.get("file") or "").strip()
+        conn_tag = (values.get("conn_tag") or "").strip()
+        password = (values.get("password") or "").strip()
+        port_text = str(values.get("port") or "").strip()
+        if not file_path:
+            _show_message("Missing Field", "Choose a file to share.")
+            return
+        if not conn_tag:
+            _show_message("Missing Field", "Select a connection.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "Port must be between 1 and 65535.")
+                return
+            port_int = int(port_text)
+
+        def _work():
+            try:
+                info = self.manager.share(
+                    Path(file_path), conn_tag,
+                    password=password or None,
+                    port=port_int or None)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True, "port": info.port}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Share Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._exit_create_and_select(("share", result["port"]))
+
+        self.run_in_background(_work, _done)
+
+    def _run_fetch(self, values: dict) -> None:
+        from pathlib import Path
+        conn_tag = (values.get("conn_tag") or "").strip()
+        password = (values.get("password") or "").strip()
+        port_text = str(values.get("port") or "").strip()
+        outfile = (values.get("output") or "").strip()
+        if not conn_tag:
+            _show_message("Missing Field", "Select a connection.")
+            return
+        if not port_text:
+            _show_message("Missing Field", "Port is required.")
+            return
+        if not port_text.isdigit() or not validate_port(int(port_text)):
+            _show_message("Invalid Port",
+                          "Port must be between 1 and 65535.")
+            return
+        if not password:
+            _show_message("Missing Field", "Password must not be empty.")
+            return
+        port_int = int(port_text)
+
+        def _work():
+            try:
+                out = Path(outfile) if outfile else None
+                path = self.manager.fetch(
+                    port=port_int, password=password,
+                    conn_tag=conn_tag, outfile=out)
+            except Exception as exc:
+                return {"error": str(exc)}
+            return {"ok": True, "path": str(path)}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Fetch Failed", result["error"])
+                self._refresh_config_window()
+                return
+            # Fetch is an action, not a persistent item: leave create mode back
+            # to the shares list and report the saved path.
+            cw = getattr(self, "_config_window", None)
+            if cw is not None:
+                cw.exit_create_mode()
+            _show_message("Download Complete", f"Saved to {result['path']}")
+            self._refresh_config_window()
+
+        self.run_in_background(_work, _done)
+
+    def _after_create(self, result, new_identity: tuple) -> None:
+        """Main-thread create callback. Error -> alert, form stays open with its
+        edits. Success -> exit create mode + select the new row."""
+        if isinstance(result, dict) and result.get("error"):
+            _show_message("Add Failed", result["error"])
+            self._refresh_config_window()
+            return
+        self._exit_create_and_select(new_identity)
+
+    def _connection_tags(self) -> list:
+        try:
+            return [c.tag for c in self.manager.list_config().connections]
+        except Exception:
+            return []
+
+    def _save_connection(self, identity: tuple, values: dict) -> None:
+        old_tag = identity[1]
+        tag = (values.get("tag") or "").strip()
+        ssh_host = (values.get("ssh_host") or "").strip()
+        port_text = str(values.get("socks_port") or "").strip()
+        # Pure-input validation on the main thread (no RPC).
+        if not tag:
+            _show_message("Missing Field", "Connection Tag must not be empty.")
+            return
+        if not ssh_host:
+            _show_message("Missing Field", "SSH Host must not be empty.")
+            return
+        port_int = 0
+        if port_text:
+            if not port_text.isdigit() or not validate_port(int(port_text)):
+                _show_message("Invalid Port",
+                              "SOCKS port must be empty (auto) or 1–65535.")
+                return
+            port_int = int(port_text)
+
+        new_identity = ("connection", tag)
+
+        def _work():
+            # update_connection edits in place (preserving forwards/domains/
+            # shares) and, when the connection was running, restarts it under
+            # the new config. was_running + restart are handled in the facade.
+            try:
+                self.manager.update_connection(
+                    old_tag, new_tag=tag, ssh_host=ssh_host,
+                    socks_proxy_port=port_int, restart=True)
+                return {"ok": True}
+            except Exception as exc:
+                return {"error": str(exc)}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
+
+    def _save_forward(self, identity: tuple, values: dict) -> None:
+        _, old_conn_tag, old_direction, old_src_port = identity
+        # Pure-input validation on the main thread (no RPC).
+        new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
+        dir_label = values.get("direction") or ""
+        new_direction = self._DIRECTION_FROM_LABEL.get(dir_label, old_direction)
+        src_addr = (values.get("src_addr") or "localhost").strip()
+        dst_addr = (values.get("dst_addr") or "localhost").strip()
+        src_txt = str(values.get("src_port") or "").strip()
+        dst_txt = str(values.get("dst_port") or "").strip()
+        protocols = values.get("protocols") or (False, False)
+        tcp, udp = bool(protocols[0]), bool(protocols[1])
+        tag = (values.get("tag") or "").strip()
+
+        if not src_txt.isdigit() or not validate_port(int(src_txt)):
+            _show_message("Invalid Source Port",
+                          "Source port must be a number between 1 and 65535.")
+            return
+        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
+            _show_message("Invalid Destination Port",
+                          "Destination port must be a number between 1 and 65535.")
+            return
+        new_src_port = int(src_txt)
+        new_dst_port = int(dst_txt)
+        if not tcp and not udp:
+            _show_message("No Protocol",
+                          "Enable at least one protocol (TCP or UDP).")
+            return
+        # A locally-bound src port must be free when it changed (or the
+        # direction changed to local) to avoid colliding with another listener.
+        port_changed = (new_src_port != old_src_port
+                        or new_direction != old_direction)
+        if new_direction == "local" and port_changed and not is_port_free(new_src_port):
+            _show_message("Port In Use",
+                          f"Local port {new_src_port} is already in use.")
+            return
+
+        new_identity = ("forward", new_conn_tag, new_direction, new_src_port)
+
+        def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker.
+            # The old forward is captured so rollback can restore it verbatim.
+            old_fw = self._find_forward(old_conn_tag, old_direction,
+                                        old_src_port)
+            if old_fw is None:
+                return {"error": "The forward no longer exists. "
+                                 "Reopen the window."}
+            new_fw = PortForward(tag=tag, src_addr=src_addr,
+                                 src_port=new_src_port, dst_addr=dst_addr,
+                                 dst_port=new_dst_port, tcp=tcp, udp=udp,
+                                 enabled=bool(old_fw.enabled))
+            try:
+                self._remove_forward_rpc(old_direction, old_src_port)
+            except Exception as exc:
+                return {"error": f"Could not remove old forward: {exc}"}
+            try:
+                self._add_forward_rpc(new_conn_tag, new_fw, new_direction)
+            except Exception as exc:
+                # Rollback: re-add the original forward to its old connection.
+                # A rollback failure is reported, never swallowed.
+                try:
+                    self._add_forward_rpc(old_conn_tag, old_fw, old_direction)
+                except Exception as exc2:
+                    return {"error": f"Could not save forward: {exc}. "
+                                     f"WARNING: the original forward could "
+                                     f"not be restored: {exc2}"}
+                return {"error": f"Could not save forward: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
+
+    def _save_domain(self, identity: tuple, values: dict) -> None:
+        _, old_conn_tag, old_host = identity
+        new_host = (values.get("host") or "").strip()
+        new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
+        if not new_host:
+            _show_message("Invalid Host", "Host must not be empty.")
+            return
+        new_identity = ("domain", new_conn_tag, new_host)
+
+        def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker.
+            was_disabled = self._is_pac_host_disabled(old_conn_tag, old_host)
+            try:
+                self.manager.remove_pac_host(old_host, conn_tag=old_conn_tag)
+            except Exception as exc:
+                return {"error": f"Could not remove old domain: {exc}"}
+            try:
+                self.manager.add_pac_host(new_host, conn_tag=new_conn_tag)
+                if was_disabled:
+                    self.manager.set_pac_host_enabled(
+                        new_host, False, conn_tag=new_conn_tag)
+            except Exception as exc:
+                # Rollback: re-add the original host to its old connection.
+                # A rollback failure is reported, never swallowed.
+                try:
+                    self.manager.add_pac_host(old_host, conn_tag=old_conn_tag)
+                    if was_disabled:
+                        self.manager.set_pac_host_enabled(
+                            old_host, False, conn_tag=old_conn_tag)
+                except Exception as exc2:
+                    return {"error": f"Could not save domain: {exc}. "
+                                     f"WARNING: the original domain could "
+                                     f"not be restored: {exc2}"}
+                return {"error": f"Could not save domain: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(new_identity)
+
+        self.run_in_background(_work, _done)
+
+    def _save_share(self, identity: tuple, values: dict) -> None:
+        from pathlib import Path
+        _, old_port = identity
+        new_port_text = str(values.get("port") or "").strip()
+        new_password = (values.get("password") or "").strip()
+        requested_conn_tag = (values.get("conn_tag") or "").strip()
+        if not new_port_text.isdigit() or not validate_port(int(new_port_text)):
+            _show_message("Invalid Port",
+                          "Port must be a number between 1 and 65535.")
+            return
+        new_port = int(new_port_text)
+
+        def _work():
+            # Config lookup is blocking RPC, so it runs here on the worker. The
+            # old share is captured so rollback can re-share it verbatim.
+            info = next((s for s in self.manager.list_shares()
+                         if s.port == old_port), None)
+            if info is None:
+                return {"error": "The share no longer exists. "
+                                 "Reopen the window."}
+            old_pw = info.password
+            file_path = info.file_path
+            old_conn_tag = (info.conn_tag or "").strip()
+            conn_tag = requested_conn_tag or old_conn_tag
+            new_pw = new_password or old_pw
+            if not conn_tag:
+                return {"error": "This share has no connection configured."}
+            try:
+                cfg = self.manager.list_config()
+                known_tags = {c.tag for c in cfg.connections}
+            except Exception as exc:
+                return {"error": f"Could not validate connection: {exc}"}
+            if conn_tag not in known_tags:
+                return {"error": f"Connection '{conn_tag}' does not exist."}
+            try:
+                # delete_share stops the server and removes the config entry in
+                # one call (it calls stop_share internally).
+                self.manager.delete_share(old_port)
+            except Exception as exc:
+                return {"error": f"Could not remove old share: {exc}"}
+            try:
+                self.manager.share(Path(file_path), conn_tag,
+                                   password=new_pw, port=new_port)
+            except Exception as exc:
+                # Rollback: re-share the original file on its old port/password.
+                # A rollback failure is reported, never swallowed.
+                try:
+                    self.manager.share(Path(file_path), old_conn_tag,
+                                       password=old_pw, port=old_port)
+                except Exception as exc2:
+                    return {"error": f"Could not save share: {exc}. "
+                                     f"WARNING: the original share could "
+                                     f"not be restored: {exc2}"}
+                return {"error": f"Could not save share: {exc}"}
+            return {"ok": True}
+
+        def _done(result):
+            if isinstance(result, dict) and result.get("error"):
+                _show_message("Save Failed", result["error"])
+                self._refresh_config_window()
+                return
+            self._clear_window_dirty_and_reselect(("share", new_port))
+
+        self.run_in_background(_work, _done)
+
+    # ---- save helpers (RPC + config lookups) ----
+
+    def _remove_forward_rpc(self, direction: str, src_port: int) -> None:
+        if direction == "local":
+            self.manager.remove_local_forward(src_port)
+        else:
+            self.manager.remove_remote_forward(src_port)
+
+    def _add_forward_rpc(self, conn_tag: str, fw: PortForward,
+                         direction: str) -> None:
+        if direction == "local":
+            self.manager.add_local_forward(conn_tag, fw)
+        else:
+            self.manager.add_remote_forward(conn_tag, fw)
+
+    def _find_forward(self, conn_tag: str, direction: str, src_port: int):
+        cfg = self.manager.list_config()
+        conn = next((c for c in cfg.connections if c.tag == conn_tag), None)
+        if conn is None:
+            return None
+        fws = conn.forwards.local if direction == "local" else conn.forwards.remote
+        return next((f for f in fws if f.src_port == src_port), None)
+
+    def _is_pac_host_disabled(self, conn_tag: str, host: str) -> bool:
+        cfg = self.manager.list_config()
+        conn = next((c for c in cfg.connections if c.tag == conn_tag), None)
+        if conn is None:
+            return False
+        return host in (getattr(conn, "pac_hosts_disabled", []) or [])
+
+    def pick_path_for_window(self, *, save: bool = False) -> str | None:
+        """Window hook: open the file picker (NSOpenPanel) or, when save=True,
+        a save panel (fetch output). Runs on the main thread - the window's
+        button handler dispatch path already runs there, and the debug action
+        path marshals via _run_on_main. Returns the chosen path or None."""
+        return _pick_save_path() if save else _pick_file()
+
+    def _copy_to_pasteboard(self, text: str) -> None:
+        """Put text on the general pasteboard. AppKit on the main thread.
+        The button-handler dispatch path already runs there and the debug
+        `action` path marshals via _run_on_main, so it is safe to call
+        directly."""
+        from AppKit import NSPasteboard  # type: ignore[import]
+        try:
+            from AppKit import NSPasteboardTypeString  # type: ignore[import]
+        except Exception:
+            NSPasteboardTypeString = "public.utf8-plain-text"
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        pb.setString_forType_(text, NSPasteboardTypeString)
+
+    _cw_refresh_gen: int = 0         # monotonic; incremented on each request
+    _cw_pending_data: tuple | None = None  # (cfg, statuses, shares) waiting to apply
+
+    def _refresh_config_window(self) -> None:
+        """Refresh the config window in the background (non-blocking).
+
+        RPC I/O runs on a worker thread; the result is stored in
+        _cw_pending_data and picked up by the next _tick_bandwidth call
+        (which already runs on the main thread). This avoids any
+        performSelectorOnMainThread interaction with the NSTimer.
+        """
+        cw = self._config_window
+        if cw is None or not cw.is_open():
+            return
+
+        self._cw_refresh_gen += 1
+        my_gen = self._cw_refresh_gen
+
+        def _fetch():
+            mgr = self.manager
+            try:
+                cfg = mgr.list_config()
+            except Exception:
+                return
+            try:
+                statuses = list(mgr.status().connection_statuses)
+            except Exception:
+                statuses = []
+            try:
+                shares = list(mgr.list_shares())
+            except Exception:
+                shares = []
+            # Only store if no newer refresh was requested while we were fetching.
+            if my_gen == self._cw_refresh_gen:
+                self._cw_pending_data = (cfg, statuses, shares)
+
+        threading.Thread(target=_fetch, daemon=True,
+                         name="susops-cw-refresh").start()
 
     # ------------------------------------------------------------------ #
     # AbstractTrayApp implementation
@@ -1974,15 +2458,30 @@ class SusOpsMacTray(AbstractTrayApp):
         if icon_path:
             self._apply_icon_path(icon_path)
 
+    def preview_logo_style(self, idx: int) -> None:
+        """Live-preview a logo style by index WITHOUT persisting it. The config
+        is untouched; only the menu-bar icon changes. revert_logo_preview puts
+        the saved logo back if the user leaves Settings without Apply."""
+        logo_styles = list(LogoStyle)
+        if not (0 <= idx < len(logo_styles)):
+            return
+        icon_path = _get_icon_path(self.state, logo_styles[idx].value.lower())
+        if icon_path:
+            _on_main(lambda: self._apply_icon_path(icon_path))
+
+    def revert_logo_preview(self) -> None:
+        """Re-apply the saved logo's icon, undoing any live preview."""
+        _on_main(lambda: self.update_icon(self.state))
+
     def update_menu_sensitivity(self, state: ProcessState) -> None:
         # Match susops-mac's per-state enablement table:
-        #   RUNNING            → Start off,  Stop on,  Restart on,  TestAll on
-        #   STOPPED_PARTIALLY  → Start on,   Stop on,  Restart on,  TestAll on
-        #   STOPPED  / INITIAL → Start on,   Stop off, Restart off, TestAll off
+        #   RUNNING            → Start off,  Stop on,  Restart on
+        #   STOPPED_PARTIALLY  → Start on,   Stop on,  Restart on
+        #   STOPPED  / INITIAL → Start on,   Stop off, Restart off
         #   ERROR              → all off (recovery is via Reset)
         running_like = state in (ProcessState.RUNNING, ProcessState.STOPPED_PARTIALLY)
         start_on = state in (ProcessState.STOPPED, ProcessState.STOPPED_PARTIALLY, ProcessState.INITIAL)
-        action_on = running_like  # Stop / Restart / Test All
+        action_on = running_like  # Stop / Restart
 
         if hasattr(self, "_item_start"):
             self._item_start._menuitem.setEnabled_(start_on)  # type: ignore[attr-defined]
@@ -1990,8 +2489,6 @@ class SusOpsMacTray(AbstractTrayApp):
             self._item_stop._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
         if hasattr(self, "_item_restart"):
             self._item_restart._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
-        if hasattr(self, "_item_test_all"):
-            self._item_test_all._menuitem.setEnabled_(action_on)  # type: ignore[attr-defined]
         if hasattr(self, "_item_status"):
             # SVG status indicator (green / orange / grey / red) shown as the
             # menu item's icon — matches susops-mac's status-icon pattern.
@@ -2127,107 +2624,22 @@ class SusOpsMacTray(AbstractTrayApp):
         self._item_stop = rumps.MenuItem("Stop Proxy", callback=lambda _: self.do_stop())
         self._item_restart = rumps.MenuItem("Restart Proxy", callback=lambda _: self.do_restart(), key="r")
 
-        # Add submenu
-        add_menu = rumps.MenuItem("Add")
-        add_menu["Add Connection"] = rumps.MenuItem(
-            "Add Connection", callback=lambda _: self._show_add_connection_dialog()
-        )
-        add_menu["Add Domain / IP / CIDR"] = rumps.MenuItem(
-            "Add Domain / IP / CIDR", callback=lambda _: self._show_add_host_dialog()
-        )
-        add_menu["Add Local Forward"] = rumps.MenuItem(
-            "Add Local Forward", callback=lambda _: self._show_add_forward_dialog(remote=False)
-        )
-        add_menu["Add Remote Forward"] = rumps.MenuItem(
-            "Add Remote Forward", callback=lambda _: self._show_add_forward_dialog(remote=True)
-        )
-
-        # Remove submenu
-        rm_menu = rumps.MenuItem("Remove")
-        rm_menu["Remove Connection"] = rumps.MenuItem(
-            "Remove Connection", callback=lambda _: self._show_rm_connection_dialog()
-        )
-        rm_menu["Remove Domain / IP / CIDR"] = rumps.MenuItem(
-            "Remove Domain / IP / CIDR", callback=lambda _: self._show_rm_host_dialog()
-        )
-        rm_menu["Remove Local Forward"] = rumps.MenuItem(
-            "Remove Local Forward", callback=lambda _: self._show_rm_local_dialog()
-        )
-        rm_menu["Remove Remote Forward"] = rumps.MenuItem(
-            "Remove Remote Forward", callback=lambda _: self._show_rm_remote_dialog()
-        )
-
-        # Manage submenu
-        manage_menu = rumps.MenuItem("Manage")
-        manage_menu["Toggle Connection Enabled…"] = rumps.MenuItem(
-            "Toggle Connection Enabled…", callback=lambda _: self._show_toggle_connection_dialog()
-        )
-        manage_menu["Toggle Domain Enabled…"] = rumps.MenuItem(
-            "Toggle Domain Enabled…", callback=lambda _: self._show_toggle_domain_dialog()
-        )
-        manage_menu["Toggle Forward Enabled…"] = rumps.MenuItem(
-            "Toggle Forward Enabled…", callback=lambda _: self._show_toggle_forward_dialog()
-        )
-        manage_menu["---1"] = None
-        manage_menu["Start Connection…"] = rumps.MenuItem(
-            "Start Connection…", callback=lambda _: self._show_start_connection_dialog()
-        )
-        manage_menu["Stop Connection…"] = rumps.MenuItem(
-            "Stop Connection…", callback=lambda _: self._show_stop_connection_dialog()
-        )
-        manage_menu["Restart Connection…"] = rumps.MenuItem(
-            "Restart Connection…", callback=lambda _: self._show_restart_connection_dialog()
-        )
-
-        # Test submenu
-        self._item_test_all = rumps.MenuItem(
-            "Test All PAC Hosts", callback=lambda _: self.do_test()
-        )
-        test_menu = rumps.MenuItem("Test")
-        test_menu["Test Connection…"] = rumps.MenuItem(
-            "Test Connection…", callback=lambda _: self._show_test_connection_dialog()
-        )
-        test_menu["Test Domain…"] = rumps.MenuItem(
-            "Test Domain…", callback=lambda _: self._show_test_domain_dialog()
-        )
-        test_menu["Test Forward…"] = rumps.MenuItem(
-            "Test Forward…", callback=lambda _: self._show_test_forward_dialog()
-        )
-        test_menu["---"] = None
-        test_menu["Test All PAC Hosts"] = self._item_test_all
-
         # Launch Browser submenu — built dynamically from installed apps
         self._browser_menu = rumps.MenuItem("Launch Browser")
         self._rebuild_browser_submenu()
 
-        # File Transfer submenu
-        self._ft_menu = rumps.MenuItem("File Transfer")
-        self._ft_menu["Share File…"] = rumps.MenuItem(
-            "Share File…", callback=lambda _: self._show_share_file_dialog()
-        )
-        self._ft_menu["Fetch File…"] = rumps.MenuItem(
-            "Fetch File…", callback=lambda _: self._show_fetch_file_dialog()
-        )
-
         self._app.menu = [
             self._item_status,
             None,
-            rumps.MenuItem("Settings…", callback=lambda _: self._show_settings_dialog(), key=","),
-            None,
-            add_menu,
-            rm_menu,
-            manage_menu,
-            rumps.MenuItem("Open Config File", callback=lambda _: self.do_open_config_file()),
+            rumps.MenuItem("Settings…", callback=lambda _: self._show_config_window(), key=","),
             None,
             self._item_start,
             self._item_stop,
             self._item_restart,
             None,
-            test_menu,
             rumps.MenuItem("Show Status", callback=lambda _: self.do_status()),
             rumps.MenuItem("Show Logs", callback=lambda _: self.do_logs()),
             self._browser_menu,
-            self._ft_menu,
             None,
             rumps.MenuItem("Reset All", callback=lambda _: self._confirm_reset()),
             None,
@@ -2276,52 +2688,24 @@ class SusOpsMacTray(AbstractTrayApp):
 
         return handler
 
-    # ------------------------------------------------------------------ #
-    # File-transfer share submenu refresh (optimized — only on change)
-    # ------------------------------------------------------------------ #
-
-    def _refresh_share_submenu(self) -> None:
-        import pathlib
-        rumps = self._rumps
-        new_shares = self.manager.list_shares()
-
-        def _share_key(info):
-            return (info.port, info.running, info.file_path)
-
-        old_keys = [_share_key(s) for s in self._active_shares]
-        new_keys = [_share_key(s) for s in new_shares]
-        if old_keys == new_keys:
-            return
-
-        self._active_shares = new_shares
-
-        # Remove old dynamic entries (everything except Share File… and Fetch File…)
-        for key in list(self._ft_menu.keys()):
-            if key not in ("Share File…", "Fetch File…"):
-                del self._ft_menu[key]
-
-        if not self._active_shares:
-            return
-
-        self._ft_menu["---"] = None
-        for info in self._active_shares:
-            name = pathlib.Path(info.file_path).name
-            dot = "●" if info.running else "○"
-            label = f"{dot} {name} ({info.port})"
-            self._ft_menu[label] = rumps.MenuItem(
-                label,
-                callback=self._make_share_info_handler(info),
-            )
-
     def do_poll(self) -> None:
         super().do_poll()
-        self._refresh_share_submenu()
+        self._refresh_config_window()
 
     # ------------------------------------------------------------------ #
     # Settings dialog (with live logo preview)
     # ------------------------------------------------------------------ #
 
-    def _show_settings_dialog(self) -> None:
+    def _settings_fields(self) -> tuple[list[dict], dict]:
+        """Build the app-settings field spec + a context dict.
+
+        Single source of truth for the settings pane (mac_config_window).
+        Returns (fields, ctx): fields carry per-field section/description and
+        the current saved values; ctx carries the saved port values, the
+        LogoStyle list, and the saved logo so _apply_server_ports can treat
+        "unchanged" ports specially and _apply_setting_toggle can resolve the
+        segmented index back to a LogoStyle.
+        """
         ac = self.manager.app_config
         cfg = self.manager.config
         pac_port = cfg.pac_server_port
@@ -2334,526 +2718,221 @@ class SusOpsMacTray(AbstractTrayApp):
         seg_options: list[tuple[str, str | None]] = []
         for style in logo_styles:
             img_path = _get_icon_path(self.state, style.value.lower())
-            label_text = style.value.replace("_", " ").title()
             seg_options.append(("", img_path))
 
-        def _preview(idx: int) -> None:
-            if 0 <= idx < len(logo_styles):
-                style = logo_styles[idx]
-                icon_path = _get_icon_path(self.state, style.value.lower())
-                if icon_path:
-                    self._apply_icon_path(icon_path)
-
-        # Initial defaults — updated after each invalid attempt so the user keeps state.
-        # Launch-at-login state is read from a background-populated cache to avoid
-        # blocking the main thread on osascript / TCC prompts when opening Settings.
-        defaults = {
+        # Initial values. Launch-at-login state is read from a
+        # background-populated cache to avoid blocking the main thread on
+        # osascript / TCC prompts when opening Settings.
+        base = {
             "launch_at_login": bool(self._launch_at_login_cached),
             "stop_on_quit": ac.stop_on_quit,
             "ephemeral_ports": ac.ephemeral_ports,
             "restore_shares": ac.restore_shares_on_start,
             "show_bandwidth": ac.tray_show_bandwidth,
+            "notifications": ac.notifications_enabled,
             "logo_style": logo_styles.index(saved_logo),
             "rpc_port": str(rpc_port) if rpc_port else "",
             "sse_port": str(sse_port) if sse_port else "",
             "pac_port": str(pac_port) if pac_port else "",
         }
 
-        while True:
-            fields = [
-                {"key": "launch_at_login", "label": "Launch at Login:", "kind": "switch",
-                 "default": defaults["launch_at_login"]},
-                {"key": "stop_on_quit", "label": "Stop Proxy On Quit:", "kind": "switch",
-                 "default": defaults["stop_on_quit"]},
-                {"key": "ephemeral_ports", "label": "Random SSH Ports On Start:", "kind": "switch",
-                 "default": defaults["ephemeral_ports"]},
-                {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
-                 "default": defaults["restore_shares"]},
-                {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
-                 "default": defaults["show_bandwidth"],
-                 "on_change": self._preview_bandwidth_visibility},
-                {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
-                 "options": seg_options, "default": defaults["logo_style"],
-                 "on_change": _preview},
-                # Server ports — RPC + SSE require a daemon restart to take
-                # effect; PAC is hot-restarted by the facade.
-                {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
-                 "default": defaults["rpc_port"],
-                 "hint": "auto (0) — restart daemon to apply"},
-                {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
-                 "default": defaults["sse_port"],
-                 "hint": "auto (0) — restart daemon to apply"},
-                {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
-                 "default": defaults["pac_port"],
-                 "hint": "auto (0)"},
-            ]
+        # The settings pane (mac_config_window) renders these grouped by
+        # `section`. ALL changes (toggles + logo + launch-at-login + the three
+        # ports) are staged locally and persist only on the single Apply
+        # button; leaving or closing without Apply discards them. `description`
+        # is the indented gray explainer under a checkbox (empty = no row).
+        fields = [
+            {"key": "launch_at_login", "label": "Launch SusOps at login", "kind": "switch",
+             "default": base["launch_at_login"], "section": "General"},
+            {"key": "stop_on_quit", "label": "Stop proxy on quit", "kind": "switch",
+             "default": base["stop_on_quit"], "section": "General",
+             "description": "Skipped when another frontend is attached to the daemon."},
+            {"key": "ephemeral_ports", "label": "Random SSH ports on start", "kind": "switch",
+             "default": base["ephemeral_ports"], "section": "General",
+             "description": "Pick a free SOCKS port each start instead of the saved one."},
+            {"key": "restore_shares", "label": "Restore shares on start", "kind": "switch",
+             "default": base["restore_shares"], "section": "General"},
+            {"key": "show_bandwidth", "label": "Show bandwidth", "kind": "switch",
+             "default": base["show_bandwidth"], "section": "Menu bar",
+             "description": "Show live throughput beside the menu-bar icon."},
+            {"key": "notifications", "label": "Desktop notifications", "kind": "switch",
+             "default": base["notifications"], "section": "Menu bar"},
+            {"key": "logo_style", "label": "Logo style", "kind": "segmented",
+             "options": seg_options, "default": base["logo_style"],
+             "section": "Menu bar"},
+            # Server ports — RPC + SSE require a daemon restart to take
+            # effect; PAC is hot-restarted by the facade.
+            {"key": "rpc_port", "label": "RPC port", "kind": "text",
+             "default": base["rpc_port"], "section": "Servers",
+             "placeholder": "auto", "note": "restart daemon to apply"},
+            {"key": "sse_port", "label": "SSE port", "kind": "text",
+             "default": base["sse_port"], "section": "Servers",
+             "placeholder": "auto", "note": "restart daemon to apply"},
+            {"key": "pac_port", "label": "PAC port", "kind": "text",
+             "default": base["pac_port"], "section": "Servers",
+             "placeholder": "auto"},
+        ]
+        ctx = {
+            "rpc_port": rpc_port,
+            "sse_port": sse_port,
+            "pac_port": pac_port,
+            "logo_styles": logo_styles,
+            "saved_logo": saved_logo,
+        }
+        return fields, ctx
 
-            result = _show_form_dialog("Settings", fields, ok_title="Save", cancel_title="Cancel")
-            if result is None:
-                # Revert any preview
-                self.update_icon(self.state)
-                self.refresh_bandwidth_title()
-                return
+    # App-config field key (from _settings_fields) -> SusOpsApp field name.
+    # launch_at_login and logo_style are handled separately (login-item thread,
+    # LogoStyle resolution).
+    _TOGGLE_APP_CONFIG_KEYS = {
+        "stop_on_quit": "stop_on_quit",
+        "ephemeral_ports": "ephemeral_ports",
+        "restore_shares": "restore_shares_on_start",
+        "show_bandwidth": "tray_show_bandwidth",
+        "notifications": "notifications_enabled",
+    }
 
-            # Refresh defaults so a re-show on validation failure keeps user edits.
-            defaults.update(result)
+    def _apply_setting_toggle(self, key: str, value) -> str | None:
+        """Persist ONE settings toggle/logo/login value. Returns an error
+        string on failure, else None. Called per-field by apply_all_settings
+        when the user clicks Apply (settings are staged until then).
 
-            # Validate all three port fields; the helper short-circuits to
-            # the inner loop on failure so the user re-edits the offending
-            # value without losing their other edits.
-            port_ints: dict[str, int] = {}
-            port_specs = [
-                ("rpc_port", "RPC", rpc_port),
-                ("sse_port", "SSE", sse_port),
-                ("pac_port", "PAC", pac_port),
-            ]
-            invalid = False
-            for key, label, current in port_specs:
-                raw = (result.get(key) or "").strip() or "0"
-                try:
-                    n = int(raw)
-                except ValueError:
-                    _show_message("Invalid Port", f"'{raw}' is not a valid {label} port.")
-                    invalid = True
-                    break
-                if not validate_port(n, allow_zero=True):
-                    _show_message("Invalid Port",
-                                  f"{label} port must be 0 (auto) or between 1 and 65535.")
-                    invalid = True
-                    break
-                if n != 0 and n != current and not is_port_free(n):
-                    _show_message("Port In Use", f"Port {n} is already in use.")
-                    invalid = True
-                    break
-                port_ints[key] = n
-            if invalid:
-                continue
-
-            new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
-
-            self.manager.update_app_config(
-                stop_on_quit=result["stop_on_quit"],
-                ephemeral_ports=result["ephemeral_ports"],
-                restore_shares_on_start=result["restore_shares"],
-                tray_show_bandwidth=result["show_bandwidth"],
-                logo_style=new_logo,
-            )
-            # No refresh_bandwidth_title() here: preview already left the
-            # menu bar in its final state. Re-running update_title rebuilds
-            # the subview frame and momentarily nudges the icon size.
-            self.manager.update_config(
-                rpc_server_port=port_ints["rpc_port"],
-                status_server_port=port_ints["sse_port"],
-                pac_server_port=port_ints["pac_port"],
-            )
-            # Apply Launch at Login off the main thread — osascript may block
-            # for several seconds the first time (TCC prompt).
-            desired_login = bool(result["launch_at_login"])
-            self._launch_at_login_cached = desired_login  # optimistic update
-            threading.Thread(
-                target=lambda: _set_launch_at_login(desired_login),
-                daemon=True,
-                name="susops-loginitem-apply",
-            ).start()
-            self.update_icon(self.state)
-            return
-
-    # ------------------------------------------------------------------ #
-    # Add dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_add_connection_dialog(self) -> None:
+        Single update_app_config kwarg for the boolean toggles; logo_style
+        resolves the segmented index back to a LogoStyle and repaints the icon;
+        launch_at_login keeps its osascript background thread (may block on a
+        first-run TCC prompt). No port validation here — ports go through
+        _apply_server_ports behind the explicit Apply button.
+        """
         try:
-            ssh_hosts = get_ssh_hosts()
-        except Exception:
-            ssh_hosts = []
+            if key == "launch_at_login":
+                desired = bool(value)
+                self._launch_at_login_cached = desired  # optimistic
+                threading.Thread(
+                    target=lambda: _set_launch_at_login(desired),
+                    daemon=True,
+                    name="susops-loginitem-apply",
+                ).start()
+                return None
+            if key == "logo_style":
+                logo_styles = list(LogoStyle)
+                idx = int(value)
+                if not (0 <= idx < len(logo_styles)):
+                    return "Invalid logo style."
+                self.manager.update_app_config(logo_style=logo_styles[idx])
+                # update_icon -> _apply_icon_path touches NSImage + the rumps
+                # app.icon setter, which must run on the main thread (this
+                # method runs on a run_in_background worker).
+                _on_main(lambda: self.update_icon(self.state))
+                return None
+            field = self._TOGGLE_APP_CONFIG_KEYS.get(key)
+            if field is None:
+                return f"Unknown setting '{key}'."
+            self.manager.update_app_config(**{field: bool(value)})
+            return None
+        except Exception as exc:
+            return str(exc)
 
-        fields = [
-            {"key": "tag", "label": "Connection Tag *:", "kind": "text",
-             "hint": "e.g. work"},
-            {"key": "host", "label": "SSH Host *:", "kind": "combo",
-             "options": ssh_hosts, "hint": "hostname, IP, or SSH alias"},
-            {"key": "port", "label": "SOCKS Proxy Port (optional):", "kind": "text",
-             "hint": "auto if blank"},
-        ]
-        while True:
-            result = _show_form_dialog("Add Connection", fields, ok_title="Add", cancel_title="Cancel")
-            if result is None:
-                return
-            tag = result["tag"]
-            host = result["host"]
-            port_text = result["port"]
-            if not tag:
-                _show_message("Missing Field", "Connection Tag must not be empty.")
-                continue
-            if not host:
-                _show_message("Missing Field", "SSH Host must not be empty.")
-                continue
-            port_int = 0
-            if port_text:
-                if not port_text.isdigit() or not validate_port(int(port_text)):
-                    _show_message("Invalid Port", "SOCKS Proxy Port must be between 1 and 65535.")
-                    continue
-                port_int = int(port_text)
-                if not is_port_free(port_int):
-                    _show_message("Port In Use", f"Port {port_int} is already in use.")
-                    continue
-            self.do_add_connection(tag, host, port_int)
-            return
-
-    def _show_add_host_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        tags = [c.tag for c in cfg.connections]
-        if not tags:
-            _show_message("No Connections", "Add a connection first.")
-            return
-        fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
-            {"key": "host", "label": "Host / IP / CIDR *:", "kind": "text",
-             "hint": "domain, IP address, or CIDR"},
-            {"key": "_info", "label": "", "kind": "info",
-             "default": "Host can be:\n  • Domain (subdomains & wildcards supported)\n  • IP address (CIDR notation supported)"},
-        ]
-        while True:
-            result = _show_form_dialog("Add Domain / IP / CIDR", fields, ok_title="Add", cancel_title="Cancel")
-            if result is None:
-                return
-            host = result["host"]
-            conn_tag = result["conn"]
-            if not host:
-                _show_message("Missing Field", "Host must not be empty.")
-                continue
-            if not conn_tag:
-                _show_message("Missing Field", "Select a connection.")
-                continue
-            self.do_add_pac_host(host, conn_tag=conn_tag)
-            return
-
-    def _show_add_forward_dialog(self, *, remote: bool) -> None:
-        cfg = self.manager.list_config()
-        tags = [c.tag for c in cfg.connections]
-        if not tags:
-            _show_message("No Connections", "Add a connection first.")
-            return
-
-        title = "Add Remote Forward" if remote else "Add Local Forward"
-        src_label = "Forward Remote Port *:" if remote else "Forward Local Port *:"
-        dst_label = "To Local Port *:" if remote else "To Remote Port *:"
-        src_bind_label = "Remote Bind (optional):" if remote else "Local Bind (optional):"
-        dst_bind_label = "Local Bind (optional):" if remote else "Remote Bind (optional):"
-
-        fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
-            {"key": "tag", "label": "Tag (optional):", "kind": "text", "hint": "optional label"},
-            {"key": "src", "label": src_label, "kind": "text", "hint": "e.g. 8080"},
-            {"key": "dst", "label": dst_label, "kind": "text", "hint": "e.g. 80"},
-            {"key": "src_addr", "label": src_bind_label, "kind": "combo",
-             "options": BIND_ADDRESSES, "default": "localhost"},
-            {"key": "dst_addr", "label": dst_bind_label, "kind": "combo",
-             "options": BIND_ADDRESSES, "default": "localhost"},
-            {"key": "tcp", "label": "TCP:", "kind": "switch", "default": True},
-            {"key": "udp", "label": "UDP:", "kind": "switch", "default": False},
-        ]
-
-        while True:
-            result = _show_form_dialog(title, fields, ok_title="Add", cancel_title="Cancel")
-            if result is None:
-                return
-
-            conn_tag = result["conn"]
-            tag = result["tag"]
-            src = result["src"]
-            dst = result["dst"]
-            src_addr = result["src_addr"] or "localhost"
-            dst_addr = result["dst_addr"] or "localhost"
-            tcp = result["tcp"]
-            udp = result["udp"]
-
-            if not conn_tag:
-                _show_message("No Connection", "Add a connection first.")
-                continue
-            if not tcp and not udp:
-                _show_message("Protocol Required", "Select at least one protocol (TCP or UDP).")
-                continue
-            if not src.isdigit() or not validate_port(int(src)):
-                _show_message("Invalid Port", f"{src_label.rstrip(':*').strip()} must be 1–65535.")
-                continue
-            if not dst.isdigit() or not validate_port(int(dst)):
-                _show_message("Invalid Port", f"{dst_label.rstrip(':*').strip()} must be 1–65535.")
-                continue
-            if not remote and not is_port_free(int(src)):
-                _show_message("Port In Use", f"Local port {src} is already in use.")
-                continue
-
-            fw = PortForward(
-                src_addr=src_addr,
-                src_port=int(src),
-                dst_addr=dst_addr,
-                dst_port=int(dst),
-                tag=tag or None,
-                tcp=tcp,
-                udp=udp,
-            )
-            if remote:
-                self.do_add_remote_forward(conn_tag, fw)
-            else:
-                self.do_add_local_forward(conn_tag, fw)
-            return
-
-    # ------------------------------------------------------------------ #
-    # Remove dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_rm_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Remove Connection", "Connection:", tags, ok_title="Remove")
-        if selected:
-            self.do_remove_connection(selected)
-
-    def _show_rm_host_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        hosts = [h for c in cfg.connections for h in c.pac_hosts]
-        selected = _show_pick_dialog("Remove Domain / IP / CIDR", "Host:", hosts, ok_title="Remove")
-        if selected:
-            self.do_remove_pac_host(selected)
-
-    def _show_rm_local_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        port_map: dict[str, int] = {}
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                label = f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}"
-                items.append(label)
-                port_map[label] = fw.src_port
-        selected = _show_pick_dialog("Remove Local Forward", "Local Forward:", items, ok_title="Remove")
-        if selected and selected in port_map:
-            self.do_remove_local_forward(port_map[selected])
-
-    def _show_rm_remote_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        port_map: dict[str, int] = {}
-        for c in cfg.connections:
-            for fw in c.forwards.remote:
-                label = f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}"
-                items.append(label)
-                port_map[label] = fw.src_port
-        selected = _show_pick_dialog("Remove Remote Forward", "Remote Forward:", items, ok_title="Remove")
-        if selected and selected in port_map:
-            self.do_remove_remote_forward(port_map[selected])
-
-    # ------------------------------------------------------------------ #
-    # Manage / toggle dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_toggle_connection_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items = [f"[{'✓' if c.enabled else '✗'}] {c.tag}" for c in cfg.connections]
-        selected = _show_pick_dialog("Toggle Connection Enabled", "Connection:", items, ok_title="Toggle")
-        if selected:
-            tag = selected.split("] ", 1)[-1]
-            self.do_toggle_connection_enabled(tag)
-
-    def _show_toggle_domain_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for h in c.pac_hosts:
-                enabled = h not in c.pac_hosts_disabled
-                items.append(f"[{'✓' if enabled else '✗'}] {h}")
-        selected = _show_pick_dialog("Toggle Domain Enabled", "Domain:", items, ok_title="Toggle")
-        if selected:
-            host = selected.split("] ", 1)[-1]
-            self.do_toggle_pac_host_enabled(host)
-
-    def _show_toggle_forward_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-        selected = _show_pick_dialog("Toggle Forward Enabled", "Forward:", items, ok_title="Toggle")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
-                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
-
-    def _show_start_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Start Connection", "Connection:", tags, ok_title="Start")
-        if selected:
-            self.do_start_connection(selected)
-
-    def _show_stop_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Stop Connection", "Connection:", tags, ok_title="Stop")
-        if selected:
-            self.do_stop_connection(selected)
-
-    def _show_restart_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Restart Connection", "Connection:", tags, ok_title="Restart")
-        if selected:
-            self.do_restart_connection(selected)
-
-    # ------------------------------------------------------------------ #
-    # Test dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_test_connection_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        selected = _show_pick_dialog("Test Connection", "Connection:", tags, ok_title="Test")
-        if selected:
-            self.do_test_connection(selected)
-
-    def _show_test_domain_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for h in c.pac_hosts:
-                items.append(f"[{c.tag}] {h}")
-        selected = _show_pick_dialog("Test Domain", "Domain (via connection):", items, ok_title="Test")
-        if selected:
-            m = re.match(r"\[([^\]]+)\] (.+)", selected)
-            if m:
-                self.do_test_domain(m.group(2), m.group(1))
-
-    def _show_test_forward_dialog(self) -> None:
-        cfg = self.manager.list_config()
-        items: list[str] = []
-        for c in cfg.connections:
-            for fw in c.forwards.local:
-                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-        selected = _show_pick_dialog("Test Forward", "Forward:", items, ok_title="Test")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
-
-    # ------------------------------------------------------------------ #
-    # File transfer dialogs
-    # ------------------------------------------------------------------ #
-
-    def _show_share_file_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        if not tags:
-            _show_message("No Connections", "Add a connection first.")
-            return
-
-        file_path = _pick_file()
-        if not file_path:
-            return
-
-        fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
-            {"key": "file", "label": "File:", "kind": "text", "default": file_path},
-            {"key": "pw", "label": "Password (optional):", "kind": "text", "hint": "auto-generate if blank"},
-            {"key": "port", "label": "Port:", "kind": "text", "default": "0", "hint": "0 = auto"},
-        ]
-        while True:
-            result = _show_form_dialog(
-                "Share File",
-                fields,
-                ok_title="Share",
-                cancel_title="Cancel",
-                informative=f"Sharing: {Path(file_path).name}",
-            )
-            if result is None:
-                return
-            conn_tag = result["conn"]
-            fp = result["file"] or file_path
-            pw = (result["pw"] or "").strip() or None
-            port_text = (result["port"] or "0").strip() or "0"
-            if not conn_tag:
-                _show_message("Missing Field", "Select a connection.")
-                continue
-            if not fp or not Path(fp).exists():
-                _show_message("File Not Found", f"'{fp}' does not exist.")
-                continue
+    def _validate_server_ports(self, rpc, sse, pac, ctx: dict):
+        """Validate the three server ports WITHOUT writing. Returns
+        (error_string, None) on failure, else (None, port_ints). Port
+        validation is verbatim from the old all-at-once path."""
+        current = {
+            "RPC": ctx.get("rpc_port", 0),
+            "SSE": ctx.get("sse_port", 0),
+            "PAC": ctx.get("pac_port", 0),
+        }
+        port_ints: dict[str, int] = {}
+        for label, raw in (("RPC", rpc), ("SSE", sse), ("PAC", pac)):
+            raw = (str(raw or "")).strip() or "0"
             try:
-                port_int = int(port_text)
+                n = int(raw)
             except ValueError:
-                _show_message("Invalid Port", f"'{port_text}' is not a valid port number.")
-                continue
-            self.do_share(conn_tag, fp, password=pw, port=port_int)
-            return
+                return f"'{raw}' is not a valid {label} port.", None
+            if not validate_port(n, allow_zero=True):
+                return (f"{label} port must be 0 (auto) or between 1 and "
+                        f"65535."), None
+            if n != 0 and n != current[label] and not is_port_free(n):
+                return f"Port {n} is already in use ({label}).", None
+            port_ints[label] = n
+        return None, port_ints
 
-    def _show_fetch_file_dialog(self) -> None:
-        tags = [c.tag for c in self.manager.list_config().connections]
-        if not tags:
-            _show_message("No Connections", "Add a connection first.")
-            return
+    def _apply_server_ports(self, rpc, sse, pac, ctx: dict) -> str | None:
+        """Validate + persist the three server ports behind the explicit Apply.
+        Returns an error string on validation failure (caller shows an alert),
+        else None."""
+        err, port_ints = self._validate_server_ports(rpc, sse, pac, ctx)
+        if err:
+            return err
+        try:
+            self.manager.update_config(
+                rpc_server_port=port_ints["RPC"],
+                status_server_port=port_ints["SSE"],
+                pac_server_port=port_ints["PAC"],
+            )
+        except Exception as exc:
+            return str(exc)
+        return None
 
-        fields = [
-            {"key": "conn", "label": "Connection *:", "kind": "popup", "options": tags, "default": tags[0]},
-            {"key": "port", "label": "Port *:", "kind": "text", "hint": "e.g. 52100"},
-            {"key": "pw", "label": "Password *:", "kind": "text"},
-            {"key": "out", "label": "Save to (optional):", "kind": "text",
-             "hint": "blank = ~/Downloads/<filename>"},
-        ]
-        while True:
-            result = _show_form_dialog("Fetch File", fields, ok_title="Fetch", cancel_title="Cancel")
-            if result is None:
+    # ------------------------------------------------------------------ #
+    # Settings pane hooks (called by mac_config_window). The pane renders
+    # the field specs; these wrappers own validation + persistence so the
+    # single-source-of-truth rule stays (spec + validation in mac.py).
+    # ------------------------------------------------------------------ #
+
+    def settings_field_specs(self) -> tuple[list[dict], dict]:
+        """(fields, ctx) for the settings pane. Re-reads current config so the
+        pane always opens with live values."""
+        return self._settings_fields()
+
+    # Settings field keys that are staged toggles/logo/login (everything that
+    # is not a server port). Applied per-field via _apply_setting_toggle.
+    _SETTINGS_TOGGLE_KEYS = (
+        "launch_at_login", "logo_style", "stop_on_quit", "ephemeral_ports",
+        "restore_shares", "show_bandwidth", "notifications",
+    )
+
+    def apply_all_settings(self, values: dict) -> None:
+        """Commit ALL staged settings at once behind the single Apply button:
+        toggles + logo + launch-at-login via _apply_setting_toggle, the three
+        server ports via the validated _apply_server_ports. Nothing in the pane
+        persists until this runs.
+
+        Port validation runs FIRST so an invalid port keeps the whole pane and
+        nothing is partially applied. Toggles are written one by one after that
+        and are NOT rolled back if a later toggle's RPC raises (each is an
+        independent app_config field and update_app_config rarely fails). On
+        success the pane re-renders with the saved values and the staging dirty
+        flag clears. Runs on a worker thread (RPCs block), alerts + re-render
+        marshal back to the main thread."""
+        _, ctx = self._settings_fields()
+        rpc = values.get("rpc_port", "")
+        sse = values.get("sse_port", "")
+        pac = values.get("pac_port", "")
+
+        def _work():
+            # Validate ports up front and bail before ANY write on error so the
+            # apply is all-or-nothing (no partial commit on a bad port).
+            verr, _ = self._validate_server_ports(rpc, sse, pac, ctx)
+            if verr:
+                return verr
+            for key in self._SETTINGS_TOGGLE_KEYS:
+                if key not in values:
+                    continue
+                err = self._apply_setting_toggle(key, values[key])
+                if err:
+                    return err
+            # Ports already validated above; persist them.
+            return self._apply_server_ports(rpc, sse, pac, ctx)
+
+        def _done(err):
+            if err:
+                self.show_alert("Could Not Apply Settings", err)
                 return
-            conn_tag = result["conn"]
-            port_text = (result["port"] or "").strip()
-            pw = (result["pw"] or "").strip()
-            outfile = (result["out"] or "").strip() or None
-            if not conn_tag:
-                _show_message("Missing Field", "Select a connection.")
-                continue
-            if not port_text or not pw:
-                _show_message("Missing Field", "Port and password are required.")
-                continue
-            try:
-                port_int = int(port_text)
-            except ValueError:
-                _show_message("Invalid Port", f"'{port_text}' is not a valid port number.")
-                continue
-            self.do_fetch(conn_tag, port_int, pw, outfile=outfile)
-            return
-
-    def _make_share_info_handler(self, info):
-        def handler(_sender):
-            self._show_share_info_dialog(info)
-
-        return handler
-
-    def _show_share_info_dialog(self, info) -> None:
-        name = Path(info.file_path).name
-        state = "running" if info.running else "stopped"
-        toggle_label = "Stop" if info.running else "Start"
-        message = (
-            f"File: {info.file_path}\n"
-            f"Port: {info.port}\n"
-            f"Password: {info.password}\n"
-            f"Connection: {info.conn_tag or '—'}\n"
-            f"State: {state}"
-        )
-        choice = _show_three_way(
-            f"Share: {name}",
-            message,
-            primary=toggle_label,
-            secondary="Delete",
-            cancel="Close",
-        )
-        if choice == 1:
-            if info.running:
-                self.do_stop_share(info.port)
-            else:
-                self.do_share(info.conn_tag or "", info.file_path, info.password, info.port)
-            self._refresh_share_submenu()
-        elif choice == 2:
-            self.do_delete_share(info.port)
-            self._refresh_share_submenu()
+            cw = getattr(self, "_config_window", None)
+            if cw is not None:
+                cw.clear_settings_dirty()
+                cw.refresh()
+        self.run_in_background(_work, _done)
 
     # ------------------------------------------------------------------ #
     # Reset / About / Quit
@@ -2906,6 +2985,11 @@ class SusOpsMacTray(AbstractTrayApp):
                     })
                     with urllib.request.urlopen(req, timeout=60) as resp:
                         backoff = 1.0
+                        # Refresh state on every (re)connect — without this the
+                        # tray keeps its last cached state after a daemon
+                        # restart and only updates when the new daemon happens
+                        # to emit a state event.
+                        _on_main(self.do_poll)
                         buf = ""
                         for raw in resp:
                             line = raw.decode("utf-8", errors="replace")
@@ -2914,7 +2998,7 @@ class SusOpsMacTray(AbstractTrayApp):
                                 if "event: state" in buf:
                                     _on_main(self.do_poll)
                                 if "event: share" in buf:
-                                    _on_main(self._refresh_share_submenu)
+                                    _on_main(self._refresh_config_window)
                                 buf = ""
                 except Exception:
                     time.sleep(backoff)
@@ -3064,21 +3148,24 @@ class SusOpsMacTray(AbstractTrayApp):
         x = icon_w + gap
         tf.setFrame_(NSMakeRect(x, y, fixed_w, fixed_h))
 
+    _cw_tick_count: int = 0
+
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
-
-    def _preview_bandwidth_visibility(self, checked: bool) -> None:
-        """Live-toggle the menu-bar bandwidth title from the Settings switch.
-        Config isn't persisted until the user clicks Save; Cancel reverts via
-        refresh_bandwidth_title() reading the unchanged saved value."""
-        if checked:
-            try:
-                rx, tx = self.manager.get_bandwidth_global()
-            except Exception:
-                rx, tx = 0.0, 0.0
-            self.update_title(rx, tx)
-        else:
-            self.update_title(None, None)
+        self._cw_tick_count += 1
+        # Apply any pending config-window data fetched in the background.
+        pending = self._cw_pending_data
+        if pending is not None:
+            self._cw_pending_data = None
+            cw = self._config_window
+            if cw is not None and cw.is_open():
+                try:
+                    cw._apply_data(*pending)
+                except Exception:
+                    pass
+        # Kick off the next background fetch every ~2 s (every other tick).
+        if self._cw_tick_count % 2 == 0:
+            self._refresh_config_window()
 
     def run(self) -> None:
         # Initial state pull on startup; from then on the SSE listener drives

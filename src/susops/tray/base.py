@@ -1,6 +1,7 @@
 """AbstractTrayApp — shared tray app logic for Linux and macOS."""
 from __future__ import annotations
 
+import os
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Callable
 
 from susops.core.types import ProcessState
 
-_ASSETS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "icons"
+_ASSETS_DIR = Path(__file__).parent.parent / "assets" / "icons"
 
 _STATE_FILENAMES = {
     ProcessState.RUNNING: "running",
@@ -66,6 +67,15 @@ from susops.client import SusOpsClient
 from susops.core.config import PortForward
 
 
+def _resolve_workspace() -> Path:
+    """Workspace dir for the tray. SUSOPS_TRAY_WORKSPACE overrides ~/.susops
+    so a dev/test instance can run alongside the user's real tray."""
+    env = os.environ.get("SUSOPS_TRAY_WORKSPACE")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".susops"
+
+
 class AbstractTrayApp(ABC):
     """Base class for tray apps. Subclasses implement the platform-specific UI layer.
 
@@ -78,7 +88,7 @@ class AbstractTrayApp(ABC):
     """
 
     def __init__(self) -> None:
-        workspace = Path.home() / ".susops"
+        workspace = _resolve_workspace()
         self.manager = SusOpsClient(workspace=workspace, process_name="susops-tray")
         self.state = ProcessState.INITIAL
 
@@ -265,9 +275,13 @@ class AbstractTrayApp(ABC):
                 lines.append("   (no connections configured)")
             else:
                 for cs in statuses:
+                    pending = getattr(cs, "pending", False)
                     if not cs.enabled:
                         dot = "─"
                         detail = "disabled"
+                    elif pending:
+                        dot = "◐"
+                        detail = "waiting for ssh agent..."
                     elif cs.running:
                         dot = "●"
                         bits = []
@@ -387,14 +401,19 @@ class AbstractTrayApp(ABC):
                 cfg = self.manager.list_config()
                 conn = next((c for c in cfg.connections if c.tag == tag), None)
                 if conn is None:
-                    return f"Connection '{tag}' not found."
+                    return f"Connection '{tag}' not found.", False
                 new_state = not conn.enabled
                 self.manager.set_connection_enabled(tag, new_state)
-                return f"Connection '{tag}' {'enabled' if new_state else 'disabled'}."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Connection", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Connection", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_start_connection(self, tag: str) -> None:
         def _run():
@@ -439,21 +458,31 @@ class AbstractTrayApp(ABC):
                 all_disabled = [h for c in cfg.connections for h in c.pac_hosts_disabled]
                 currently_disabled = host in all_disabled
                 self.manager.set_pac_host_enabled(host, currently_disabled)  # flip
-                return f"Domain '{host}' {'enabled' if currently_disabled else 'disabled'}."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Domain", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Domain", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
         def _run():
             try:
                 self.manager.toggle_forward_enabled(conn_tag, src_port, direction)
-                return f"Forward :{src_port} toggled."
+                return None, True
             except Exception as e:
-                return f"Error: {e}"
+                return f"Error: {e}", False
 
-        self.run_in_background(_run, lambda msg: self.show_alert("Toggle Forward", msg))
+        def _done(r):
+            msg, ok = r
+            if not ok:
+                self.show_alert("Toggle Forward", msg)
+
+        self.run_in_background(_run, _done)
 
     def do_test_connection(self, conn_tag: str) -> None:
         def _run():
@@ -641,7 +670,15 @@ class AbstractTrayApp(ABC):
 
     def do_quit(self) -> None:
         if self.manager.app_config.stop_on_quit:
-            self.manager.stop()
+            # Skip the destructive stop when another frontend (e.g. TUI)
+            # is still attached, otherwise it ends up with its SSH
+            # masters / PAC / reconnect torn out from under it.
+            try:
+                other_clients = int(self.manager.sse_client_count()) - 1
+            except Exception:
+                other_clients = 0
+            if other_clients <= 0:
+                self.manager.stop()
         # else: the daemon is a separate process — it keeps running with
         # PAC server, status SSE, and reconnect monitor independent of the
         # tray's lifetime. No detach calls needed.

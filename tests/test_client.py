@@ -105,24 +105,44 @@ def test_ensure_daemon_running_idempotent(running_daemon, ws):
     assert port_a == port_b
 
 
-def test_client_raises_daemon_unavailable_when_dead(ws):
+def test_client_raises_daemon_unavailable_when_dead(ws, monkeypatch):
     # No daemon ever started, and we'll bypass ensure_daemon_running by
     # pre-poking a stale port file.
     pids = ws / "pids"
     pids.mkdir()
     (pids / "susops-services.port").write_text("1")  # port 1 isn't bound
-    # Pid file is missing, so ensure_daemon_running will spawn — which is
-    # NOT what we want for this test. We instead drive _invoke directly by
-    # pre-setting client._port. Override the spawn path by writing a fake
-    # alive PID:
     fake_pid_path = pids / "susops-services.pid"
-    fake_pid_path.write_text(str(os.getpid()))  # liveness check sees current proc
+    fake_pid_path.write_text(str(os.getpid()))
+    # Pretend the current PID's process IS the daemon so _is_daemon_alive
+    # short-circuits to True. (The post-PID-reuse-defense check rejects
+    # the pytest process because its cmdline doesn't match the daemon's.)
+    monkeypatch.setattr("susops.client._pid_is_susops_daemon", lambda pid: True)
 
     client = SusOpsClient(workspace=ws)
     # First call should attempt RPC against port 1 (nothing listening) and
     # raise DaemonUnavailableError.
     with pytest.raises(DaemonUnavailableError):
         client.list_config()
+
+
+def test_pid_is_susops_daemon_rejects_unrelated_pid():
+    """PID reuse defense: a live process with the wrong cmdline must not
+    register as a daemon. Without this, SIGKILLing the daemon under chaos
+    can let an ssh fork inherit the freed PID and lock the client into
+    an infinite Connection-refused loop until the impostor exits."""
+    from susops.client import _pid_is_susops_daemon
+    # The pytest process itself: live, but cmdline contains "pytest" not
+    # "services_daemon". Must be rejected.
+    assert _pid_is_susops_daemon(os.getpid()) is False
+
+
+def test_pid_is_susops_daemon_rejects_dead_pid():
+    """A PID that doesn't exist at all is also not the daemon."""
+    from susops.client import _pid_is_susops_daemon
+    # PID 1 is init / launchd — alive but not us. (PID 0 is reserved.)
+    assert _pid_is_susops_daemon(1) is False
+    # A PID that's almost certainly not assigned.
+    assert _pid_is_susops_daemon(2**30) is False
 
 
 def test_client_recovers_when_daemon_restarts_between_calls(running_daemon, ws):

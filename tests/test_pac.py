@@ -63,6 +63,30 @@ def test_write_pac_file(tmp_path, config_with_hosts):
     assert "FindProxyForURL" in content
 
 
+def test_pac_server_idempotent_start_same_port(tmp_path, config_with_hosts):
+    """Second start() on the same port is a no-op, not an error.
+
+    Parallel start() callers race past the facade's is_running() check
+    (multiple TUI/tray screens hitting Start before the first bind has
+    completed). The losers used to raise RuntimeError and spam
+    'PAC server is already running' / EADDRINUSE in the log even though
+    the user-visible end state was correct.
+    """
+    pac_path = write_pac_file(config_with_hosts, tmp_path)
+    server = PacServer()
+    server.start(0, pac_path)
+    port = server.get_port()
+    # Second start on the SAME port must not raise.
+    server.start(port, pac_path)
+    assert server.is_running()
+    # Starting on a DIFFERENT port while one is up is still rejected — we
+    # don't want a caller silently routing PAC traffic to an unknown port.
+    import pytest
+    with pytest.raises(RuntimeError, match="already running"):
+        server.start(port + 1, pac_path)
+    server.stop()
+
+
 def test_pac_server_start_stop(tmp_path, config_with_hosts):
     pac_path = write_pac_file(config_with_hosts, tmp_path)
     server = PacServer()

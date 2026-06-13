@@ -46,6 +46,92 @@ def test_remove_nonexistent_connection_raises(mgr):
         mgr.remove_connection("nonexistent")
 
 
+# ------------------------------------------------------------------ #
+# update_connection (inline edit, children-preserving)
+# ------------------------------------------------------------------ #
+
+def test_update_connection_changes_host_and_port(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    updated = mgr.update_connection(
+        "work", ssh_host="user@newhost.com", socks_proxy_port=1081, restart=False
+    )
+    assert updated.ssh_host == "user@newhost.com"
+    assert updated.socks_proxy_port == 1081
+    conn = mgr.list_config().connections[0]
+    assert conn.tag == "work"
+    assert conn.ssh_host == "user@newhost.com"
+    assert conn.socks_proxy_port == 1081
+
+
+def test_update_connection_preserves_children_on_rename(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    mgr.add_pac_host("ex.com", conn_tag="work")
+    mgr.add_local_forward("work", PortForward(src_port=5432, dst_port=5432, tag="pg"))
+    # Seed a file_share entry directly in config (no real server needed).
+    mgr._add_file_share_to_config("work", "/tmp/secret.bin", "pw", 9999)
+
+    mgr.update_connection(
+        "work", new_tag="renamed", ssh_host="new@host", socks_proxy_port=1081,
+        restart=False,
+    )
+
+    cfg = mgr.list_config()
+    assert [c.tag for c in cfg.connections] == ["renamed"]
+    conn = cfg.connections[0]
+    assert conn.ssh_host == "new@host"
+    assert conn.socks_proxy_port == 1081
+    # The whole point: children survive the rename (no cascade).
+    assert "ex.com" in conn.pac_hosts
+    assert any(f.src_port == 5432 and f.tag == "pg" for f in conn.forwards.local)
+    assert any(f.port == 9999 and f.file_path == "/tmp/secret.bin" for f in conn.file_shares)
+
+
+def test_update_connection_rename_to_existing_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    mgr.add_connection("other", "user@other.com")
+    with pytest.raises(ValueError, match="already exists"):
+        mgr.update_connection("work", new_tag="other", restart=False)
+
+
+def test_update_connection_empty_tag_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError):
+        mgr.update_connection("work", new_tag="   ", restart=False)
+
+
+def test_update_connection_empty_host_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError, match="ssh_host"):
+        mgr.update_connection("work", ssh_host="  ", restart=False)
+
+
+def test_update_connection_invalid_port_raises(mgr):
+    mgr.add_connection("work", "user@host.com")
+    with pytest.raises(ValueError, match="Invalid socks_proxy_port"):
+        mgr.update_connection("work", socks_proxy_port=99999, restart=False)
+
+
+def test_update_connection_same_tag_no_false_conflict(mgr):
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    # new_tag=None means keep the tag — must not trip the "already exists" check.
+    updated = mgr.update_connection("work", ssh_host="user@changed.com", restart=False)
+    assert updated.tag == "work"
+    assert mgr.list_config().connections[0].ssh_host == "user@changed.com"
+
+
+def test_update_connection_restart_false_leaves_tunnel_untouched(mgr):
+    # Stopped connection — no SSH needed. restart=False must not start it.
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    mgr.update_connection(
+        "work", ssh_host="user@newhost.com", socks_proxy_port=1090, restart=False
+    )
+    status = mgr.status()
+    assert all(not s.running for s in status.connection_statuses)
+    conn = mgr.list_config().connections[0]
+    assert conn.ssh_host == "user@newhost.com"
+    assert conn.socks_proxy_port == 1090
+
+
 def test_add_pac_host(mgr):
     mgr.add_connection("work", "user@host.com")
     mgr.add_pac_host("*.internal.example.com", conn_tag="work")
@@ -283,6 +369,34 @@ def test_delete_share_removes_file_share_from_config(mgr_with_conn, tmp_path):
 
     conn = mgr_with_conn.list_config().connections[0]
     assert not any(fs.port == info.port for fs in conn.file_shares)
+
+
+def test_stop_share_does_not_clobber_concurrent_config_write(mgr_with_conn, tmp_path):
+    """stop_share must reload config under the lock so a stale in-memory copy
+    does not overwrite a write made elsewhere on the same workspace.
+
+    Regression: _set_file_share_stopped wrote self.config without _config_lock
+    or _reload_config, so a concurrent list_shares/mutation (the tray poll does
+    this) could lose the stopped flag or drop an unrelated entry.
+    """
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("hello")
+    info = mgr_with_conn.share(test_file, "work")
+    port = info.port
+
+    # A second manager on the same workspace writes to disk, leaving
+    # mgr_with_conn's in-memory config stale (missing "second").
+    other = SusOpsManager(workspace=tmp_path)
+    other.add_connection("second", "user@second.com")
+
+    mgr_with_conn.stop_share(port)
+
+    fresh = SusOpsManager(workspace=tmp_path).list_config()
+    tags = {c.tag for c in fresh.connections}
+    assert "second" in tags, "stop_share clobbered a concurrent connection write"
+    work = next(c for c in fresh.connections if c.tag == "work")
+    fs = next(f for f in work.file_shares if f.port == port)
+    assert fs.stopped is True
 
 
 def test_stop_share_then_start_again(mgr_with_conn, tmp_path):
@@ -1150,6 +1264,156 @@ def test_compute_state_partial_when_an_enabled_one_is_down(tmp_path):
         ConnectionStatus(tag="down", running=False, socks_port=0, pid=None, enabled=True),
     )
     assert mgr._compute_state(statuses=statuses, pac_running=True) is ProcessState.STOPPED_PARTIALLY
+
+
+def test_set_connection_enabled_stops_pac_when_last_running(tmp_path):
+    """Disabling the last enabled+running connection must also stop PAC.
+
+    Without this, the aggregate state sticks at STOPPED_PARTIALLY (PAC up,
+    no connections enabled) and the tray icon never settles on stopped.
+    """
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("solo", "u@h", socks_port=0)
+
+    with patch("susops.facade.is_tunnel_running", return_value=True), \
+            patch("susops.facade.is_socket_alive", return_value=True), \
+            patch("susops.facade.stop_tunnel"), \
+            patch("susops.facade.stop_all_udp_forwards_for_connection"), \
+            patch.object(mgr, "_active_tags", return_value=set()), \
+            patch.object(mgr, "_stop_pac_server") as mock_stop_pac, \
+            patch.object(mgr, "_update_pac") as mock_update_pac:
+        mgr.set_connection_enabled("solo", False)
+
+    mock_stop_pac.assert_called_once()
+    mock_update_pac.assert_not_called()
+
+
+def test_set_connection_enabled_keeps_pac_when_other_still_active(tmp_path):
+    """Disabling one of several running connections must NOT stop PAC if
+    another enabled connection is still active."""
+    from unittest.mock import patch
+    from susops.facade import SusOpsManager
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("a", "u@h", socks_port=0)
+    mgr.add_connection("b", "u@h", socks_port=0)
+
+    def fake_active_tags():
+        return {"b"}
+
+    with patch("susops.facade.is_tunnel_running", return_value=True), \
+            patch("susops.facade.is_socket_alive", return_value=True), \
+            patch("susops.facade.stop_tunnel"), \
+            patch("susops.facade.stop_all_udp_forwards_for_connection"), \
+            patch.object(mgr, "_active_tags", side_effect=fake_active_tags), \
+            patch.object(mgr, "_stop_pac_server") as mock_stop_pac, \
+            patch.object(mgr, "_update_pac") as mock_update_pac:
+        mgr.set_connection_enabled("a", False)
+
+    mock_stop_pac.assert_not_called()
+    mock_update_pac.assert_called_once()
+
+
+def test_add_connection_rejects_invalid_tags(tmp_path):
+    """Tag validation: reject empty, traversal, slash, overlong, leading punctuation."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    bad_tags = [
+        "", " ", "../etc/passwd", "/abs", "a\\b", "..", ".", "-leading",
+        "x" * 100, "tag with space", "tag\nwith\nnewline",
+    ]
+    for tag in bad_tags:
+        with pytest.raises(ValueError, match="Invalid tag|Tag must"):
+            mgr.add_connection(tag, "u@h")
+
+
+def test_add_connection_accepts_safe_tags(tmp_path):
+    """Tag validation: accept reasonable identifiers."""
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    for tag in ["work", "my-host", "host_42", "a.b.c", "X9"]:
+        mgr.add_connection(tag, "u@h")
+        mgr.remove_connection(tag)
+
+
+def test_stopped_marker_path_rejects_traversal(tmp_path):
+    """Defense in depth: marker path constructor refuses traversal-bearing tags."""
+    import pytest
+    from susops.facade import _stopped_marker_path
+    for bad in ["../etc/passwd", "/abs", "a\\b", "", ".", ".."]:
+        with pytest.raises(ValueError, match="Unsafe tag"):
+            _stopped_marker_path(tmp_path, bad)
+
+
+def test_add_forward_validates_ports(tmp_path):
+    """Port validation: src/dst must be 1-65535."""
+    import pytest
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    for bad in [-1, 0, 65536, 99999]:
+        with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
+            mgr.add_local_forward("work", PortForward(src_port=bad, dst_port=80))
+        with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
+            mgr.add_local_forward("work", PortForward(src_port=8080, dst_port=bad))
+
+
+def test_start_raises_on_unknown_tag(tmp_path):
+    """start(tag='nonexistent') must raise, not silently return success=False."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    with pytest.raises(ValueError, match="Connection 'nope' not found"):
+        mgr.start(tag="nope")
+
+
+def test_stop_raises_on_unknown_tag(tmp_path):
+    """stop(tag='nonexistent') must raise, not silently no-op."""
+    import pytest
+    from susops.facade import SusOpsManager
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+    with pytest.raises(ValueError, match="Connection 'nope' not found"):
+        mgr.stop(tag="nope")
+
+
+def test_concurrent_add_forward_does_not_lose_updates(tmp_path):
+    """Parallel add_local_forward calls each persist their forward.
+
+    Regression for chaos2 phaseA: 5 parallel adds, only 1 persisted because
+    read-modify-write on self.config wasn't serialized. The new _config_lock
+    around _add_forward must make all N concurrent adds succeed.
+    """
+    import threading
+    from susops.facade import SusOpsManager
+    from susops.core.config import PortForward
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "u@h")
+
+    errors: list[BaseException] = []
+    def worker(i):
+        try:
+            mgr.add_local_forward("work", PortForward(
+                src_port=40000 + i, dst_port=80, tag=f"fw-{i}"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    assert not errors, f"concurrent adds raised: {errors!r}"
+
+    conn = mgr.config.connections[0]
+    tags = sorted(fw.tag for fw in conn.forwards.local if fw.tag and fw.tag.startswith("fw-"))
+    assert tags == [f"fw-{i}" for i in range(8)], f"lost updates: only {tags} persisted"
 
 
 def test_is_idle_fresh_workspace(tmp_path):
