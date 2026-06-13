@@ -201,6 +201,20 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
             cell.setPlaceholderString_(old.placeholderString())
         except Exception:
             pass
+        # Keep old text-field behavior (single-line editable entry) so swapping
+        # the cell does not fall back to a label-like top-left layout.
+        for getter, setter in (
+            ("isEditable", "setEditable_"),
+            ("isSelectable", "setSelectable_"),
+            ("isScrollable", "setScrollable_"),
+            ("wraps", "setWraps_"),
+            ("usesSingleLineMode", "setUsesSingleLineMode_"),
+            ("lineBreakMode", "setLineBreakMode_"),
+        ):
+            try:
+                getattr(cell, setter)(getattr(old, getter)())
+            except Exception:
+                pass
         control.setCell_(cell)
         try:
             control.setStringValue_(value)
@@ -1061,7 +1075,7 @@ class ConfigWindow:
                 cell.addSubview_(iv)
                 x += 24
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(x, 5, COL1_W - x - 44, 20))
+            NSMakeRect(x, 4, COL1_W - x - 44, 20))
         title.setStringValue_(item.title)
         title.setFont_(NSFont.systemFontOfSize_(13))
         title.setBezeled_(False)
