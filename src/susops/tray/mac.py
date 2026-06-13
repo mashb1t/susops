@@ -3102,18 +3102,15 @@ class SusOpsMacTray(AbstractTrayApp):
     # Settings dialog (with live logo preview)
     # ------------------------------------------------------------------ #
 
-    def _settings_fields(self, defaults: dict | None = None) -> tuple[list[dict], dict]:
+    def _settings_fields(self) -> tuple[list[dict], dict]:
         """Build the app-settings field spec + a context dict.
 
-        Single source of truth for the settings form used by the config-window
-        gear pane. Returns (fields, ctx). ctx carries the current saved port
-        values, the logo
-        style list, and the saved logo so _apply_settings can validate
-        "unchanged" ports and resolve the segmented selection back to a
-        LogoStyle.
-
-        defaults (optional): overrides the per-field initial values so a
-        re-show after a validation failure keeps the user's edits.
+        Single source of truth for the settings pane (mac_config_window).
+        Returns (fields, ctx): fields carry per-field section/description and
+        the current saved values; ctx carries the saved port values, the
+        LogoStyle list, and the saved logo so _apply_server_ports can treat
+        "unchanged" ports specially and _apply_setting_toggle can resolve the
+        segmented index back to a LogoStyle.
         """
         ac = self.manager.app_config
         cfg = self.manager.config
@@ -3129,14 +3126,7 @@ class SusOpsMacTray(AbstractTrayApp):
             img_path = _get_icon_path(self.state, style.value.lower())
             seg_options.append(("", img_path))
 
-        def _preview(idx: int) -> None:
-            if 0 <= idx < len(logo_styles):
-                style = logo_styles[idx]
-                icon_path = _get_icon_path(self.state, style.value.lower())
-                if icon_path:
-                    self._apply_icon_path(icon_path)
-
-        # Initial defaults. Launch-at-login state is read from a
+        # Initial values. Launch-at-login state is read from a
         # background-populated cache to avoid blocking the main thread on
         # osascript / TCC prompts when opening Settings.
         base = {
@@ -3151,8 +3141,6 @@ class SusOpsMacTray(AbstractTrayApp):
             "sse_port": str(sse_port) if sse_port else "",
             "pac_port": str(pac_port) if pac_port else "",
         }
-        if defaults:
-            base.update(defaults)
 
         # The settings pane (mac_config_window) renders these grouped by
         # `section`; toggles + logo + launch-at-login apply instantly, the
@@ -3171,13 +3159,12 @@ class SusOpsMacTray(AbstractTrayApp):
              "default": base["restore_shares"], "section": "General:"},
             {"key": "show_bandwidth", "label": "Show bandwidth", "kind": "switch",
              "default": base["show_bandwidth"], "section": "Menu bar:",
-             "description": "Show live throughput beside the menu-bar icon.",
-             "on_change": self._preview_bandwidth_visibility},
+             "description": "Show live throughput beside the menu-bar icon."},
             {"key": "notifications", "label": "Desktop notifications", "kind": "switch",
              "default": base["notifications"], "section": "Menu bar:"},
             {"key": "logo_style", "label": "Logo style", "kind": "segmented",
              "options": seg_options, "default": base["logo_style"],
-             "section": "Menu bar:", "on_change": _preview},
+             "section": "Menu bar:"},
             # Server ports — RPC + SSE require a daemon restart to take
             # effect; PAC is hot-restarted by the facade.
             {"key": "rpc_port", "label": "RPC port", "kind": "text",
@@ -3236,7 +3223,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 if not (0 <= idx < len(logo_styles)):
                     return "Invalid logo style."
                 self.manager.update_app_config(logo_style=logo_styles[idx])
-                self.update_icon(self.state)
+                # update_icon -> _apply_icon_path touches NSImage + the rumps
+                # app.icon setter, which must run on the main thread (this
+                # method runs on a run_in_background worker).
+                _on_main(lambda: self.update_icon(self.state))
                 return None
             field = self._TOGGLE_APP_CONFIG_KEYS.get(key)
             if field is None:
@@ -3785,19 +3775,6 @@ class SusOpsMacTray(AbstractTrayApp):
         # Kick off the next background fetch every ~2 s (every other tick).
         if self._cw_tick_count % 2 == 0:
             self._refresh_config_window()
-
-    def _preview_bandwidth_visibility(self, checked: bool) -> None:
-        """Live-toggle the menu-bar bandwidth title from the Settings switch.
-        Config isn't persisted until the user clicks Save; Cancel reverts via
-        refresh_bandwidth_title() reading the unchanged saved value."""
-        if checked:
-            try:
-                rx, tx = self.manager.get_bandwidth_global()
-            except Exception:
-                rx, tx = 0.0, 0.0
-            self.update_title(rx, tx)
-        else:
-            self.update_title(None, None)
 
     def run(self) -> None:
         # Initial state pull on startup; from then on the SSE listener drives

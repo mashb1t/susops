@@ -2264,7 +2264,6 @@ class ConfigWindow:
             scroll.reflectScrolledClipView_(clip)
         except Exception:
             pass
-        self._settings_doc = doc
 
     def _render_setting_row(self, doc, f, x, width, top) -> float:
         """One checkbox row + an optional indented gray description. Returns the
