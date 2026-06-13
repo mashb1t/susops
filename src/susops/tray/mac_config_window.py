@@ -1159,8 +1159,9 @@ class ConfigWindow:
     def _make_section_cell(self, r: ListRow):
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 24))
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, COL2_W - 20, 16))
+        row_w = self._list_viewport_width()
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 24))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 4, row_w - 20, 16))
         # Section titles render as the model emits them ("Local"/"Remote"),
         # NOT uppercased. Medium weight, secondary color.
         lbl.setStringValue_(r.title)
@@ -1179,8 +1180,9 @@ class ConfigWindow:
     def _make_info_cell(self, r: ListRow):
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 18))
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, COL2_W - 20, 16))
+        row_w = self._list_viewport_width()
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 18))
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 1, row_w - 20, 16))
         lbl.setStringValue_(r.title)
         lbl.setFont_(NSFont.systemFontOfSize_(11))
         lbl.setBezeled_(False)
@@ -1194,7 +1196,8 @@ class ConfigWindow:
     def _make_item_cell(self, r: ListRow):
         from AppKit import NSFont  # type: ignore[import]
         from Cocoa import NSColor, NSMakeRect, NSTextField, NSView  # type: ignore[import]
-        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, COL2_W, 38))
+        row_w = self._list_viewport_width()
+        cell = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, row_w, 38))
         title_color = (NSColor.secondaryLabelColor() if r.dimmed
                        else NSColor.labelColor())
 
@@ -1231,7 +1234,7 @@ class ConfigWindow:
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(COL2_W - badge_w - badge_right_inset, badge_y, badge_w, 16))
+                NSMakeRect(row_w - badge_w - badge_right_inset, badge_y, badge_w, 16))
             badge.setStringValue_(r.badge)
             badge.setFont_(NSFont.systemFontOfSize_(10))
             badge.setAlignment_(1)  # center
@@ -1249,7 +1252,7 @@ class ConfigWindow:
                 pass
             cell.addSubview_(badge)
 
-        title_w = COL2_W - text_x - (badge_w + badge_right_inset + 6
+        title_w = row_w - text_x - (badge_w + badge_right_inset + 6
                                      if badge_w else 12)
         title = NSTextField.alloc().initWithFrame_(
             NSMakeRect(text_x, title_y, max(40, title_w), 18))
@@ -1264,7 +1267,7 @@ class ConfigWindow:
 
         if r.subtitle:
             sub = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(text_x, 1, COL2_W - text_x - 12, 16))
+                NSMakeRect(text_x, 1, row_w - text_x - 12, 16))
             sub.setStringValue_(r.subtitle)
             sub.setFont_(NSFont.systemFontOfSize_(11))
             sub.setBezeled_(False)
@@ -1274,6 +1277,27 @@ class ConfigWindow:
             _truncate_tail(sub)
             cell.addSubview_(sub)
         return cell
+
+    def _list_viewport_width(self) -> float:
+        """Visible width of column 2's table area used for row content layout."""
+        tv = getattr(self, "_list_tv", None)
+        if tv is None:
+            return float(COL2_W)
+        try:
+            scroll = tv.enclosingScrollView()
+            if scroll is not None:
+                w = float(scroll.contentView().bounds().size.width)
+                if w > 0:
+                    return w
+        except Exception:
+            pass
+        try:
+            w = float(tv.frame().size.width)
+            if w > 0:
+                return w
+        except Exception:
+            pass
+        return float(COL2_W)
 
     def _sf_symbol(self, name: str):
         from AppKit import NSImage  # type: ignore[import]
