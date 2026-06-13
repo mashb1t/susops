@@ -236,6 +236,65 @@ def _apply_vcenter_cell(control, cell_cls) -> None:
     except Exception:
         pass
 
+def _add_text_left_padding(control, padding: float = 10.0) -> None:
+    """Add left padding to an NSTextField by creating a custom cell that insets
+    the text drawing rect by 'padding' points from the left."""
+    import objc  # type: ignore[import]
+    from Cocoa import NSTextFieldCell  # type: ignore[import]
+    from Foundation import NSMakeRect  # type: ignore[import]
+    try:
+        class _PaddedTextCell(NSTextFieldCell):
+            def drawInteriorWithFrame_inView_(self, frame, view):
+                # Inset the frame left by 'padding' points
+                padded = NSMakeRect(
+                    float(frame.origin.x) + padding,
+                    float(frame.origin.y),
+                    max(1.0, float(frame.size.width) - padding),
+                    float(frame.size.height),
+                )
+                objc.super(_PaddedTextCell, self).drawInteriorWithFrame_inView_(
+                    padded, view
+                )
+            def editWithFrame_inView_editor_delegate_event_(
+                self, frame, view, editor, delegate, event
+            ):
+                # Inset edit rect as well so cursor/selection inset matches
+                padded = NSMakeRect(
+                    float(frame.origin.x) + padding,
+                    float(frame.origin.y),
+                    max(1.0, float(frame.size.width) - padding),
+                    float(frame.size.height),
+                )
+                objc.super(_PaddedTextCell, self).editWithFrame_inView_editor_delegate_event_(
+                    padded, view, editor, delegate, event
+                )
+        old = control.cell()
+        try:
+            value = str(control.stringValue() or "")
+        except Exception:
+            value = ""
+        cell = _PaddedTextCell.alloc().init()
+        try:
+            cell.setFont_(old.font())
+        except Exception:
+            pass
+        try:
+            cell.setPlaceholderString_(old.placeholderString())
+        except Exception:
+            pass
+        for getter, setter in _TEXT_CELL_FLAG_ACCESSORS:
+            try:
+                getattr(cell, setter)(getattr(old, getter)())
+            except Exception:
+                pass
+        control.setCell_(cell)
+        try:
+            control.setStringValue_(value)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 def _get_table_ds_cls():
     """Cached data-source/delegate class for both view-based NSTableViews.
@@ -1778,7 +1837,7 @@ class ConfigWindow:
         # content column.
         if spec.toggle_note:
             note = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(cw - 220, toggle_y - 18, 220, 14))
+                NSMakeRect(cw - 306, toggle_y - 18, 306, 14))
             note.setStringValue_(spec.toggle_note)
             note.setFont_(NSFont.systemFontOfSize_(11))
             note.setAlignment_(1)  # right
@@ -1975,6 +2034,7 @@ class ConfigWindow:
                     pass
             _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
+            _add_text_left_padding(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
             self._field_widgets[f.key] = tf
@@ -2054,6 +2114,7 @@ class ConfigWindow:
                 pass
         _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
         self._style_input_field(tf)
+        _add_text_left_padding(tf)
         self._wire_text_dirty(tf)
         card.addSubview_(tf)
         self._field_widgets[f.key] = tf
@@ -2087,6 +2148,7 @@ class ConfigWindow:
                 except Exception:
                     pass
             self._style_input_field(tf)
+            _add_text_left_padding(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
         plain.setHidden_(True)
@@ -2870,6 +2932,7 @@ class ConfigWindow:
                     pass
             _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls())
             self._style_input_field(tf)
+            _add_text_left_padding(tf)
             doc.addSubview_(tf)
             self._settings_widgets[key] = tf
             self._settings_kinds[key] = "text"
