@@ -2508,7 +2508,7 @@ class ConfigWindow:
         top = 4000 - 12
         y = top
         SECTION_GAP = 18
-        ROW_GAP = 6
+        ROW_GAP = 10
 
         def _section_label(title, sy):
             lbl = NSTextField.alloc().initWithFrame_(
