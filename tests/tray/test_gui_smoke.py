@@ -465,3 +465,51 @@ def test_inline_edit_share_port(tray_proc):
     assert len(running) == 1, shares
     assert running[0].port in (45999, info.port)
     assert Path(running[0].file_path).name == "edit-port.txt"
+
+
+def test_share_header_toggle_stops_and_restarts(tray_proc):
+    """The shares header Enabled toggle owns serving: it replaces the Stop/Start
+    button (ON when serving) and flipping it stops then re-serves the share.
+
+    Asserted via the reliable `running` (in-memory server) state. The persisted
+    `stopped` flag can be clobbered by a concurrent list_shares poll racing
+    stop_share's config write at the daemon (a facade thread-safety bug, tracked
+    separately); this test does not depend on that flag."""
+    from pathlib import Path
+
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    shared = Path(tray_proc.workspace) / "toggle-me.txt"
+    shared.write_text("hi\n")
+    info = c.share(shared, "work")
+
+    def _serving():
+        return any(s.port == info.port and s.running
+                   for s in c.list_shares())
+
+    assert tray_proc.send("open-config shares").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            r["title"] == "toggle-me.txt" for r in d.get("rows", [])),
+    )
+    assert tray_proc.send("select shares 0").get("ok")
+    dump = tray_proc.send("dump-window")
+    # Serving share -> toggle ON; the Stop/Start button is gone (toggle owns it).
+    assert dump["detail_toggle"] is True
+    assert "share.stop" not in dump["detail_actions"]
+    assert "share.start" not in dump["detail_actions"]
+    assert _serving()
+
+    # Flip OFF -> the share stops serving.
+    assert tray_proc.send("action share.toggle").get("ok")
+    _wait_for(lambda: _serving(), lambda serving: serving is False,
+              timeout=8.0)
+    assert _serving() is False
+
+    # Flip ON again -> the share serves once more.
+    assert tray_proc.send("action share.toggle").get("ok")
+    _wait_for(lambda: _serving(), lambda serving: serving is True,
+              timeout=8.0)
+    assert _serving() is True

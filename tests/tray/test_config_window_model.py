@@ -515,7 +515,8 @@ def test_share_detail_running_fields_and_url():
     assert spec.title == "file.bin"
     assert spec.status_text == "running"
     assert spec.status_dot == "green"
-    assert spec.toggle is None
+    # Header Enabled toggle owns serving on/off; ON when not manually stopped.
+    assert spec.toggle == ("Enabled", True, "share.toggle")
     by_key = {f.key: f for f in spec.fields}
     assert by_key["file"].kind == "static"
     assert by_key["url"].kind == "static"
@@ -526,8 +527,10 @@ def test_share_detail_running_fields_and_url():
     assert by_key["downloads"].kind == "static"
     assert by_key["downloads"].value == "3 ok · 1 failed"
     ids = [a.action_id for a in spec.actions]
+    # The Stop/Start button is gone; the header toggle replaces it.
     assert ids == ["share.delete", "share.copy_url", "share.copy_password",
-                   "share.stop", "share.save"]
+                   "share.save"]
+    assert "share.stop" not in ids and "share.start" not in ids
     assert spec.actions[0].destructive is True
     # URL row carries a Copy button; password row carries Reveal + Copy.
     assert by_key["url"].trailing == (("share.copy_url", "Copy"),)
@@ -540,8 +543,10 @@ def test_share_detail_stopped_manual():
                               _status("work"))
     assert spec.status_text == "stopped (manual)"
     assert spec.status_dot == "gray"
+    # Manually stopped -> toggle OFF; serving intent is off.
+    assert spec.toggle == ("Enabled", False, "share.toggle")
     ids = [a.action_id for a in spec.actions]
-    assert "share.start" in ids
+    assert "share.start" not in ids
     assert "share.stop" not in ids
 
 
@@ -550,7 +555,11 @@ def test_share_detail_connection_down():
                               _status("work", running=False))
     assert spec.status_text == "connection down"
     assert spec.status_dot == "red"
-    assert "share.start" in [a.action_id for a in spec.actions]
+    # Connection down (not manually stopped) -> toggle stays ON (wants to serve).
+    assert spec.toggle == ("Enabled", True, "share.toggle")
+    ids = [a.action_id for a in spec.actions]
+    assert "share.start" not in ids
+    assert "share.stop" not in ids
 
 
 # ---- share create form ----

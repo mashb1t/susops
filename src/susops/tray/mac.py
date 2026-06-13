@@ -2248,6 +2248,21 @@ class SusOpsMacTray(AbstractTrayApp):
                          if s.port == port), None)
             if info is None:
                 pass  # vanished; refresh below handles it
+            elif action_id == "share.toggle":
+                # Flip serving on/off. Decide by the live in-memory `running`
+                # state (reliable) rather than the persisted `stopped` flag,
+                # which a concurrent list_shares poll can clobber at the daemon
+                # (facade thread-safety bug, tracked separately): currently
+                # serving -> stop; not serving -> re-share. Merges the old
+                # share.stop/share.start.
+                if info.running:
+                    self.do_stop_share(port)
+                elif not info.conn_tag:
+                    self.show_alert("Cannot Start Share",
+                                    "This share has no connection configured.")
+                else:
+                    self.do_share(info.conn_tag, info.file_path,
+                                  password=info.password, port=info.port)
             elif action_id == "share.stop":
                 self.do_stop_share(port)
             elif action_id == "share.start":

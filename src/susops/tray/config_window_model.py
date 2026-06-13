@@ -460,15 +460,17 @@ def build_share_detail(info, status) -> DetailSpec:
         Action("share.delete", "Delete…", destructive=True),
         Action("share.copy_url", "Copy URL"),
         Action("share.copy_password", "Copy Password"),
-        Action("share.stop", "Stop Share") if info.running
-        else Action("share.start", "Start Share"),
         Action("share.save", "Save"),
     ]
+    # The header Enabled toggle expresses SERVING intent: ON when the share
+    # wants to serve (running or connection-down), OFF only when the user
+    # manually stopped it. It owns start/stop, so the action row has no
+    # Stop/Start button.
     return DetailSpec(
         title=name,
         status_text=status_text,
         status_dot=status_dot,
-        toggle=None,
+        toggle=("Enabled", not info.stopped, "share.toggle"),
         fields=fields,
         actions=actions,
         editable=True,
