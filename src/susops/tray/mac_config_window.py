@@ -46,6 +46,7 @@ _text_delegate_cls = None
 _row_view_cls = None
 _vcenter_text_cell_cls = None
 _padded_secure_cell_cls = None
+_padded_plain_pw_cell_cls = None
 _TEXT_CELL_FLAG_ACCESSORS = (
     ("isEditable", "setEditable_"),
     ("isSelectable", "setSelectable_"),
@@ -177,6 +178,57 @@ def _get_padded_secure_cell_cls():
 
     _padded_secure_cell_cls = _SusOpsPaddedSecureCell
     return _padded_secure_cell_cls
+
+
+def _get_padded_plain_password_cell_cls():
+    global _padded_plain_pw_cell_cls
+    if _padded_plain_pw_cell_cls is not None:
+        return _padded_plain_pw_cell_cls
+    from Cocoa import NSMakeRect, NSTextFieldCell  # type: ignore[import]
+
+    class _SusOpsPaddedPlainPasswordCell(NSTextFieldCell):
+        def _insetCenteredRect_(self, frame):
+            try:
+                rect = objc.super(_SusOpsPaddedPlainPasswordCell, self).titleRectForBounds_(frame)
+            except Exception:
+                rect = objc.super(_SusOpsPaddedPlainPasswordCell, self).drawingRectForBounds_(frame)
+            text_h = rect.size.height
+            try:
+                size = objc.super(_SusOpsPaddedPlainPasswordCell, self).cellSizeForBounds_(frame)
+                if size is not None and getattr(size, "height", 0) > 0:
+                    text_h = min(rect.size.height, float(size.height))
+            except Exception:
+                pass
+            text_h = max(1.0, min(float(frame.size.height), float(text_h)))
+            p = float(getattr(self, "_padding", 0.0))
+            return NSMakeRect(
+                float(frame.origin.x) + max(0.0, p),
+                float(frame.origin.y) + max(0.0, (float(frame.size.height) - text_h) / 2.0),
+                max(1.0, float(frame.size.width) - max(0.0, p)),
+                text_h,
+            )
+
+        def drawInteriorWithFrame_inView_(self, frame, view):
+            objc.super(_SusOpsPaddedPlainPasswordCell, self).drawInteriorWithFrame_inView_(
+                self._insetCenteredRect_(frame), view
+            )
+
+        def selectWithFrame_inView_editor_delegate_start_length_(
+            self, frame, view, editor, delegate, start, length
+        ):
+            objc.super(_SusOpsPaddedPlainPasswordCell, self).selectWithFrame_inView_editor_delegate_start_length_(
+                self._insetCenteredRect_(frame), view, editor, delegate, start, length
+            )
+
+        def editWithFrame_inView_editor_delegate_event_(
+            self, frame, view, editor, delegate, event
+        ):
+            objc.super(_SusOpsPaddedPlainPasswordCell, self).editWithFrame_inView_editor_delegate_event_(
+                self._insetCenteredRect_(frame), view, editor, delegate, event
+            )
+
+    _padded_plain_pw_cell_cls = _SusOpsPaddedPlainPasswordCell
+    return _padded_plain_pw_cell_cls
 
 
 def _truncate_tail(field) -> None:
@@ -1062,6 +1114,8 @@ class ConfigWindow:
         # _on_selection which discards; this covers the programmatic/debug path.
         if self.category == "settings" and category != "settings":
             self.discard_settings()
+        if category != self.category:
+            self._clear_revealed_password_state()
         self.category = category
         idx = next((i for i, n in enumerate(self.nav_items)
                     if n.key == category), None)
@@ -1105,6 +1159,8 @@ class ConfigWindow:
                     self._dirty = False
                     self._dirty_identity = None
                 self._create_kind = None
+                if new_cat != self.category:
+                    self._clear_revealed_password_state()
                 self.category = new_cat
                 self.selected_identity = None
                 self.search_text = ""
@@ -1138,6 +1194,8 @@ class ConfigWindow:
                     self._dirty = False
                     self._dirty_identity = None
                 self._create_kind = None
+                if new_identity != self.selected_identity:
+                    self._clear_revealed_password_state()
                 self.selected_identity = new_identity
                 self._render_selection_placeholder()
 
@@ -1544,6 +1602,7 @@ class ConfigWindow:
         preselect = self._preselected_conn_tag(conn_tags)
         self._dirty = False
         self._dirty_identity = None
+        self._clear_revealed_password_state()
         self._create_kind = kind
         self.selected_identity = None
         # Deselect any highlighted col-2 row without firing the selection cb.
@@ -1566,6 +1625,7 @@ class ConfigWindow:
 
     def exit_create_mode(self) -> None:
         """Leave create mode and restore normal selection rendering."""
+        self._clear_revealed_password_state()
         self._create_kind = None
         self._dirty = False
         self._dirty_identity = None
@@ -2180,7 +2240,7 @@ class ConfigWindow:
                     pass
             self._style_input_field(tf)
             if tf is plain:
-                _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
+                _apply_vcenter_cell(tf, _get_padded_plain_password_cell_cls(), padding=10.0)
             else:
                 _apply_vcenter_cell(tf, _get_padded_secure_cell_cls(), padding=10.0)
             self._wire_text_dirty(tf)
@@ -2195,6 +2255,10 @@ class ConfigWindow:
     def _secure_state_token(self, key: str) -> tuple:
         """Stable token for preserving secure-field reveal state across rerenders."""
         return (self.category, self._create_kind, self.selected_identity, key)
+
+    def _clear_revealed_password_state(self) -> None:
+        """Auto-hide any revealed password when navigating away from its context."""
+        self._revealed_secure_tokens.clear()
 
     def _reserve_trailing(self, card, f, x, ry, width) -> float:
         """Render f.trailing buttons right-aligned within [x, x+width] and
