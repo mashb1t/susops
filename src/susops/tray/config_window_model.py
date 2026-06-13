@@ -275,7 +275,7 @@ def filter_rows(rows, query) -> list[ListRow]:
 
 # ---- detail / form builders ----
 
-def build_connection_detail(conn, status) -> DetailSpec:
+def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
     running = _running(status)
     pid = getattr(status, "pid", None) if status is not None else None
     if running:
@@ -286,8 +286,9 @@ def build_connection_detail(conn, status) -> DetailSpec:
         status_text = "stopped"
     fields = [
         FormField(key="tag", label="Tag", kind="text", value=conn.tag),
-        FormField(key="ssh_host", label="SSH Host", kind="text",
-                  value=conn.ssh_host),
+        FormField(key="ssh_host", label="SSH Host", kind="combo",
+                  value=conn.ssh_host, options=list(ssh_hosts),
+                  placeholder="hostname, IP, or ssh alias"),
         FormField(key="socks_port", label="SOCKS Port", kind="text",
                   value=str(_socks_port(conn) or ""), placeholder="auto"),
     ]

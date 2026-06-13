@@ -2311,7 +2311,7 @@ class ConfigWindow:
         """Build the settings grid in column 3. Section labels are bold,
         right-aligned in a left column; rows render to their right. Mirrors the
         approved settings mockup."""
-        from AppKit import NSFont  # type: ignore[import]
+        from AppKit import NSFont, NSTextAlignmentRight  # type: ignore[import]
         from Cocoa import (  # type: ignore[import]
             NSColor,
             NSMakeRect,
@@ -2365,7 +2365,7 @@ class ConfigWindow:
                 NSMakeRect(label_x, sy, label_w, 18))
             lbl.setStringValue_(title)
             lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
-            lbl.setAlignment_(2)  # right
+            lbl.setAlignment_(NSTextAlignmentRight)
             lbl.setBezeled_(False)
             lbl.setDrawsBackground_(False)
             lbl.setEditable_(False)
@@ -2375,9 +2375,9 @@ class ConfigWindow:
         for section in self.SETTINGS_SECTIONS:
             section_top = y
             _section_label(section, section_top - 2)
-            if section == "Config file:":
+            if section == "Config file":
                 y = self._render_config_file_row(doc, row_x, row_w, section_top)
-            elif section == "Servers:":
+            elif section == "Servers":
                 y = self._render_server_rows(
                     doc, by_section.get(section, []), row_x, row_w, section_top)
             else:
