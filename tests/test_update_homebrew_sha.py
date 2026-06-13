@@ -52,9 +52,9 @@ def test_cask_update_handles_legacy_initial_state(tmp_path: Path) -> None:
     p = tmp_path / "susops.rb"
     p.write_text(LEGACY_CASK)
 
-    update_cask_sha(p, "3.0.0-rc6.dev1", "c" * 64)
+    update_cask_sha(p, "3.0.0-rc6.dev2", "c" * 64)
     out = p.read_text()
-    assert 'version "3.0.0-rc6.dev1"' in out
+    assert 'version "3.0.0-rc6.dev2"' in out
     assert f'sha256 "{"c" * 64}"' in out
     assert '#{version}' in out
 
