@@ -913,13 +913,40 @@ class ConfigWindow:
             if not self._col2_hidden:
                 self._enter_settings()
             return
-        # While a col-3 form is dirty OR a create form is open, cols 1-2 keep
-        # refreshing but column 3 stays untouched. skip_detail pins the col-2
-        # selection to the dirty identity (None during create, so no row is
-        # forced) so neither an in-flight edit nor an open empty create form is
-        # clobbered by a poll.
+        # While a col-3 form is dirty, a create form is open, OR a detail input
+        # currently owns first-responder/editor focus, cols 1-2 keep refreshing
+        # but column 3 stays untouched. This prevents poll-driven re-renders from
+        # dropping focus a second later when the user has only focused a field
+        # but not changed its value yet.
         self._reload_list(preserve=True,
-                          skip_detail=self._dirty or self._create_kind is not None)
+                          skip_detail=(
+                              self._dirty
+                              or self._create_kind is not None
+                              or self._detail_input_focused()
+                          ))
+
+    def _detail_input_focused(self) -> bool:
+        """True when a column-3 input (or its field editor) is first responder."""
+        if self.window is None:
+            return False
+        try:
+            responder = self.window.firstResponder()
+        except Exception:
+            responder = None
+        if responder is None:
+            return False
+        widgets = list(self._field_widgets.values()) + list(self._settings_widgets.values())
+        for widget in widgets:
+            if widget is None:
+                continue
+            if responder == widget:
+                return True
+            try:
+                if responder == widget.currentEditor():
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _reload_nav(self) -> None:
         self.nav_items = build_nav(self._cfg, self._shares)
@@ -1994,7 +2021,7 @@ class ConfigWindow:
                     tf.cell().setPlaceholderString_(f.placeholder)
                 except Exception:
                     pass
-            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=1.0)
             self._style_input_field(tf)
             self._wire_text_dirty(tf)
             card.addSubview_(tf)
