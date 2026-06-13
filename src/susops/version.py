@@ -1,12 +1,15 @@
 """Single source of truth for the susops package version."""
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+import tomllib
 
-try:
-    VERSION = version("susops")
-except PackageNotFoundError:
-    # Running from source without installation — fall back to pyproject.toml
-    import tomllib
-    from pathlib import Path
-
-    _pyproject = Path(__file__).parent.parent.parent / "pyproject.toml"
+# In dev/editable environments, installed metadata can be stale after a local
+# version bump. Prefer the repo pyproject when present.
+_pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+if _pyproject.exists():
     VERSION = tomllib.loads(_pyproject.read_text())["project"]["version"]
+else:
+    try:
+        VERSION = version("susops")
+    except PackageNotFoundError:
+        VERSION = "0.0.0"
