@@ -1231,6 +1231,9 @@ class ConfigWindow:
         # overlays ~14-16px, so the pill needs a wider inset than that.
         badge_w = 0
         badge_right_inset = 27
+        # Keep text inside the same floating row area as the selection pill.
+        pill_right_inset = 9
+        row_right_limit = row_w - pill_right_inset - 10
         if r.badge:
             badge_w = max(34, 14 + 7 * len(r.badge))
             badge = NSTextField.alloc().initWithFrame_(
@@ -1252,10 +1255,11 @@ class ConfigWindow:
                 pass
             cell.addSubview_(badge)
 
-        title_w = row_w - text_x - (badge_w + badge_right_inset + 6
-                                     if badge_w else 12)
+        title_right_limit = (row_w - badge_w - badge_right_inset - 6
+                             if badge_w else row_right_limit)
+        title_w = max(40, title_right_limit - text_x)
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(text_x, title_y, max(40, title_w), 18))
+            NSMakeRect(text_x, title_y, title_w, 18))
         title.setStringValue_(r.title)
         title.setFont_(NSFont.systemFontOfSize_(13))
         title.setBezeled_(False)
@@ -1267,7 +1271,7 @@ class ConfigWindow:
 
         if r.subtitle:
             sub = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(text_x, 1, row_w - text_x - 12, 16))
+                NSMakeRect(text_x, 1, max(40, row_right_limit - text_x), 16))
             sub.setStringValue_(r.subtitle)
             sub.setFont_(NSFont.systemFontOfSize_(11))
             sub.setBezeled_(False)
