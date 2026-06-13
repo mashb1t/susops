@@ -394,6 +394,7 @@ MIN_H = 640
 COL1_W = 180
 COL2_W = 270
 TOP_INSET = 38          # traffic lights overlay col 1; start content below them
+SIDEBAR_TOP_INSET = 38  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 24
 ADDBAR_H = 40
 
@@ -683,7 +684,7 @@ class ConfigWindow:
             NSTableView,
         )
         tv = NSTableView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, COL1_W, ch - TOP_INSET))
+            NSMakeRect(0, 0, COL1_W, ch - SIDEBAR_TOP_INSET))
         col = NSTableColumn.alloc().initWithIdentifier_("nav")
         col.setWidth_(COL1_W - 8)
         tv.addTableColumn_(col)
@@ -703,7 +704,7 @@ class ConfigWindow:
         tv.setDataSource_(ds)
         tv.setDelegate_(ds)
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, COL1_W, ch - TOP_INSET))
+            NSMakeRect(0, 0, COL1_W, ch - SIDEBAR_TOP_INSET))
         scroll.setDrawsBackground_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
