@@ -1471,12 +1471,22 @@ def _set_launch_at_login(enable: bool) -> None:
     path = _login_item_path()
     name = Path(path).stem
     if enable:
+        # Wrap in try-catch to handle the case where the login item already exists.
+        # Creating a duplicate will fail; error suppression allows idempotency.
         script = (
-            'tell application "System Events" to make login item '
-            f'at end with properties {{path:"{path}", hidden:false}}'
+            'try\n'
+            '  tell application "System Events" to make login item '
+            f'at end with properties {{path:"{path}", hidden:false}}\n'
+            'end try'
         )
     else:
-        script = f'tell application "System Events" to delete login item "{name}"'
+        # Wrap delete in try-catch to gracefully handle missing login items.
+        # Error -1728 occurs when the item doesn't exist (e.g., in dev environments).
+        script = (
+            'try\n'
+            f'  tell application "System Events" to delete login item "{name}"\n'
+            'end try'
+        )
     try:
         subprocess.run(["osascript", "-e", script], check=False, timeout=3)
     except Exception:
