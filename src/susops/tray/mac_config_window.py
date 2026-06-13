@@ -706,6 +706,7 @@ class ConfigWindow:
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, 0, COL1_W, ch - SIDEBAR_TOP_INSET))
         scroll.setDrawsBackground_(False)
+        scroll.setHasHorizontalScroller_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
         scroll.setDocumentView_(tv)
@@ -759,6 +760,7 @@ class ConfigWindow:
         scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, ADDBAR_H + 8, COL2_W, list_h))
         scroll.setDrawsBackground_(False)
+        scroll.setHasHorizontalScroller_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
         # Overlay scrollers float over content and reserve no gutter, so the
