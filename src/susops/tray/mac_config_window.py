@@ -1555,11 +1555,15 @@ class ConfigWindow:
         return btn
 
     def _styled_save_button(self, title, frame):
-        """Filled accent-blue Save. _restyle_save_button sets the enabled/
-        disabled fill + title (called on creation and on dirty flips)."""
-        from Cocoa import NSColor  # type: ignore[import]
+        """Filled accent-blue Save. _restyle_save_button owns all fill + title
+        styling (called on creation and on dirty flips). Enter-to-save via the
+        key equivalent, safe here since the borderless button has no bezel for
+        AppKit to repaint."""
         btn = self._base_layer_button(title, frame)
-        btn.setAttributedTitle_(self._attr_title(title, NSColor.whiteColor()))
+        try:
+            btn.setKeyEquivalent_("\r")
+        except Exception:
+            pass
         return btn
 
     def _restyle_save_button(self, btn, enabled: bool) -> None:
