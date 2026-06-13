@@ -1015,10 +1015,13 @@ class ConfigWindow:
         return []  # settings has no list
 
     def _reload_list(self, *, preserve: bool, skip_detail: bool = False) -> None:
-        # When a col-3 form is dirty (skip_detail), keep the col-2 highlight on
-        # the dirty identity and do NOT touch column 3.
-        prev = (self._dirty_identity if skip_detail
-                else (self.selected_identity if preserve else None))
+        # When skip_detail is set, keep the col-2 highlight pinned to the dirty
+        # identity when available, otherwise preserve the current selected item
+        # (focused-but-not-dirty detail fields still need stable row selection).
+        if skip_detail:
+            prev = self._dirty_identity or self.selected_identity
+        else:
+            prev = self.selected_identity if preserve else None
         self._all_rows = self._build_category_rows()
         self.rows = filter_rows(self._all_rows, self.search_text)
         self._suppress_selection_cb = True
