@@ -2033,15 +2033,15 @@ class SusOpsMacTray(AbstractTrayApp):
         select, dump-window, search, set-field, add, confirm-next, action,
         screenshot, quit). Every UI-touching handler marshals via _run_on_main.
 
-        open-config [category] — category key (connections/domains/forwards/
+        open-config [category]: category key (connections/domains/forwards/
             shares/settings) or omitted.
-        select <category> [index] — switch nav, then select the index-th
+        select <category> [index]: switch nav, then select the index-th
             selectable item row in column 2.
-        search [text…] — set the search field string (empty clears) + filter.
-        set-field <key> <value…> — write a live col-3 form widget, mark dirty.
-        add — trigger the current category's primary add button (enters create
+        search [text]: set the search field string (empty clears) + filter.
+        set-field <key> <value>: write a live col-3 form widget, mark dirty.
+        add: trigger the current category's primary add button (enters create
             mode for connections/domains/forwards).
-        confirm-next <ok|cancel> — queue the answer for the next multi-button
+        confirm-next <ok|cancel>: queue the answer for the next multi-button
             panel (confirms default to cancel in debug mode otherwise).
         """
 
@@ -2336,7 +2336,7 @@ class SusOpsMacTray(AbstractTrayApp):
         if not host:
             _show_message("Missing Field", "Host must not be empty.")
             return
-        if not conn_tag or conn_tag not in self._connection_tags():
+        if not conn_tag:
             _show_message("Missing Field", "Select a connection.")
             return
 
@@ -2365,7 +2365,7 @@ class SusOpsMacTray(AbstractTrayApp):
         tcp, udp = bool(protocols[0]), bool(protocols[1])
         tag = (values.get("tag") or "").strip()
 
-        if not conn_tag or conn_tag not in self._connection_tags():
+        if not conn_tag:
             _show_message("No Connection", "Select a connection.")
             return
         if not tcp and not udp:
