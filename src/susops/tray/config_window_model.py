@@ -162,23 +162,28 @@ def build_connection_rows(cfg, statuses) -> list[ListRow]:
 
 
 def build_domain_rows(cfg, statuses) -> list[ListRow]:
-    rows: list[ListRow] = []
+    # One flat list across all connections, sorted alphabetically by host
+    # (case-insensitive, tie-break by conn_tag). Disabled hosts keep their
+    # alphabetical position and render dimmed IN PLACE - they do not sink to
+    # the bottom. pac_hosts and pac_hosts_disabled are disjoint lists.
+    entries = []
     for conn in cfg.connections:
-        st = _status_for(statuses, conn.tag)
-        running = _running(st)
-        # Enabled hosts first, then disabled, both in config order.
-        # pac_hosts and pac_hosts_disabled are disjoint lists.
-        for host in list(conn.pac_hosts) + list(_disabled_hosts(conn)):
-            enabled = host not in _disabled_hosts(conn)
-            rows.append(ListRow(
-                kind="item",
-                title=host,
-                subtitle="",
-                dot="green" if (running and enabled) else "gray",
-                badge=conn.tag,
-                dimmed=not enabled,
-                identity=("domain", conn.tag, host),
-            ))
+        disabled = _disabled_hosts(conn)
+        for host in list(conn.pac_hosts) + list(disabled):
+            entries.append((conn, host, host not in disabled))
+    entries.sort(key=lambda e: (e[1].lower(), e[0].tag))
+    rows: list[ListRow] = []
+    for conn, host, enabled in entries:
+        running = _running(_status_for(statuses, conn.tag))
+        rows.append(ListRow(
+            kind="item",
+            title=host,
+            subtitle="",
+            dot="green" if (running and enabled) else "gray",
+            badge=conn.tag,
+            dimmed=not enabled,
+            identity=("domain", conn.tag, host),
+        ))
     return rows
 
 

@@ -132,16 +132,37 @@ def test_connection_row_pending_running_stays_green():
 
 # ---- domain rows ----
 
-def test_domain_rows_enabled_first_then_disabled_per_connection():
-    cfg = _cfg(_conn("work", pac_hosts=["a.de", "b.de"],
-                     pac_hosts_disabled=["c.de"]),
-               _conn("home", pac_hosts=["x.lan"], pac_hosts_disabled=[]))
+def test_domain_rows_alphabetical_dim_in_place():
+    # Disabled hosts keep their alphabetical position, dimmed in place; they
+    # do NOT sink to the bottom. Case-insensitive sort across all connections,
+    # tie-break by conn_tag.
+    cfg = _cfg(_conn("work", pac_hosts=["zebra.com", "b.de"],
+                     pac_hosts_disabled=["alpha.com"]),
+               _conn("home", pac_hosts=["middle.lan"], pac_hosts_disabled=[]))
     rows = build_domain_rows(cfg, [_status("work", running=True),
                                    _status("home", running=False)])
-    assert [r.title for r in rows] == ["a.de", "b.de", "c.de", "x.lan"]
-    assert [r.badge for r in rows] == ["work", "work", "work", "home"]
+    # alpha.com (disabled) < b.de < middle.lan < zebra.com, all alphabetical
+    assert [r.title for r in rows] == [
+        "alpha.com", "b.de", "middle.lan", "zebra.com"]
+    assert [r.badge for r in rows] == ["work", "work", "home", "work"]
+    # The disabled host kept its alphabetical position AND is dimmed.
+    assert rows[0].title == "alpha.com"
+    assert rows[0].dimmed is True
+    assert rows[0].dot == "gray"
     assert rows[0].subtitle == ""
-    assert rows[0].identity == ("domain", "work", "a.de")
+    assert rows[0].identity == ("domain", "work", "alpha.com")
+
+
+def test_domain_rows_case_insensitive_sort_tiebreak_conn_tag():
+    # Same host text under two connections sorts case-insensitively, then by
+    # conn_tag.
+    cfg = _cfg(_conn("work", pac_hosts=["Beta.io"], pac_hosts_disabled=[]),
+               _conn("home", pac_hosts=["beta.io", "Alpha.io"],
+                     pac_hosts_disabled=[]))
+    rows = build_domain_rows(cfg, [_status("work"), _status("home")])
+    # Alpha.io < beta.io (home) == Beta.io (work) tie-broken home<work
+    assert [(r.title, r.badge) for r in rows] == [
+        ("Alpha.io", "home"), ("beta.io", "home"), ("Beta.io", "work")]
 
 
 def test_domain_rows_dot_and_dim():

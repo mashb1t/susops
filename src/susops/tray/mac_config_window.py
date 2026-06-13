@@ -240,6 +240,19 @@ ADDBAR_H = 40
 CONTENT_MAX_W = 540
 CONTENT_PAD = 16
 
+# Balanced inner padding for the detail card: the same inset on all four sides
+# so controls never touch any card edge. CARD_PAD_X reserves left AND right;
+# CARD_PAD_Y reserves top AND bottom.
+CARD_PAD_X = 16
+CARD_PAD_Y = 14
+# Bezeled editable controls (text/secure/combo) are 22 tall; popups 24. The
+# label is vertically centered on this control band. CARD_LABEL_NUDGE shifts the
+# top-drawn label text down so its baseline lines up with a bezeled field's
+# inset text (a label and a field of equal frame height do NOT center the same).
+CARD_ROW_H = 32
+CARD_CTRL_H = 22
+CARD_LABEL_NUDGE = -2
+
 # ---- dot colors ----
 _DOT_SELECTORS = {
     "green": "systemGreenColor",
@@ -879,7 +892,10 @@ class ConfigWindow:
         if item.icon:
             img = self._sf_symbol(item.icon)
             if img is not None:
-                iv = NSImageView.alloc().initWithFrame_(NSMakeRect(x, 6, 18, 18))
+                # The 13px title text in its 20-tall frame draws toward the top,
+                # so its visual center sits ~1-2px above the frame center. Raise
+                # the icon to share that center rather than the frame center.
+                iv = NSImageView.alloc().initWithFrame_(NSMakeRect(x, 8, 18, 18))
                 iv.setImage_(img)
                 cell.addSubview_(iv)
                 x += 24
@@ -1456,8 +1472,8 @@ class ConfigWindow:
             NSView,
         )
         plan = self._plan_field_rows(list(spec.fields))
-        row_h = 30
-        v_pad = 12
+        row_h = CARD_ROW_H
+        v_pad = CARD_PAD_Y
         card_h = max(row_h, len(plan) * row_h) + 2 * v_pad
         card_w = cw
         card_y = card_top - card_h
@@ -1472,17 +1488,36 @@ class ConfigWindow:
         container.addSubview_(card)
 
         # Right-aligned labels in a ~110px column, 10px gap, controls right
-        # after so labels hug their controls.
+        # after so labels hug their controls. Left AND right insets are
+        # CARD_PAD_X so no control touches a card edge.
         label_w = 110
-        inner_pad = 14
+        inner_pad = CARD_PAD_X
         gap = 10
         value_x = inner_pad + label_w + gap
         value_w = card_w - value_x - inner_pad
+        lbl_h = 16
         for i, row in enumerate(plan):
-            # Rows top-down inside the card.
-            ry = card_h - v_pad - (i + 1) * row_h + 4
+            # Rows top-down inside the card. ry is the control-row baseline that
+            # the render helpers offset from (controls nudge -3 for their
+            # bezel). The label is vertically centered on the control on its row.
+            ry = card_h - v_pad - (i + 1) * row_h + 5
+            is_check_pair = any(f.kind == "check_pair" for f in row["fields"])
+            if spec.editable and is_check_pair:
+                # Checkboxes are drawn at ry-2, height 20 (center ry+8) with
+                # their own labels already vertically centered in the box.
+                # Align the row label to that center.
+                lbl_y = (ry - 2) + 20 / 2.0 - lbl_h / 2.0 + CARD_LABEL_NUDGE
+            elif spec.editable and self._row_has_tall_control(row):
+                # Center the label on a 22-tall bezeled control band (drawn at
+                # ry-3..ry+19) and nudge for the field's inset text.
+                ctrl_center = (ry - 3) + CARD_CTRL_H / 2.0
+                lbl_y = ctrl_center - lbl_h / 2.0 + CARD_LABEL_NUDGE
+            else:
+                # Static value: the value text sits at ry (18 tall, top-drawn).
+                # Match the label's text line to it.
+                lbl_y = ry + 1
             lbl = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(inner_pad, ry, label_w, 18))
+                NSMakeRect(inner_pad, lbl_y, label_w, lbl_h))
             lbl.setStringValue_(row["label"])
             lbl.setFont_(NSFont.systemFontOfSize_(11))
             lbl.setAlignment_(1)  # right
@@ -1497,6 +1532,13 @@ class ConfigWindow:
             else:
                 self._render_row_static(card, row, value_x, ry, value_w)
         return card
+
+    def _row_has_tall_control(self, row) -> bool:
+        """True when the row renders a bezeled control (text/secure/combo/popup/
+        path) the label must vertically center against. check_pair (checkboxes)
+        and static rows align to a plain text line instead."""
+        kinds = {f.kind for f in row["fields"]}
+        return bool(kinds & {"text", "secure", "combo", "popup", "path"})
 
     def _render_row_static(self, card, row, value_x, ry, value_w) -> None:
         from AppKit import NSFont  # type: ignore[import]
@@ -2182,8 +2224,11 @@ class ConfigWindow:
 
         col3_w = self._col3.frame().size.width
         col3_h = self._col3.frame().size.height
-        content_w = min(620, max(360, col3_w - 2 * CONTENT_PAD))
-        label_x = CONTENT_PAD
+        # Cap the form width and center it horizontally in the (wide) settings
+        # area so it reads as an intentional macOS settings layout rather than a
+        # narrow form lost in a sea of empty space on the right.
+        content_w = min(600, max(360, col3_w - 2 * CONTENT_PAD))
+        label_x = 0
         label_w = self._SETTINGS_LABEL_W
         row_x = label_x + label_w + self._SETTINGS_LABEL_GAP
         row_w = content_w - (label_w + self._SETTINGS_LABEL_GAP)
@@ -2246,12 +2291,26 @@ class ConfigWindow:
                                    fr.size.width, fr.size.height))
         doc.setFrame_(NSMakeRect(0, 0, content_w, doc_h))
 
+        # Center the capped-width form horizontally; flexible left+right margins
+        # keep it centered as the window resizes. A small top inset below the
+        # transparent titlebar avoids a large gap above "General:".
+        scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
+        scroll_top_inset = TOP_INSET + 8
+        avail_h = col3_h - scroll_top_inset
+        # Pin the form to the TOP: when the content is shorter than the available
+        # height, size the scroll to the content and place it at the top edge so
+        # the doc does not float at the bottom of an oversized clip view (which
+        # left a large empty band above "General:").
+        scroll_h = min(avail_h, doc_h)
+        scroll_y = (col3_h - scroll_top_inset) - scroll_h
         scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(CONTENT_PAD, 0, content_w, col3_h - TOP_INSET))
+            NSMakeRect(scroll_x, scroll_y, content_w, scroll_h))
         scroll.setDrawsBackground_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
-        scroll.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
+        # MinXMargin | MaxXMargin | MinYMargin -> fixed size, stays centered
+        # horizontally and pinned to the top as the window resizes.
+        scroll.setAutoresizingMask_(1 | 4 | 8)
         scroll.setDocumentView_(doc)
         self._col3.addSubview_(scroll)
         # Non-flipped doc: the top of the content sits at high y. Scroll the
