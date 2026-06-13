@@ -512,3 +512,81 @@ def test_share_header_toggle_stops_and_restarts(tray_proc):
     _wait_for(lambda: _serving(), lambda serving: serving is True,
               timeout=15.0)
     assert _serving() is True
+
+
+# --------------------------------------------------------------------------- #
+# Settings pane (Tailscale-style, instant apply)
+# --------------------------------------------------------------------------- #
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_settings_pane_renders_and_hides_list(tray_proc):
+    """Selecting Settings hides column 2 and renders the instant-apply form."""
+    assert tray_proc.send("open-config settings").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "settings"
+        and d.get("col2_hidden") is True,
+    )
+    assert dump["category"] == "settings"
+    assert dump["col2_hidden"] is True
+    settings = dump["settings"]
+    assert settings is not None
+    # All toggle keys + the three port keys + the logo index are present.
+    for key in ("launch_at_login", "stop_on_quit", "ephemeral_ports",
+                "restore_shares", "show_bandwidth", "notifications",
+                "logo_style", "rpc_port", "sse_port", "pac_port"):
+        assert key in settings, f"missing settings key {key}"
+
+
+def test_settings_toggle_instant_apply(tray_proc):
+    """Flipping a toggle persists to app_config immediately — no Apply."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    assert tray_proc.send("open-config settings").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("col2_hidden") is True and d.get("settings"),
+    )
+    before = c.list_config().susops_app.notifications_enabled
+    # Flip notifications to the opposite of its current value via set-field;
+    # the window applies it instantly (no settings.apply action).
+    target = "off" if before else "on"
+    res = tray_proc.send(f"set-field notifications {target}")
+    assert res.get("ok"), res
+    after = _wait_for(
+        lambda: c.list_config().susops_app.notifications_enabled,
+        lambda v: v == (not before),
+        timeout=5.0,
+    )
+    assert after == (not before)
+    # No alert fired (instant-apply succeeded).
+    assert tray_proc.send("dump-window").get("alerts") == []
+
+
+def test_settings_apply_ports(tray_proc):
+    """Setting a port field + the explicit Apply persists pac_server_port."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    assert tray_proc.send("open-config settings").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("col2_hidden") is True and d.get("settings"),
+    )
+    port = _free_port()
+    assert tray_proc.send(f"set-field pac_port {port}").get("ok")
+    # The field is written but NOT applied yet (dump reflects the widget).
+    assert str(tray_proc.send("dump-window")["settings"]["pac_port"]) == str(port)
+    assert tray_proc.send("action settings.apply_ports").get("ok")
+    applied = _wait_for(
+        lambda: c.list_config().pac_server_port,
+        lambda v: v == port,
+        timeout=5.0,
+    )
+    assert applied == port

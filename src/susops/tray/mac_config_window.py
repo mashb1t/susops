@@ -291,6 +291,14 @@ class ConfigWindow:
         # col-2 selection is cleared and col 3 shows an inline create form with
         # an always-enabled Create button + a Cancel button.
         self._create_kind = None
+        # Settings pane: when the Settings nav row is selected col 2 is hidden
+        # and col 3 spans cols 2+3. Live setting widgets are cached here so the
+        # debug surface (dump / set-field / revert) and the ports collector can
+        # read them. None of these participate in the dirty/edit machinery.
+        self._col2_hidden = False
+        self._settings_widgets: dict = {}   # field key -> control
+        self._settings_kinds: dict = {}     # field key -> kind
+        self._settings_ctx: dict = {}       # ctx from settings_field_specs
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -423,7 +431,8 @@ class ConfigWindow:
 
         # --- thin separators between columns ---
         self._add_separator(content, COL1_W, ch)
-        self._add_separator(content, COL1_W + COL2_W, ch)
+        # sep2 sits at the col2/col3 boundary; hidden with col2 in Settings.
+        self._sep2 = self._add_separator(content, COL1_W + COL2_W, ch)
 
         self._build_nav_table(col1, ch)
         self._build_list_column(col2, ch)
@@ -459,6 +468,26 @@ class ConfigWindow:
             pass
         line.setAutoresizingMask_(16)  # HeightSizable
         content.addSubview_(line)
+        return line
+
+    def _set_col2_visible(self, visible: bool) -> None:
+        """Show/hide column 2 (+ its separator) and slide column 3 to fill the
+        freed space. Settings spans cols 2+3 with col 2 hidden; every other
+        category restores the 3-column geometry. Idempotent."""
+        if visible == (not self._col2_hidden):
+            return
+        self._col2_hidden = not visible
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        try:
+            self._col2.setHidden_(not visible)
+            self._sep2.setHidden_(not visible)
+        except Exception:
+            pass
+        # Reposition col 3: start at COL1_W (col 2 hidden) or COL1_W+COL2_W.
+        win_w = self.window.contentView().frame().size.width if self.window else WIN_W
+        col3_x = COL1_W if not visible else COL1_W + COL2_W
+        f = self._col3.frame()
+        self._col3.setFrame_(NSMakeRect(col3_x, 0, win_w - col3_x, f.size.height))
 
     def _build_nav_table(self, col1, ch: float) -> None:
         from Cocoa import (  # type: ignore[import]
@@ -590,6 +619,16 @@ class ConfigWindow:
             self._pending_category = None
             self.category = cat if cat in CATEGORIES else self.category
         self._reload_nav()
+        # Settings pane: col 2 is hidden and col 3 holds instant-apply controls
+        # not driven by the col-2 list. A poll must not rebuild col 2 or stomp
+        # the settings form. On the FIRST entry (no settings widgets yet, e.g.
+        # opened via open("settings") before the initial data load) render the
+        # pane; thereafter leave both columns untouched so a poll never clobbers
+        # in-flight port edits.
+        if self.category == "settings":
+            if not self._col2_hidden:
+                self._enter_settings()
+            return
         # While a col-3 form is dirty OR a create form is open, cols 1-2 keep
         # refreshing but column 3 stays untouched. skip_detail pins the col-2
         # selection to the dirty identity (None during create, so no row is
@@ -672,6 +711,10 @@ class ConfigWindow:
             finally:
                 self._suppress_selection_cb = False
         self.selected_identity = None
+        if category == "settings":
+            self._enter_settings()
+            return
+        self._set_col2_visible(True)
         self._reload_list(preserve=False)
 
     def _on_selection(self, role: str) -> None:
@@ -704,6 +747,10 @@ class ConfigWindow:
                     self._search_field.setStringValue_("")
                 except Exception:
                     pass
+                if new_cat == "settings":
+                    self._enter_settings()
+                    return
+                self._set_col2_visible(True)
                 self._reload_list(preserve=False)
         else:  # list
             row = int(self._list_tv.selectedRow())
@@ -1126,8 +1173,7 @@ class ConfigWindow:
         self._dirty_identity = None
         self._create_kind = None
         if self.category == "settings":
-            self._detail_spec = None
-            self._render_col3_placeholder("Settings pane lands in Task 7.")
+            self._render_settings_pane()
             return
         if self.selected_identity is None:
             self._detail_spec = None
@@ -1216,6 +1262,8 @@ class ConfigWindow:
         self._field_kinds = {}
         self._secure_pair = {}
         self._save_button = None
+        self._settings_widgets = {}
+        self._settings_kinds = {}
 
     def _content_column(self):
         """Create the content column: a fixed CONTENT_MAX_W view anchored
@@ -2089,6 +2137,430 @@ class ConfigWindow:
         self._col3_text = text
 
     # ------------------------------------------------------------------ #
+    # Settings pane (Tailscale-style, instant apply). Col 2 is hidden; this
+    # pane spans the freed area. Toggles/logo/login apply on change; the three
+    # server ports share one explicit Apply. Field spec + validation live in
+    # mac.py (self.tray); this only renders + collects.
+    # ------------------------------------------------------------------ #
+
+    def _enter_settings(self) -> None:
+        self.category = "settings"
+        self.selected_identity = None
+        self._dirty = False
+        self._dirty_identity = None
+        self._create_kind = None
+        self._set_col2_visible(False)
+        self._render_settings_pane()
+
+    SETTINGS_SECTIONS = ("General:", "Menu bar:", "Servers:", "Config file:")
+    _SETTINGS_LABEL_W = 100
+    _SETTINGS_LABEL_GAP = 14
+
+    def _render_settings_pane(self) -> None:
+        """Build the settings grid in column 3. Section labels are bold,
+        right-aligned in a left column; rows render to their right. Mirrors the
+        approved settings mockup."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSScrollView,
+            NSTextField,
+            NSView,
+        )
+        self._clear_col3()
+        self._detail_spec = None
+        self._settings_widgets = {}
+        self._settings_kinds = {}
+
+        fields, ctx = self.tray.settings_field_specs()
+        self._settings_ctx = ctx
+        # Group fields by section in spec order.
+        by_section: dict[str, list] = {}
+        for f in fields:
+            by_section.setdefault(f.get("section", "General:"), []).append(f)
+
+        col3_w = self._col3.frame().size.width
+        col3_h = self._col3.frame().size.height
+        content_w = min(620, max(360, col3_w - 2 * CONTENT_PAD))
+        label_x = CONTENT_PAD
+        label_w = self._SETTINGS_LABEL_W
+        row_x = label_x + label_w + self._SETTINGS_LABEL_GAP
+        row_w = content_w - (label_w + self._SETTINGS_LABEL_GAP)
+
+        # Build into a tall document view inside a scroll view so the pane
+        # scrolls if the window is short. Lay out top-down against a 4000-tall
+        # doc, then trim the doc to the used height and shift subviews to the
+        # top (non-flipped doc: top = max-y).
+        doc = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, content_w, 4000))
+        try:
+            doc.setWantsLayer_(True)
+            doc.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+        except Exception:
+            pass
+
+        # We lay out with a descending y cursor from the top of the doc; the
+        # doc height is trimmed at the end and the scroll view scrolled to top.
+        top = 4000 - 12
+        y = top
+        SECTION_GAP = 18
+        ROW_GAP = 6
+
+        def _section_label(title, sy):
+            lbl = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(label_x, sy, label_w, 18))
+            lbl.setStringValue_(title)
+            lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
+            lbl.setAlignment_(1)  # right
+            lbl.setBezeled_(False)
+            lbl.setDrawsBackground_(False)
+            lbl.setEditable_(False)
+            lbl.setTextColor_(NSColor.labelColor())
+            doc.addSubview_(lbl)
+
+        for section in self.SETTINGS_SECTIONS:
+            section_top = y
+            _section_label(section, section_top - 2)
+            if section == "Config file:":
+                y = self._render_config_file_row(doc, row_x, row_w, section_top)
+            elif section == "Servers:":
+                y = self._render_server_rows(
+                    doc, by_section.get(section, []), row_x, row_w, section_top)
+            else:
+                rows = by_section.get(section, [])
+                ry = section_top
+                for f in rows:
+                    ry = self._render_setting_row(doc, f, row_x, row_w, ry)
+                    ry -= ROW_GAP
+                y = ry
+            y -= SECTION_GAP
+
+        used = top - y
+        doc_h = used + 24
+        # Reposition all subviews so the content sits at the TOP of a doc that
+        # is exactly doc_h tall (subviews were placed against a 4000-tall doc).
+        shift = doc_h - 4000
+        for v in doc.subviews():
+            fr = v.frame()
+            v.setFrame_(NSMakeRect(fr.origin.x, fr.origin.y + shift,
+                                   fr.size.width, fr.size.height))
+        doc.setFrame_(NSMakeRect(0, 0, content_w, doc_h))
+
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(CONTENT_PAD, 0, content_w, col3_h - TOP_INSET))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
+        scroll.setDocumentView_(doc)
+        self._col3.addSubview_(scroll)
+        # Non-flipped doc: the top of the content sits at high y. Scroll the
+        # clip view there so the pane opens at the top, not the bottom.
+        try:
+            clip = scroll.contentView()
+            visible_h = clip.bounds().size.height
+            from Foundation import NSMakePoint  # type: ignore[import]
+            clip.scrollToPoint_(NSMakePoint(0, max(0, doc_h - visible_h)))
+            scroll.reflectScrolledClipView_(clip)
+        except Exception:
+            pass
+        self._settings_doc = doc
+
+    def _render_setting_row(self, doc, f, x, width, top) -> float:
+        """One checkbox row + an optional indented gray description. Returns the
+        y of the bottom of the row (next row's top)."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSButton,
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+        )
+        key = f["key"]
+        kind = f["kind"]
+        if kind == "segmented":
+            return self._render_logo_row(doc, f, x, width, top)
+        # switch -> checkbox.
+        cb_y = top - 20
+        cb = NSButton.alloc().initWithFrame_(NSMakeRect(x, cb_y, width, 20))
+        try:
+            cb.setButtonType_(3)  # NSButtonTypeSwitch
+        except Exception:
+            pass
+        cb.setTitle_(f["label"])
+        cb.setState_(1 if f.get("default") else 0)
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda sender, k=key: self._on_setting_toggle(k, bool(sender.state())))
+        self._handlers.append(handler)
+        cb.setTarget_(handler)
+        cb.setAction_("fire:")
+        doc.addSubview_(cb)
+        self._settings_widgets[key] = cb
+        self._settings_kinds[key] = "switch"
+        y = cb_y
+        desc = f.get("description")
+        if desc:
+            # Indented gray wrapped description under the checkbox.
+            indent = 20
+            d_h = 16
+            d = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(x + indent, cb_y - d_h - 1, width - indent, d_h))
+            d.setStringValue_(desc)
+            d.setFont_(NSFont.systemFontOfSize_(11))
+            d.setBezeled_(False)
+            d.setDrawsBackground_(False)
+            d.setEditable_(False)
+            d.setTextColor_(NSColor.tertiaryLabelColor())
+            try:
+                d.cell().setWraps_(True)
+                d.setFrameSize_(d.cell().cellSizeForBounds_(
+                    NSMakeRect(0, 0, width - indent, 999)))
+                d.setFrameOrigin_(NSMakeRect(
+                    x + indent, cb_y - d.frame().size.height - 1, 0, 0).origin)
+            except Exception:
+                pass
+            doc.addSubview_(d)
+            y = d.frame().origin.y
+        return y
+
+    def _render_logo_row(self, doc, f, x, width, top) -> float:
+        """Logo segmented control with live preview + instant persist."""
+        from AppKit import NSFont, NSSegmentedControl  # type: ignore[import]
+        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
+        key = f["key"]
+        lbl_y = top - 18
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(x, lbl_y, width, 16))
+        lbl.setStringValue_(f["label"])
+        lbl.setFont_(NSFont.systemFontOfSize_(12))
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setTextColor_(NSColor.labelColor())
+        doc.addSubview_(lbl)
+
+        options = f.get("options", [])
+        seg_y = lbl_y - 30
+        seg = NSSegmentedControl.alloc().initWithFrame_(
+            NSMakeRect(x, seg_y, min(width, 44 * max(1, len(options)) + 8), 26))
+        try:
+            seg.setSegmentCount_(len(options))
+        except Exception:
+            pass
+        for i, (title, img_path) in enumerate(options):
+            try:
+                if img_path:
+                    from AppKit import NSImage  # type: ignore[import]
+                    img = NSImage.alloc().initWithContentsOfFile_(img_path)
+                    if img is not None:
+                        img.setSize_(NSMakeRect(0, 0, 18, 18).size)
+                        seg.setImage_forSegment_(img, i)
+                if title:
+                    seg.setLabel_forSegment_(str(title), i)
+                seg.setWidth_forSegment_(40, i)
+            except Exception:
+                pass
+        default_idx = int(f.get("default") or 0)
+        try:
+            seg.setSelectedSegment_(default_idx)
+        except Exception:
+            pass
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda sender, k=key: self._on_setting_toggle(
+                k, int(sender.selectedSegment())))
+        self._handlers.append(handler)
+        seg.setTarget_(handler)
+        seg.setAction_("fire:")
+        doc.addSubview_(seg)
+        self._settings_widgets[key] = seg
+        self._settings_kinds[key] = "segmented"
+        return seg_y
+
+    def _render_server_rows(self, doc, fields, x, width, top) -> float:
+        """RPC / SSE / PAC port text fields ("auto" placeholder) + per-field
+        gray note, then one Apply button right-aligned under them."""
+        from AppKit import NSFont  # type: ignore[import]
+        from Cocoa import (  # type: ignore[import]
+            NSColor,
+            NSMakeRect,
+            NSTextField,
+        )
+        labels = {"rpc_port": "RPC", "sse_port": "SSE", "pac_port": "PAC"}
+        field_w = 110
+        sub_label_w = 46
+        y = top
+        for f in fields:
+            key = f["key"]
+            row_y = y - 24
+            sub = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(x, row_y + 3, sub_label_w, 18))
+            sub.setStringValue_(labels.get(key, key))
+            sub.setFont_(NSFont.systemFontOfSize_(12))
+            sub.setBezeled_(False)
+            sub.setDrawsBackground_(False)
+            sub.setEditable_(False)
+            sub.setTextColor_(NSColor.labelColor())
+            doc.addSubview_(sub)
+
+            tf = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(x + sub_label_w + 6, row_y, field_w, 22))
+            tf.setStringValue_(str(f.get("default") or ""))
+            tf.setFont_(NSFont.systemFontOfSize_(13))
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(True)
+            tf.setSelectable_(True)
+            tf.setTextColor_(_hex_color(PALETTE["input_text"]))
+            if f.get("placeholder"):
+                try:
+                    tf.cell().setPlaceholderString_(f["placeholder"])
+                except Exception:
+                    pass
+            self._style_input_field(tf)
+            doc.addSubview_(tf)
+            self._settings_widgets[key] = tf
+            self._settings_kinds[key] = "text"
+
+            note = f.get("note")
+            if note:
+                n = NSTextField.alloc().initWithFrame_(
+                    NSMakeRect(x + sub_label_w + 6 + field_w + 10, row_y + 3,
+                               width - (sub_label_w + 6 + field_w + 10), 16))
+                n.setStringValue_(note)
+                n.setFont_(NSFont.systemFontOfSize_(11))
+                n.setBezeled_(False)
+                n.setDrawsBackground_(False)
+                n.setEditable_(False)
+                n.setTextColor_(NSColor.tertiaryLabelColor())
+                doc.addSubview_(n)
+            y = row_y - 6
+
+        # Apply button right-aligned under the port fields.
+        from Cocoa import NSMakeRect as _R  # type: ignore[import]
+        btn_w = 84
+        btn_h = 28
+        btn_y = y - btn_h - 2
+        btn = self._styled_neutral_button(
+            "Apply", _R(x + width - btn_w, btn_y, btn_w, btn_h))
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s: self._on_apply_ports())
+        self._handlers.append(handler)
+        btn.setTarget_(handler)
+        btn.setAction_("fire:")
+        doc.addSubview_(btn)
+        return btn_y
+
+    def _render_config_file_row(self, doc, x, width, top) -> float:
+        """Config file row: a right-aligned "Open Config File…" button ONLY.
+        No explainer sentence (user tweak)."""
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        btn_w = 150
+        btn_h = 28
+        btn_y = top - btn_h
+        btn = self._styled_neutral_button(
+            "Open Config File…", NSMakeRect(x + width - btn_w, btn_y, btn_w, btn_h))
+        handler = _get_action_handler_cls().alloc().initWithCallback_(
+            lambda _s: self._dispatch("settings.open_config"))
+        self._handlers.append(handler)
+        btn.setTarget_(handler)
+        btn.setAction_("fire:")
+        doc.addSubview_(btn)
+        return btn_y
+
+    def _on_setting_toggle(self, key: str, value) -> None:
+        """Instant-apply one toggle/logo setting via the tray (runs the RPC on a
+        worker thread; tray flips the control back on error via revert_setting).
+        For logo_style, preview the icon locally before the persist."""
+        try:
+            self.tray.apply_setting_toggle(key, value)
+        except Exception:
+            pass
+
+    def _on_apply_ports(self) -> None:
+        rpc, sse, pac = self.collect_server_ports()
+        try:
+            self.tray.apply_server_ports(rpc, sse, pac)
+        except Exception:
+            pass
+
+    def collect_server_ports(self):
+        """(rpc, sse, pac) as strings from the live settings port fields."""
+        def _v(key):
+            w = self._settings_widgets.get(key)
+            if w is None:
+                return ""
+            try:
+                return str(w.stringValue() or "")
+            except Exception:
+                return ""
+        return _v("rpc_port"), _v("sse_port"), _v("pac_port")
+
+    def revert_setting(self, key: str) -> None:
+        """Flip a settings control back to the saved value after a failed
+        instant-apply (called by the tray on the main thread)."""
+        try:
+            fields, _ = self.tray.settings_field_specs()
+        except Exception:
+            return
+        spec = next((f for f in fields if f["key"] == key), None)
+        w = self._settings_widgets.get(key)
+        if spec is None or w is None:
+            return
+        kind = self._settings_kinds.get(key)
+        try:
+            if kind == "switch":
+                w.setState_(1 if spec.get("default") else 0)
+            elif kind == "segmented":
+                w.setSelectedSegment_(int(spec.get("default") or 0))
+            elif kind == "text":
+                w.setStringValue_(str(spec.get("default") or ""))
+        except Exception:
+            pass
+
+    def _settings_values(self) -> dict:
+        """Snapshot of the live settings controls for the debug dump."""
+        out: dict = {}
+        for key, w in self._settings_widgets.items():
+            kind = self._settings_kinds.get(key)
+            try:
+                if kind == "switch":
+                    out[key] = bool(w.state())
+                elif kind == "segmented":
+                    out[key] = int(w.selectedSegment())
+                elif kind == "text":
+                    out[key] = str(w.stringValue() or "")
+            except Exception:
+                out[key] = None
+        return out
+
+    def set_settings_field(self, key: str, value: str) -> dict:
+        """Debug: write a live settings control and instant-apply it (toggles/
+        logo) exactly as a user click would. Port fields are written without
+        applying (apply via `action settings.apply_ports`)."""
+        w = self._settings_widgets.get(key)
+        if w is None:
+            return {"error": f"no settings field '{key}'"}
+        kind = self._settings_kinds.get(key)
+        if kind == "switch":
+            on = value.strip().lower() in ("1", "on", "true", "yes")
+            w.setState_(1 if on else 0)
+            self._on_setting_toggle(key, on)
+            return {"ok": True, "key": key, "value": on}
+        if kind == "segmented":
+            try:
+                idx = int(value)
+            except ValueError:
+                return {"error": f"'{value}' is not a segment index"}
+            w.setSelectedSegment_(idx)
+            self._on_setting_toggle(key, idx)
+            return {"ok": True, "key": key, "value": idx}
+        # text (port): set only, apply via settings.apply_ports.
+        try:
+            w.setStringValue_(value)
+        except Exception:
+            return {"error": f"could not set '{key}'"}
+        return {"ok": True, "key": key, "value": value}
+
+    # ------------------------------------------------------------------ #
     # Debug surface
     # ------------------------------------------------------------------ #
 
@@ -2114,6 +2586,9 @@ class ConfigWindow:
             if self._detail_spec else None,
             "dirty": bool(self._dirty),
             "create_kind": self._create_kind,
+            "col2_hidden": bool(self._col2_hidden),
+            "settings": (self._settings_values()
+                         if self.category == "settings" else None),
             "fields": self._dump_fields(),
             # Cumulative auto-answered modal panels (debug mode) so tests can
             # assert no unexpected dialog fired.
@@ -2188,6 +2663,9 @@ class ConfigWindow:
         `path` is an alias for the form's single path-kind field (the share
         File / fetch Output) so tests can inject a path without the NSOpenPanel.
         """
+        # Settings pane has its own widget set (no dirty/edit machinery).
+        if self.category == "settings":
+            return self.set_settings_field(key, value)
         if key == "protocols":
             return self._set_protocols(value)
         if key == "path":

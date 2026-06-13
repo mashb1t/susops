@@ -2184,6 +2184,19 @@ class SusOpsMacTray(AbstractTrayApp):
             self.create_window_item(cw._create_kind, cw.collect_form_values())
             return
 
+        # Settings-pane actions carry no identity (col 2 is hidden). The
+        # ports/config-file actions read the live pane state from the window.
+        if action_id == "settings.apply_ports":
+            cw = getattr(self, "_config_window", None)
+            if cw is None:
+                return
+            rpc, sse, pac = cw.collect_server_ports()
+            self.apply_server_ports(rpc, sse, pac)
+            return
+        if action_id == "settings.open_config":
+            self.do_open_config_file()
+            return
+
         kind = identity[0] if identity else None
         if kind is None:
             return
@@ -3141,34 +3154,41 @@ class SusOpsMacTray(AbstractTrayApp):
         if defaults:
             base.update(defaults)
 
+        # The settings pane (mac_config_window) renders these grouped by
+        # `section`; toggles + logo + launch-at-login apply instantly, the
+        # three ports share one explicit Apply. `description` is the indented
+        # gray explainer under a checkbox (empty = no explainer row).
         fields = [
-            {"key": "launch_at_login", "label": "Launch at Login:", "kind": "switch",
-             "default": base["launch_at_login"]},
-            {"key": "stop_on_quit", "label": "Stop Proxy On Quit:", "kind": "switch",
-             "default": base["stop_on_quit"]},
-            {"key": "ephemeral_ports", "label": "Random SSH Ports On Start:", "kind": "switch",
-             "default": base["ephemeral_ports"]},
-            {"key": "restore_shares", "label": "Restore Shares On Start:", "kind": "switch",
-             "default": base["restore_shares"]},
-            {"key": "show_bandwidth", "label": "Show Bandwidth In Menu Bar:", "kind": "switch",
-             "default": base["show_bandwidth"],
+            {"key": "launch_at_login", "label": "Launch SusOps at login", "kind": "switch",
+             "default": base["launch_at_login"], "section": "General:"},
+            {"key": "stop_on_quit", "label": "Stop proxy on quit", "kind": "switch",
+             "default": base["stop_on_quit"], "section": "General:",
+             "description": "Skipped when another frontend is attached to the daemon."},
+            {"key": "ephemeral_ports", "label": "Random SSH ports on start", "kind": "switch",
+             "default": base["ephemeral_ports"], "section": "General:",
+             "description": "Pick a free SOCKS port each start instead of the saved one."},
+            {"key": "restore_shares", "label": "Restore shares on start", "kind": "switch",
+             "default": base["restore_shares"], "section": "General:"},
+            {"key": "show_bandwidth", "label": "Show bandwidth", "kind": "switch",
+             "default": base["show_bandwidth"], "section": "Menu bar:",
+             "description": "Show live throughput beside the menu-bar icon.",
              "on_change": self._preview_bandwidth_visibility},
-            {"key": "notifications", "label": "Desktop Notifications:", "kind": "switch",
-             "default": base["notifications"]},
-            {"key": "logo_style", "label": "Logo Style:", "kind": "segmented",
+            {"key": "notifications", "label": "Desktop notifications", "kind": "switch",
+             "default": base["notifications"], "section": "Menu bar:"},
+            {"key": "logo_style", "label": "Logo style", "kind": "segmented",
              "options": seg_options, "default": base["logo_style"],
-             "on_change": _preview},
+             "section": "Menu bar:", "on_change": _preview},
             # Server ports — RPC + SSE require a daemon restart to take
             # effect; PAC is hot-restarted by the facade.
-            {"key": "rpc_port", "label": "RPC Server Port:", "kind": "text",
-             "default": base["rpc_port"],
-             "hint": "auto (0) — restart daemon to apply"},
-            {"key": "sse_port", "label": "SSE Server Port:", "kind": "text",
-             "default": base["sse_port"],
-             "hint": "auto (0) — restart daemon to apply"},
-            {"key": "pac_port", "label": "PAC Server Port:", "kind": "text",
-             "default": base["pac_port"],
-             "hint": "auto (0)"},
+            {"key": "rpc_port", "label": "RPC port", "kind": "text",
+             "default": base["rpc_port"], "section": "Servers:",
+             "placeholder": "auto", "note": "restart daemon to apply"},
+            {"key": "sse_port", "label": "SSE port", "kind": "text",
+             "default": base["sse_port"], "section": "Servers:",
+             "placeholder": "auto", "note": "restart daemon to apply"},
+            {"key": "pac_port", "label": "PAC port", "kind": "text",
+             "default": base["pac_port"], "section": "Servers:",
+             "placeholder": "auto"},
         ]
         ctx = {
             "rpc_port": rpc_port,
@@ -3179,71 +3199,130 @@ class SusOpsMacTray(AbstractTrayApp):
         }
         return fields, ctx
 
-    def _apply_settings(self, result: dict, ctx: dict) -> tuple[str, str] | None:
-        """Validate + persist settings produced by _settings_fields.
+    # App-config field key (from _settings_fields) -> SusOpsApp field name.
+    # launch_at_login and logo_style are handled separately (login-item thread,
+    # LogoStyle resolution).
+    _TOGGLE_APP_CONFIG_KEYS = {
+        "stop_on_quit": "stop_on_quit",
+        "ephemeral_ports": "ephemeral_ports",
+        "restore_shares": "restore_shares_on_start",
+        "show_bandwidth": "tray_show_bandwidth",
+        "notifications": "notifications_enabled",
+    }
 
-        Returns an (error_title, error_message) tuple on validation failure
-        (caller shows it via _show_message and keeps the form open with edits),
-        or None on success. Mirrors the original modal validation + persist
-        exactly so the modal dialog and the gear pane never drift.
+    def _apply_setting_toggle(self, key: str, value) -> str | None:
+        """Apply ONE settings toggle instantly. Returns an error string on
+        failure (caller shows an alert + flips the control back), else None.
+
+        Single update_app_config kwarg for the boolean toggles; logo_style
+        resolves the segmented index back to a LogoStyle and repaints the icon;
+        launch_at_login keeps its osascript background thread (may block on a
+        first-run TCC prompt). No port validation here — ports go through
+        _apply_server_ports behind the explicit Apply button.
         """
-        rpc_port = ctx["rpc_port"]
-        sse_port = ctx["sse_port"]
-        pac_port = ctx["pac_port"]
-        logo_styles = ctx["logo_styles"]
-        saved_logo = ctx["saved_logo"]
+        try:
+            if key == "launch_at_login":
+                desired = bool(value)
+                self._launch_at_login_cached = desired  # optimistic
+                threading.Thread(
+                    target=lambda: _set_launch_at_login(desired),
+                    daemon=True,
+                    name="susops-loginitem-apply",
+                ).start()
+                return None
+            if key == "logo_style":
+                logo_styles = list(LogoStyle)
+                idx = int(value)
+                if not (0 <= idx < len(logo_styles)):
+                    return "Invalid logo style."
+                self.manager.update_app_config(logo_style=logo_styles[idx])
+                self.update_icon(self.state)
+                return None
+            field = self._TOGGLE_APP_CONFIG_KEYS.get(key)
+            if field is None:
+                return f"Unknown setting '{key}'."
+            self.manager.update_app_config(**{field: bool(value)})
+            return None
+        except Exception as exc:
+            return str(exc)
 
-        # Validate all three port fields. First failure returns its message;
-        # the caller re-shows the form so the user re-edits the offending
-        # value without losing their other edits.
+    def _apply_server_ports(self, rpc, sse, pac, ctx: dict) -> str | None:
+        """Validate + persist the three server ports behind the explicit Apply.
+        Returns an error string on validation failure (caller shows an alert),
+        else None. Port validation is verbatim from the old all-at-once path.
+        """
+        current = {
+            "RPC": ctx.get("rpc_port", 0),
+            "SSE": ctx.get("sse_port", 0),
+            "PAC": ctx.get("pac_port", 0),
+        }
         port_ints: dict[str, int] = {}
-        port_specs = [
-            ("rpc_port", "RPC", rpc_port),
-            ("sse_port", "SSE", sse_port),
-            ("pac_port", "PAC", pac_port),
-        ]
-        for key, label, current in port_specs:
-            raw = (result.get(key) or "").strip() or "0"
+        for label, raw in (("RPC", rpc), ("SSE", sse), ("PAC", pac)):
+            raw = (str(raw or "")).strip() or "0"
             try:
                 n = int(raw)
             except ValueError:
-                return ("Invalid Port", f"'{raw}' is not a valid {label} port.")
+                return f"'{raw}' is not a valid {label} port."
             if not validate_port(n, allow_zero=True):
-                return ("Invalid Port",
-                        f"{label} port must be 0 (auto) or between 1 and 65535.")
-            if n != 0 and n != current and not is_port_free(n):
-                return ("Port In Use", f"Port {n} is already in use.")
-            port_ints[key] = n
-
-        new_logo = logo_styles[result["logo_style"]] if 0 <= result["logo_style"] < len(logo_styles) else saved_logo
-
-        self.manager.update_app_config(
-            stop_on_quit=result["stop_on_quit"],
-            ephemeral_ports=result["ephemeral_ports"],
-            restore_shares_on_start=result["restore_shares"],
-            tray_show_bandwidth=result["show_bandwidth"],
-            notifications_enabled=result["notifications"],
-            logo_style=new_logo,
-        )
-        # No refresh_bandwidth_title() here: preview already left the
-        # menu bar in its final state. Re-running update_title rebuilds
-        # the subview frame and momentarily nudges the icon size.
-        self.manager.update_config(
-            rpc_server_port=port_ints["rpc_port"],
-            status_server_port=port_ints["sse_port"],
-            pac_server_port=port_ints["pac_port"],
-        )
-        # Apply Launch at Login off the main thread — osascript may block
-        # for several seconds the first time (TCC prompt).
-        desired_login = bool(result["launch_at_login"])
-        self._launch_at_login_cached = desired_login  # optimistic update
-        threading.Thread(
-            target=lambda: _set_launch_at_login(desired_login),
-            daemon=True,
-            name="susops-loginitem-apply",
-        ).start()
-        self.update_icon(self.state)
+                return f"{label} port must be 0 (auto) or between 1 and 65535."
+            if n != 0 and n != current[label] and not is_port_free(n):
+                return f"Port {n} is already in use ({label})."
+            port_ints[label] = n
+        try:
+            self.manager.update_config(
+                rpc_server_port=port_ints["RPC"],
+                status_server_port=port_ints["SSE"],
+                pac_server_port=port_ints["PAC"],
+            )
+        except Exception as exc:
+            return str(exc)
         return None
+
+    # ------------------------------------------------------------------ #
+    # Settings pane hooks (called by mac_config_window). The pane renders
+    # the field specs; these wrappers own validation + persistence so the
+    # single-source-of-truth rule stays (spec + validation in mac.py).
+    # ------------------------------------------------------------------ #
+
+    def settings_field_specs(self) -> tuple[list[dict], dict]:
+        """(fields, ctx) for the settings pane. Re-reads current config so the
+        pane always opens with live values."""
+        return self._settings_fields()
+
+    def apply_setting_toggle(self, key: str, value) -> None:
+        """Instant-apply a single toggle/logo/login setting from the settings
+        pane. update_app_config is an RPC, so it runs on a worker thread; on
+        error we alert and flip the control back to its prior state on the main
+        thread. launch_at_login already runs its own background thread inside
+        _apply_setting_toggle and returns immediately."""
+        def _work():
+            return self._apply_setting_toggle(key, value)
+
+        def _done(err):
+            if err:
+                self.show_alert("Could Not Apply Setting", err)
+                cw = getattr(self, "_config_window", None)
+                if cw is not None:
+                    cw.revert_setting(key)
+        self.run_in_background(_work, _done)
+
+    def apply_server_ports(self, rpc, sse, pac) -> None:
+        """Apply the three server ports behind the Settings Apply button. Runs
+        the validation + update_config on a worker thread; alerts on error and
+        re-renders the pane on success so the fields reflect the saved values."""
+        _, ctx = self._settings_fields()
+
+        def _work():
+            return self._apply_server_ports(rpc, sse, pac, ctx)
+
+        def _done(err):
+            if err:
+                self.show_alert("Could Not Apply Ports", err)
+            else:
+                cw = getattr(self, "_config_window", None)
+                if cw is not None:
+                    cw.refresh()
+        self.run_in_background(_work, _done)
 
     # ------------------------------------------------------------------ #
     # Add dialogs
