@@ -426,7 +426,8 @@ SEARCH_H = 30
 ADDBAR_H = 40
 ROW_PILL_INSET_X = 12   # left/right margin for nav/list rows and selection pill
 ROW_TEXT_RIGHT_PAD = 24  # extra right breathing room before row edge
-NAV_COUNT_RIGHT_INSET = 47  # nav count label right inset within row pill
+NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
+NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X  # match count inset to icon inset
 DEBUG_ROW_BOUNDS = True  # temporary visual aid: draw row pills in red
 
 # Column-3 content is constrained to a fixed-width column anchored top-left,
@@ -1149,7 +1150,7 @@ class ConfigWindow:
         cell_w = max(40, row_w - 2 * cell_x)
         cell = NSView.alloc().initWithFrame_(NSMakeRect(cell_x, 0, cell_w, 30))
         self._style_debug_row_cell(cell)
-        x = 8
+        x = NAV_ICON_INSET_X
         if item.icon:
             img = self._sf_symbol(item.icon)
             if img is not None:
