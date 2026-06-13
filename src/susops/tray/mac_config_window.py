@@ -55,15 +55,30 @@ def _make_vcenter_cell_cls(base_cell_cls):
     import objc  # type: ignore[import]
 
     class _SusOpsVCenterCell(base_cell_cls):
+        def _baseTitleRect_(self, frame):
+            try:
+                rect = objc.super(_SusOpsVCenterCell, self).titleRectForBounds_(
+                    frame)
+            except Exception:
+                rect = objc.super(_SusOpsVCenterCell, self).drawingRectForBounds_(
+                    frame)
+            return rect
+
         def _centeredRect_(self, frame):
-            rect = objc.super(_SusOpsVCenterCell, self).drawingRectForBounds_(
-                frame)
+            rect = self._baseTitleRect_(frame)
             delta = max(0.0, (frame.size.height - rect.size.height) / 2.0)
             rect.origin.y += delta
             return rect
 
+        def titleRectForBounds_(self, frame):
+            return self._centeredRect_(frame)
+
         def drawingRectForBounds_(self, frame):
             return self._centeredRect_(frame)
+
+        def drawInteriorWithFrame_inView_(self, frame, view):
+            objc.super(_SusOpsVCenterCell, self).drawInteriorWithFrame_inView_(
+                self._centeredRect_(frame), view)
 
         def selectWithFrame_inView_editor_delegate_start_length_(
             self, frame, view, editor, delegate, start, length
