@@ -127,12 +127,12 @@ def _get_vcenter_text_cell_cls():
 
 def _truncate_tail(field) -> None:
     """Single-line + truncate an NSTextField so overflow shows an ellipsis
-    instead of a raw hard cut at the field edge. NSLineBreakByTruncatingTail = 4
+    instead of a raw hard cut at the field edge. NSLineBreakByTruncatingMiddle = 5
     (a label-style cell still draws the ellipsis mid-string, but never a raw
     cut). Call after the field's string/font/color are set."""
     try:
         field.setUsesSingleLineMode_(True)
-        field.cell().setLineBreakMode_(4)
+        field.cell().setLineBreakMode_(5)
     except Exception:
         pass
 
