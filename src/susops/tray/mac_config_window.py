@@ -231,21 +231,23 @@ def _get_row_view_cls():
                 return
             b = self.bounds()
             inset_y = 2.0
-            if getattr(self, "susopsRole", "list") == "nav":
-                # macOS System Settings look: the nav pill floats with an EQUAL
-                # comfortable margin on both sides, fully rounded corners.
-                inset_left = 9.0
-                inset_right = 9.0
-                radius = 7.0
-            else:
-                # col-2 list: left inset clears the column edge; the larger right
-                # inset keeps the pill's right rounded corner clear of the
-                # vertical scroller gutter (~15px) so it is never clipped.
-                inset_left = 4.0
-                inset_right = 16.0
-                radius = 6.0
-            r = NSMakeRect(b.origin.x + inset_left, b.origin.y + inset_y,
-                           b.size.width - (inset_left + inset_right),
+            inset = 9.0  # equal floating margin both sides (macOS System Settings)
+            radius = 7.0 if getattr(self, "susopsRole", "list") == "nav" else 6.0
+            # The table view can be wider than its visible column (the row view
+            # overflows the clip), which would push the pill's right edge under
+            # the next column and make it look flush. Clamp the pill to the
+            # visible clip width so it floats with an equal margin both sides.
+            width = b.size.width
+            try:
+                sv = self.enclosingScrollView()
+                if sv is not None:
+                    cw = sv.contentView().bounds().size.width
+                    if cw > 0:
+                        width = cw
+            except Exception:
+                pass
+            r = NSMakeRect(b.origin.x + inset, b.origin.y + inset_y,
+                           width - 2 * inset,
                            b.size.height - 2 * inset_y)
             try:
                 accent = NSColor.controlAccentColor()
@@ -634,6 +636,13 @@ class ConfigWindow:
         scroll.setDrawsBackground_(False)
         scroll.setHasVerticalScroller_(True)
         scroll.setAutohidesScrollers_(True)
+        # Overlay scrollers float over content and reserve no gutter, so the
+        # selection pill can float with an equal margin on both sides (matching
+        # the nav) instead of insetting extra on the right for a legacy scrollbar.
+        try:
+            scroll.setScrollerStyle_(1)  # NSScrollerStyleOverlay
+        except Exception:
+            pass
         scroll.setDocumentView_(tv)
         scroll.setAutoresizingMask_(2 | 16)
         col2.addSubview_(scroll)
