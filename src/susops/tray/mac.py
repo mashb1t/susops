@@ -624,6 +624,22 @@ def _show_message_panel(
         pass
 
     content = panel.contentView()
+    # ponytail: match the dark config window. Pin DarkAqua so the chrome +
+    # system buttons render dark, and paint the body the window background
+    # color (mirrors PALETTE["window"] #17181c in mac_config_window).
+    try:
+        from AppKit import (  # type: ignore[import]
+            NSAppearance,
+            NSAppearanceNameDarkAqua,
+            NSColor,
+        )
+        panel.setAppearance_(NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua))
+        content.setWantsLayer_(True)
+        content.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0x17 / 255.0, 0x18 / 255.0, 0x1C / 255.0, 1.0).CGColor())
+    except Exception:
+        pass
     handlers: list = []
 
     # Message body. Multi-line messages need monospaced text so column-
