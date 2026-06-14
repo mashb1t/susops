@@ -508,6 +508,43 @@ _DEBUG_ALERTS: list[dict] = []         # [{"title": ..., "answered": label}]
 _DEBUG_CONFIRM_QUEUE: list[str] = []   # queued "ok"/"cancel" for next confirms
 
 
+def _style_dialog_button(btn, *, accent: bool) -> None:
+    """ponytail: mirror the config window's button look (mac_config_window
+    _styled_save_button / _styled_neutral_button) on a dialog button. accent =
+    filled blue + white title (default action), else dark fill + border."""
+    from Cocoa import (  # type: ignore[import]
+        NSAttributedString,
+        NSColor,
+        NSForegroundColorAttributeName,
+    )
+
+    def _hex(h):
+        return NSColor.colorWithSRGBRed_green_blue_alpha_(
+            int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0,
+            int(h[4:6], 16) / 255.0, 1.0)
+
+    btn.setBordered_(False)
+    try:
+        btn.setWantsLayer_(True)
+        btn.layer().setCornerRadius_(6.0)
+        if accent:
+            try:
+                fill = NSColor.controlAccentColor()
+            except Exception:
+                fill = _hex("0a84ff")
+            btn.layer().setBackgroundColor_(fill.CGColor())
+            title_color = NSColor.whiteColor()
+        else:
+            btn.layer().setBackgroundColor_(_hex("2a2b31").CGColor())
+            btn.layer().setBorderWidth_(1.0)
+            btn.layer().setBorderColor_(_hex("3f4147").CGColor())
+            title_color = _hex("e8e9ed")
+        btn.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(
+            btn.title(), {NSForegroundColorAttributeName: title_color}))
+    except Exception:
+        pass
+
+
 def _show_message_panel(
         title: str,
         message: str,
@@ -721,10 +758,10 @@ def _show_message_panel(
         x = x_right - w
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(x, PAD_BOTTOM, w, BUTTON_H))
         btn.setTitle_(label)
-        btn.setBezelStyle_(1)
         btn.setTag_(int(code))
         btn.setTarget_(button_handler)
         btn.setAction_("buttonClicked:")
+        _style_dialog_button(btn, accent=(idx == default_index))
         if idx == default_index:
             btn.setKeyEquivalent_("\r")  # Enter
         if idx == cancel_index and idx != default_index:
