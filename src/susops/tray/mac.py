@@ -612,7 +612,6 @@ def _show_message_panel(
     BUTTON_H = 30
     BUTTON_MIN_W = 80
     BUTTON_GAP = 10
-    MSG_W = 360
     # Hard cap on the body height — beyond this we wrap the content in an
     # NSScrollView so the panel stays usable even for log dumps with hundreds
     # of lines.
@@ -621,13 +620,23 @@ def _show_message_panel(
     # text doesn't have to wrap as aggressively.
     MSG_W_WIDE = 640
 
-    # Rough message height estimate (good enough — NSTextField will wrap).
-    line_count = message.count("\n") + 1
-    longest = max((len(line) for line in message.split("\n")), default=0)
-    use_wide = longest > 56
-    msg_w_target = MSG_W_WIDE if use_wide else MSG_W
-    wraps_per_long_line = max(0, longest // (96 if use_wide else 56))
-    msg_h_natural = max(36, (line_count + wraps_per_long_line) * 18 + 10)
+    # Measure the message's natural width so the panel fits the text (no dead
+    # space to the right of a short message), capped at MSG_W_WIDE.
+    import math
+    from AppKit import NSFont, NSFontAttributeName  # type: ignore[import]
+    from Foundation import NSAttributedString  # type: ignore[import]
+    use_mono = "\n" in (message or "")
+    font = (NSFont.monospacedSystemFontOfSize_weight_(12, 0.0) if use_mono
+            else NSFont.systemFontOfSize_(13))
+    lines = (message or "").split("\n")
+    line_ws = [float(NSAttributedString.alloc().initWithString_attributes_(
+        ln, {NSFontAttributeName: font}).size().width) for ln in lines]
+    natural = max(line_ws, default=0.0)
+    # No fixed floor: content_w below still keeps the panel at least as wide as
+    # the buttons, so a short message fits snugly with no dead space.
+    msg_w_target = min(MSG_W_WIDE, max(120, int(natural) + 8))
+    wrap_lines = sum(max(1, math.ceil(w / msg_w_target)) for w in line_ws) or 1
+    msg_h_natural = max(36, wrap_lines * 18 + 10)
     scrollable = msg_h_natural > MSG_H_MAX
     msg_h = min(msg_h_natural, MSG_H_MAX)
 
