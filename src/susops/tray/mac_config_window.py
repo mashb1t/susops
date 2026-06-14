@@ -530,6 +530,10 @@ def _get_row_view_cls():
                 r, radius, radius
             )
             path.fill()
+            # Keep a subtle always-on red outline around selection for visibility.
+            _hex_color("ff0000", 0.28).set()
+            path.setLineWidth_(1.0)
+            path.stroke()
 
     _row_view_cls = _SusOpsRowView
     return _SusOpsRowView
@@ -2881,8 +2885,8 @@ class ConfigWindow:
         # doc height is trimmed at the end and the scroll view scrolled to top.
         top = 4000 - 12
         y = top
-        SECTION_GAP = 18
-        ROW_GAP = 10
+        SECTION_GAP = 20
+        ROW_GAP = 20
 
         def _section_label(title, sy):
             lbl = NSTextField.alloc().initWithFrame_(
@@ -2928,9 +2932,9 @@ class ConfigWindow:
         # keep it centered as the window resizes. A small top inset below the
         # transparent titlebar avoids a large gap above "General:".
         scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
-        # Extra top breathing room so "General:" sits comfortably below the
-        # titlebar rather than being clipped against the top edge.
-        scroll_top_inset = TOP_INSET + 24
+        # Align the first row ("General") with the nav's first row ("Connections")
+        # by starting at the same top inset the nav uses.
+        scroll_top_inset = SIDEBAR_TOP_INSET
         avail_h = col3_h - scroll_top_inset
         # Pin the form to the TOP: when the content is shorter than the available
         # height, size the scroll to the content and place it at the top edge so
