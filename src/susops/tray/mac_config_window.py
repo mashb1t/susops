@@ -540,10 +540,10 @@ def _get_row_view_cls():
 
 
 # ---- geometry ----
-WIN_W = 1024
-WIN_H = 640
-MIN_W = 1024
-MIN_H = 640
+WIN_W = 900
+WIN_H = 545
+MIN_W = 900
+MIN_H = 545
 COL1_W = 180
 COL2_W = 270
 TOP_INSET = 45          # traffic lights overlay col 1; start content below them
@@ -2153,12 +2153,14 @@ class ConfigWindow:
         fill the row width."""
         fields = row["fields"]
         if len(fields) == 2:
-            # addr + port side by side.
+            # addr + port side by side, fitted to value_w: port fixed, addr
+            # fills the remainder so the pair never overflows the card.
             addr_f, port_f = fields
-            addr_w = 190
-            port_w = 110
+            gap = 10
+            port_w = 96
+            addr_w = max(80, value_w - port_w - gap)
             self._make_control(card, addr_f, value_x, ry, addr_w)
-            self._make_control(card, port_f, value_x + addr_w + 10, ry, port_w)
+            self._make_control(card, port_f, value_x + addr_w + gap, ry, port_w)
         else:
             self._make_control(card, fields[0], value_x, ry, value_w)
 
@@ -2886,7 +2888,7 @@ class ConfigWindow:
         top = 4000 - 12
         y = top
         SECTION_GAP = 20
-        ROW_GAP = 20
+        ROW_GAP = 10
 
         def _section_label(title, sy):
             lbl = NSTextField.alloc().initWithFrame_(
