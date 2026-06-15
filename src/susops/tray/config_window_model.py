@@ -119,7 +119,7 @@ def _conn_status_text(conn, status) -> str:
     if label == "partially running":
         # master process is up (pid) but its ControlMaster/SOCKS socket isn't
         # ready yet — almost always waiting for the SSH agent prompt.
-        return f"partially running · waiting for SSH agent{pid_suffix}"
+        return f"waiting for SSH agent{pid_suffix}"
     if label == "error":
         # not running, but the reconnect monitor still wants it up: a previous
         # attempt failed (bad key, host down, ...) and we're between retries.

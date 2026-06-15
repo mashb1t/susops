@@ -394,7 +394,7 @@ def test_connection_detail_running_socket_pending_is_partial():
                                    _status("work", running=True, pending=True,
                                            pid=4711))
     assert spec.status_dot == "amber"
-    assert spec.status_text == "partially running · waiting for SSH agent · pid 4711"
+    assert spec.status_text == "waiting for SSH agent · pid 4711"
 
 
 def test_connection_detail_socks_port_fallback():
