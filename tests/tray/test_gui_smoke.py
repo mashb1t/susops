@@ -44,6 +44,17 @@ def test_ping_and_dump_menu(tray_proc):
     assert "Quit" in titles
 
 
+def test_logs_window_is_singleton(tray_proc):
+    """Opening the logs window twice must reuse the one global window, not
+    spawn a second."""
+    r1 = tray_proc.send("logs")
+    assert r1.get("ok"), r1
+    assert r1["count"] == 1
+    r2 = tray_proc.send("logs")
+    assert r2.get("ok"), r2
+    assert r2["count"] == 1
+
+
 def test_screenshot_of_about_panel(tray_proc, tmp_path):
     assert tray_proc.send("open-about").get("ok")
     out = tmp_path / "about.png"

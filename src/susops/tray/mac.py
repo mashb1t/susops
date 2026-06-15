@@ -903,7 +903,27 @@ def _open_live_text_window(title: str, get_text: Callable[[], str],
     `get_text` is called on the main thread by an NSTimer every interval_ms;
     if the result changed since the last tick the NSTextView is updated and
     scrolled to the bottom.
+
+    Only one live window exists globally: teardown pops its _LIVE_WINDOWS entry
+    on close, so a non-empty registry means one is already open — reuse it
+    (raise + refocus) instead of spawning a second.
     """
+    if _LIVE_WINDOWS:
+        entry = next(iter(_LIVE_WINDOWS.values()))
+        panel = entry["panel"]
+        panel.setTitle_(title or "Logs")
+        panel.makeKeyAndOrderFront_(None)
+        try:
+            panel.orderFrontRegardless()
+        except Exception:
+            pass
+        try:
+            from AppKit import NSApplication  # type: ignore[import]
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+        return
+
     from AppKit import (  # type: ignore[import]
         NSApplication,
         NSBackingStoreBuffered,
@@ -1687,6 +1707,13 @@ class SusOpsMacTray(AbstractTrayApp):
             _on_main(lambda: self._on_state_change_safe(st))
             return {"ok": True, "state": st.value}
 
+        def _logs(args):
+            """Open the live logs window and report how many live windows exist
+            (asserts the global singleton — a second call must reuse, not spawn)."""
+            return _run_on_main(
+                lambda: (_open_live_text_window("Logs", lambda: "log line", 1000),
+                         {"ok": True, "count": len(_LIVE_WINDOWS)})[1])
+
         return {
             "ping": lambda args: {"ok": True},
             "dump-menu": lambda args: _run_on_main(
@@ -1714,6 +1741,7 @@ class SusOpsMacTray(AbstractTrayApp):
                     float(args[0])))
                 if args else {"error": "usage: set-col2-width <w>"}),
             "set-state": _set_state,
+            "logs": _logs,
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
             "set-field": lambda args: (_run_on_main(
