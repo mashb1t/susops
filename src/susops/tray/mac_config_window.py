@@ -51,15 +51,37 @@ _padded_secure_cell_cls = None
 _padded_plain_pw_cell_cls = None
 _bandwidth_view_cls = None
 
+BW_DOWN_HEX = "5dcaa5"  # download sparkline + rate (teal)
+BW_UP_HEX = "ef9f27"    # upload sparkline + rate (amber)
+
+
+def _fmt_rate(bps: float) -> str:
+    if bps >= 1048576:
+        return f"{bps / 1048576:.1f} MB/s"
+    if bps >= 1024:
+        return f"{bps / 1024:.0f} kB/s"
+    return f"{bps:.0f} B/s"
+
+
+def _fmt_size(b: float) -> str:
+    if b >= 1073741824:
+        return f"{b / 1073741824:.1f} GB"
+    if b >= 1048576:
+        return f"{b / 1048576:.1f} MB"
+    if b >= 1024:
+        return f"{b / 1024:.0f} kB"
+    return f"{b:.0f} B"
+
 
 def _get_bandwidth_view_cls():
     """Cached NSView subclass that plots a connection's bandwidth history as
-    two filled sparklines (download teal, upload amber) over a baseline, with a
-    live ↓/↑ rate readout. Reads two Python ivars set by the window:
+    two filled sparklines (download teal, upload amber) over a baseline. The
+    current rate + totals readout lives in the card header (set by the window),
+    not here. Reads two Python ivars set by the window:
       _samples  list of [rx_bps, tx_bps], oldest → newest
-      _running  bool — drives the readout (live rates vs "stopped")
-    The plot itself renders whenever there are ≥2 samples, running or not, so a
-    stopped connection still shows its frozen last history."""
+      _running  bool — only picks the empty-state text (measuring vs no data)
+    The plot renders whenever there are ≥2 samples, running or not, so a stopped
+    connection still shows its frozen last history."""
     global _bandwidth_view_cls
     if _bandwidth_view_cls is not None:
         return _bandwidth_view_cls
@@ -69,15 +91,8 @@ def _get_bandwidth_view_cls():
     )
     from Foundation import NSMakePoint, NSString  # type: ignore[import]
 
-    RX = _hex_color("5dcaa5")
-    TX = _hex_color("ef9f27")
-
-    def _fmt_bps(v):
-        if v >= 1048576:
-            return f"{v / 1048576:.1f} MB/s"
-        if v >= 1024:
-            return f"{v / 1024:.0f} kB/s"
-        return f"{v:.0f} B/s"
+    RX = _hex_color(BW_DOWN_HEX)
+    TX = _hex_color(BW_UP_HEX)
 
     def _draw(s, point, attrs):
         NSString.stringWithString_(s).drawAtPoint_withAttributes_(point, attrs)
@@ -108,18 +123,10 @@ def _get_bandwidth_view_cls():
             samples = [s for s in (self._samples or []) if len(s) >= 2]
             rx = [float(s[0]) for s in samples]
             tx = [float(s[1]) for s in samples]
-            font = NSFont.systemFontOfSize_(11)
-            a_rx = {NSFontAttributeName: font, NSForegroundColorAttributeName: RX}
-            a_tx = {NSFontAttributeName: font, NSForegroundColorAttributeName: TX}
-            a_dim = {NSFontAttributeName: font,
-                     NSForegroundColorAttributeName: NSColor.tertiaryLabelColor()}
-            if self._running and rx:
-                _draw("↓ " + _fmt_bps(rx[-1]), NSMakePoint(0, h - 16), a_rx)
-                _draw("↑ " + _fmt_bps(tx[-1]), NSMakePoint(120, h - 16), a_tx)
-            else:
-                _draw("stopped", NSMakePoint(0, h - 16), a_dim)
-
             if len(rx) < 2:
+                font = NSFont.systemFontOfSize_(11)
+                a_dim = {NSFontAttributeName: font,
+                         NSForegroundColorAttributeName: NSColor.tertiaryLabelColor()}
                 msg = "measuring…" if self._running else "no bandwidth data"
                 _draw(msg, NSMakePoint(0, base_y + (top_y - base_y) / 2 - 6), a_dim)
                 return
@@ -801,6 +808,7 @@ class ConfigWindow:
         self._pending_category = None  # category requested via open() pre-load
         self._detail_spec = None       # last DetailSpec rendered in col 3
         self._bw_chart_view = None     # connection bandwidth chart (1s repaint)
+        self._bw_stats_label = None    # header current-rate + totals readout
         # --- editing / dirty tracking ---
         self._dirty = False
         self._field_widgets: dict = {}   # field key -> widget (live col-3 form)
@@ -2184,6 +2192,7 @@ class ConfigWindow:
         self._settings_kinds = {}
         self._settings_status_label = None
         self._bw_chart_view = None
+        self._bw_stats_label = None
 
     def _set_settings_save_feedback(self, message: str = "", *, is_error: bool = False) -> None:
         """Update the settings Save feedback state and repaint the inline label
@@ -2328,19 +2337,21 @@ class ConfigWindow:
         card_top = status_y - 16
         card = self._render_field_card(spec, container, cw, card_top)
 
-        # --- Action row below the card ---
+        # --- Bandwidth row + action row below the card ---
         card_bottom = card.frame().origin.y
-        action_bottom = self._render_action_row(spec, container, cw,
-                                                 card_bottom - 14)
+        action_top = card_bottom - 14
 
-        # --- Bandwidth chart (connection detail only, never mid-create) ---
+        # Bandwidth chart (connection detail only, never mid-create) now sits
+        # above the action row.
         ident = self.selected_identity
         if self._create_kind is None and ident and ident[0] == "connection":
-            top = (action_bottom if action_bottom is not None
-                   else card_bottom - 44) - 16
-            self._render_bandwidth_card(container, cw, top, ident[1])
+            bw_top = card_bottom - 14
+            bw_bottom = self._render_bandwidth_card(container, cw, bw_top, ident[1])
+            action_top = bw_bottom - 16
 
-    def _render_bandwidth_card(self, container, cw, top_y, tag) -> None:
+        self._render_action_row(spec, container, cw, action_top)
+
+    def _render_bandwidth_card(self, container, cw, top_y, tag) -> float:
         """Card below the action row plotting the connection's live bandwidth.
         Stores the chart view on self._bw_chart_view so the 1s tray timer can
         repaint it via tick_bandwidth()."""
@@ -2359,8 +2370,9 @@ class ConfigWindow:
             pass
         container.addSubview_(card)
 
+        header_y = card_h - CARD_PAD_Y - 16
         title = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(CARD_PAD_X, card_h - CARD_PAD_Y - 16, 200, 16))
+            NSMakeRect(CARD_PAD_X, header_y, 90, 16))
         title.setStringValue_("Bandwidth")
         title.setFont_(NSFont.systemFontOfSize_(11))
         title.setBezeled_(False)
@@ -2369,26 +2381,78 @@ class ConfigWindow:
         title.setTextColor_(NSColor.secondaryLabelColor())
         card.addSubview_(title)
 
+        # Current rate + totals readout, right-aligned next to the title.
+        stats = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(CARD_PAD_X + 90, header_y,
+                       cw - 2 * CARD_PAD_X - 90, 16))
+        stats.setAlignment_(1)  # right
+        stats.setFont_(NSFont.systemFontOfSize_(11))
+        stats.setBezeled_(False)
+        stats.setDrawsBackground_(False)
+        stats.setEditable_(False)
+        card.addSubview_(stats)
+        self._bw_stats_label = stats
+
         chart_h = card_h - CARD_PAD_Y - 22 - CARD_PAD_Y
         chart = _get_bandwidth_view_cls().alloc().initWithFrame_(
             NSMakeRect(CARD_PAD_X, CARD_PAD_Y, cw - 2 * CARD_PAD_X, chart_h))
         card.addSubview_(chart)
         self._bw_chart_view = chart
         self._update_bw_chart(tag)
+        return card.frame().origin.y
 
     def _update_bw_chart(self, tag) -> None:
         view = getattr(self, "_bw_chart_view", None)
         if view is None:
             return
+        mgr = self.tray.manager
         try:
-            hist = list(self.tray.manager.get_bandwidth_history(tag) or [])
+            hist = list(mgr.get_bandwidth_history(tag) or [])
         except Exception:
             hist = []
         st = next((s for s in self._statuses
                    if getattr(s, "tag", None) == tag), None)
+        running = bool(getattr(st, "running", False))
         view._samples = hist
-        view._running = bool(getattr(st, "running", False))
+        view._running = running
         view.setNeedsDisplay_(True)
+        if running and hist:
+            rx, tx = float(hist[-1][0]), float(hist[-1][1])
+            try:
+                trx, ttx = mgr.get_bandwidth_totals(tag)
+            except Exception:
+                trx, ttx = 0.0, 0.0
+            self._set_bw_stats(rx, tx, float(trx), float(ttx), True)
+        else:
+            self._set_bw_stats(0.0, 0.0, 0.0, 0.0, False)
+
+    def _set_bw_stats(self, rx, tx, rx_total, tx_total, running) -> None:
+        """Header readout next to 'Bandwidth': current ↓/↑ rate (colored) +
+        cumulative totals (dim), or 'stopped' when the connection is down."""
+        lbl = getattr(self, "_bw_stats_label", None)
+        if lbl is None:
+            return
+        from AppKit import (  # type: ignore[import]
+            NSAttributedString, NSColor, NSFont, NSFontAttributeName,
+            NSForegroundColorAttributeName, NSMutableAttributedString,
+        )
+        font = NSFont.systemFontOfSize_(11)
+        attr = NSMutableAttributedString.alloc().init()
+
+        def _run(s, color):
+            attr.appendAttributedString_(
+                NSAttributedString.alloc().initWithString_attributes_(
+                    s, {NSFontAttributeName: font,
+                        NSForegroundColorAttributeName: color}))
+
+        if running:
+            _run("↓ " + _fmt_rate(rx), _hex_color(BW_DOWN_HEX))
+            _run("   ↑ " + _fmt_rate(tx), _hex_color(BW_UP_HEX))
+            _run("      total " + _fmt_size(rx_total) + " / "
+                 + _fmt_size(tx_total), NSColor.tertiaryLabelColor())
+        else:
+            _run("stopped", NSColor.tertiaryLabelColor())
+        lbl.setAttributedStringValue_(attr)
 
     def tick_bandwidth(self) -> None:
         """Repaint the per-connection bandwidth chart from live history. Called

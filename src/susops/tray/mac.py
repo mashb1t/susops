@@ -1727,12 +1727,15 @@ class SusOpsMacTray(AbstractTrayApp):
                 if view is None:
                     return {"error": "no bandwidth chart (select a connection)"}
                 import math
-                view._samples = [[200000 + 150000 * math.sin(i / 4.0),
-                                  80000 + 40000 * math.sin(i / 3.0)]
-                                 for i in range(n)]
+                series = [[200000 + 150000 * math.sin(i / 4.0),
+                           80000 + 40000 * math.sin(i / 3.0)] for i in range(n)]
+                view._samples = series
                 view._running = True
                 view.setNeedsDisplay_(True)
-                return {"ok": True, "samples": len(view._samples)}
+                rx, tx = series[-1]
+                cw._set_bw_stats(rx, tx, sum(s[0] for s in series),
+                                 sum(s[1] for s in series), True)
+                return {"ok": True, "samples": len(series)}
             return _run_on_main(_do)
 
         def _bw_dump(args):
