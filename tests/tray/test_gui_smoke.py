@@ -191,6 +191,31 @@ def test_connection_detail_renders(tray_proc):
     assert "conn.remove" in dump["detail_actions"]
 
 
+def test_bandwidth_chart_renders_for_connection(tray_proc):
+    """A connection detail shows a bandwidth chart. The real repaint (RPC fetch)
+    runs clean on an idle daemon, and the AppKit draw path accepts samples."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+    assert tray_proc.send("open-config connections").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and any(
+            n["key"] == "connections" and n["count"] == 1
+            for n in d.get("nav", [])),
+    )
+    assert tray_proc.send("select connections 0").get("ok")
+    # Real fetch path: idle daemon has no history -> 0 samples, but no error.
+    dump = tray_proc.send("bw-dump")
+    assert dump.get("ok"), dump
+    assert dump["has_chart"] is True
+    assert dump["samples"] == 0
+    # Drawing path: push synthetic samples, view populated, no exception.
+    r = tray_proc.send("bw-render 40")
+    assert r.get("ok"), r
+    assert r["samples"] == 40
+
+
 def test_inline_edit_forward_round_trip(tray_proc):
     """The headline edit test: select a forward, change a field, Save, and
     confirm the new value persisted to config + the form went clean."""

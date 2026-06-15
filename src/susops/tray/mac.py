@@ -1714,6 +1714,43 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: (_open_live_text_window("Logs", lambda: "log line", 1000),
                          {"ok": True, "count": len(_LIVE_WINDOWS)})[1])
 
+        def _bw_render(args):
+            """Push synthetic samples straight into the connection chart view and
+            repaint — exercises the AppKit drawing without a live tunnel (the real
+            history lives in the RPC daemon, unreachable from here). usage:
+            bw-render [n]."""
+            n = int(args[0]) if args else 40
+
+            def _do():
+                cw = self._config_window
+                view = getattr(cw, "_bw_chart_view", None) if cw else None
+                if view is None:
+                    return {"error": "no bandwidth chart (select a connection)"}
+                import math
+                view._samples = [[200000 + 150000 * math.sin(i / 4.0),
+                                  80000 + 40000 * math.sin(i / 3.0)]
+                                 for i in range(n)]
+                view._running = True
+                view.setNeedsDisplay_(True)
+                return {"ok": True, "samples": len(view._samples)}
+            return _run_on_main(_do)
+
+        def _bw_dump(args):
+            """Run the real repaint (RPC fetch → chart) and report its state.
+            With an idle daemon, samples is 0 — proving the fetch path runs clean."""
+            def _do():
+                cw = self._config_window
+                if cw is None or not cw.is_open():
+                    return {"error": "config window not open"}
+                cw.tick_bandwidth()
+                view = getattr(cw, "_bw_chart_view", None)
+                return {
+                    "ok": True,
+                    "has_chart": view is not None,
+                    "samples": len(getattr(view, "_samples", [])) if view else 0,
+                }
+            return _run_on_main(_do)
+
         return {
             "ping": lambda args: {"ok": True},
             "dump-menu": lambda args: _run_on_main(
@@ -1742,6 +1779,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 if args else {"error": "usage: set-col2-width <w>"}),
             "set-state": _set_state,
             "logs": _logs,
+            "bw-render": _bw_render,
+            "bw-dump": _bw_dump,
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
             "set-field": lambda args: (_run_on_main(
@@ -3309,6 +3348,12 @@ class SusOpsMacTray(AbstractTrayApp):
 
     def _tick_bandwidth(self, _timer=None) -> None:
         self.refresh_bandwidth_title()
+        cw = self._config_window
+        if cw is not None and cw.is_open():
+            try:
+                cw.tick_bandwidth()
+            except Exception:
+                pass
         self._cw_tick_count += 1
         # Apply any pending config-window data fetched in the background.
         pending = self._cw_pending_data
