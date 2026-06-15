@@ -44,6 +44,8 @@ _window_delegate_cls = None
 _action_handler_cls = None
 _text_delegate_cls = None
 _row_view_cls = None
+_split_view_cls = None
+_split_delegate_cls = None
 _vcenter_text_cell_cls = None
 _padded_secure_cell_cls = None
 _padded_plain_pw_cell_cls = None
@@ -442,6 +444,66 @@ def _get_window_delegate_cls():
     return _SusOpsConfigWindowDelegate
 
 
+def _get_split_view_cls():
+    """Cached NSSplitView subclass that paints its divider in the dark palette
+    separator color instead of the system gray, so the draggable col2/col3
+    divider matches the static col1/col2 separator line."""
+    global _split_view_cls
+    if _split_view_cls is not None:
+        return _split_view_cls
+    from Cocoa import NSSplitView  # type: ignore[import]
+
+    class _SusOpsSplitView(NSSplitView):
+        def dividerColor(self):
+            return _hex_color(PALETTE["separator"])
+
+    _split_view_cls = _SusOpsSplitView
+    return _SusOpsSplitView
+
+
+def _get_split_delegate_cls():
+    """Cached NSSplitView delegate. Forwards the constraint + resize hooks to
+    the owning ConfigWindow so the col2/col3 divider drag is clamped and col 2
+    keeps a fixed width on window resize (col 3 absorbs the change)."""
+    global _split_delegate_cls
+    if _split_delegate_cls is not None:
+        return _split_delegate_cls
+    import objc  # type: ignore[import]
+    from Cocoa import NSObject  # type: ignore[import]
+
+    class _SusOpsSplitDelegate(NSObject):
+        def initWithOwner_(self, owner):
+            self = objc.super(_SusOpsSplitDelegate, self).init()
+            if self is None:
+                return None
+            self._owner = owner
+            return self
+
+        def splitView_constrainMinCoordinate_ofSubviewAt_(
+                self, _sv, _proposed, idx):
+            return float(COL2_MIN)
+
+        def splitView_constrainMaxCoordinate_ofSubviewAt_(
+                self, sv, _proposed, idx):
+            w = sv.frame().size.width
+            return float(min(COL2_MAX, w - COL3_MIN))
+
+        def splitView_resizeSubviewsWithOldSize_(self, sv, _old):
+            try:
+                self._owner._layout_split_panes()
+            except Exception:
+                pass
+
+        def splitViewDidResizeSubviews_(self, _note):
+            try:
+                self._owner._on_split_resized()
+            except Exception:
+                pass
+
+    _split_delegate_cls = _SusOpsSplitDelegate
+    return _SusOpsSplitDelegate
+
+
 def _get_action_handler_cls():
     global _action_handler_cls
     if _action_handler_cls is not None:
@@ -554,7 +616,12 @@ WIN_H = 545
 MIN_W = 1024
 MIN_H = 545
 COL1_W = 180
-COL2_W = 300
+COL2_W = 300            # default/initial list-column width (user-draggable)
+COL2_MIN = 240          # min list-column width when dragging the col2/col3 divider
+COL2_MAX = 520          # max list-column width
+COL3_MIN = 460          # min detail-column width (keeps the detail header — status
+                        # text + right-aligned note — from colliding); also bounds
+                        # how wide col 2 can get on a given window width
 TOP_INSET = 45          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = TOP_INSET - 9  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
@@ -644,6 +711,12 @@ class ConfigWindow:
         # them. Settings changes use their own staging flag (_settings_dirty),
         # separate from the detail-form _dirty machinery.
         self._col2_hidden = False
+        # Split view (col2 | col3) + the user-draggable col-2 width. Set in
+        # _build; col 1 is a fixed rail outside the split.
+        self._split = None
+        self._col2 = None
+        self._col3 = None
+        self._col2_w = float(COL2_W)
         self._settings_widgets: dict = {}   # field key -> control
         self._settings_kinds: dict = {}     # field key -> kind
         self._settings_ctx: dict = {}       # ctx from settings_field_specs
@@ -771,43 +844,53 @@ class ConfigWindow:
 
         ch = WIN_H
 
-        # --- Column 1 (nav band, darkest) ---
+        # --- Column 1 (nav band, darkest) — fixed-width rail, NOT in the split.
         col1 = self._make_band(NSMakeRect(0, 0, COL1_W, ch), band="col1")
         col1.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxYMargin
         content.addSubview_(col1)
         self._col1 = col1
+        # Static col1/col2 separator (the col2/col3 one is the split divider).
+        self._add_separator(content, COL1_W, ch)
 
-        # --- Column 2 (list band, mid) ---
-        col2 = self._make_band(NSMakeRect(COL1_W, 0, COL2_W, ch), band="col2")
-        col2.setAutoresizingMask_(16)  # HeightSizable; fixed width, fixed left
-        content.addSubview_(col2)
-        self._col2 = col2
+        # --- Columns 2 + 3 live in a 2-pane NSSplitView so the col2/col3
+        #     divider is user-draggable. col 1 stays a fixed rail to its left.
+        from Cocoa import NSMakeRect as _R  # type: ignore[import]
+        split_w = WIN_W - COL1_W
+        split = _get_split_view_cls().alloc().initWithFrame_(
+            _R(COL1_W, 0, split_w, ch))
+        split.setVertical_(True)            # vertical divider => side-by-side
+        try:
+            split.setDividerStyle_(2)       # NSSplitViewDividerStyleThin
+        except Exception:
+            pass
+        split.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
 
-        # --- Column 3 (detail band, flexible) ---
-        col3_x = COL1_W + COL2_W
-        col3 = NSView.alloc().initWithFrame_(
-            NSMakeRect(col3_x, 0, WIN_W - col3_x, ch))
+        col2 = self._make_band(_R(0, 0, COL2_W, ch), band="col2")
+        col3 = NSView.alloc().initWithFrame_(_R(COL2_W, 0, split_w - COL2_W, ch))
         try:
             col3.setWantsLayer_(True)
             col3.layer().setBackgroundColor_(
                 _hex_color(PALETTE["window"]).CGColor())
         except Exception:
             pass
-        col3.setAutoresizingMask_(2 | 16)  # Width+HeightSizable
-        content.addSubview_(col3)
+        split.addSubview_(col2)
+        split.addSubview_(col3)
+        self._col2 = col2
         self._col3 = col3
+        self._split = split
+        self._col2_w = float(COL2_W)
 
-        # --- thin separators between columns ---
-        self._add_separator(content, COL1_W, ch)
-        # sep2 sits at the col2/col3 boundary; hidden with col2 in Settings.
-        self._sep2 = self._add_separator(content, COL1_W + COL2_W, ch)
+        sdelegate = _get_split_delegate_cls().alloc().initWithOwner_(self)
+        self._handlers.append(sdelegate)
+        split.setDelegate_(sdelegate)
+        content.addSubview_(split)
 
         self._build_nav_table(col1, ch)
         self._build_list_column(col2, ch)
+        self._layout_split_panes()
 
         delegate = _get_window_delegate_cls().alloc().initWithCallback_(
             self._on_closed)
-        delegate._resize_cb = self._relayout_col3
         self._handlers.append(delegate)
         win.setDelegate_(delegate)
         self.window = win
@@ -840,23 +923,63 @@ class ConfigWindow:
         return line
 
     def _set_col2_visible(self, visible: bool) -> None:
-        """Show/hide column 2 (+ its separator) and slide column 3 to fill the
-        freed space. Settings spans cols 2+3 with col 2 hidden; every other
-        category restores the 3-column geometry. Idempotent."""
+        """Collapse/restore column 2 within the split view. Settings spans the
+        whole col2+col3 region with col 2 collapsed to zero width; every other
+        category restores it to its last (possibly dragged) width. Idempotent."""
         if visible == (not self._col2_hidden):
             return
         self._col2_hidden = not visible
-        from Cocoa import NSMakeRect  # type: ignore[import]
         try:
             self._col2.setHidden_(not visible)
-            self._sep2.setHidden_(not visible)
         except Exception:
             pass
-        # Reposition col 3: start at COL1_W (col 2 hidden) or COL1_W+COL2_W.
-        win_w = self.window.contentView().frame().size.width if self.window else WIN_W
-        col3_x = COL1_W if not visible else COL1_W + COL2_W
-        f = self._col3.frame()
-        self._col3.setFrame_(NSMakeRect(col3_x, 0, win_w - col3_x, f.size.height))
+        self._layout_split_panes()
+
+    def _layout_split_panes(self) -> None:
+        """Lay out col 2 + col 3 inside the split view: col 2 at its current
+        draggable width (0 when collapsed for Settings), col 3 fills the rest.
+        Used as the split view's resizeSubviews override so col 2 keeps its
+        width on window resize and col 3 absorbs the change."""
+        split = getattr(self, "_split", None)
+        if split is None or self._col2 is None or self._col3 is None:
+            return
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        w = split.frame().size.width
+        h = split.frame().size.height
+        if self._col2_hidden:
+            w2 = 0.0
+            x3 = 0.0
+        else:
+            hi = min(COL2_MAX, w - COL3_MIN)
+            w2 = max(COL2_MIN, min(self._col2_w, hi))
+            try:
+                dt = float(split.dividerThickness())
+            except Exception:
+                dt = 1.0
+            x3 = w2 + dt
+        self._col2.setFrame_(NSMakeRect(0, 0, w2, h))
+        self._col3.setFrame_(NSMakeRect(x3, 0, max(0.0, w - x3), h))
+
+    def _on_split_resized(self) -> None:
+        """Split view finished resizing (window resize or divider drag). Capture
+        the live col-2 width so it survives later window resizes — but NOT while
+        col 2 is collapsed for Settings, or leaving Settings would restore a
+        zero width — then re-render col 3 to fill its new width."""
+        if not self._col2_hidden and self._col2 is not None:
+            try:
+                w2 = self._col2.frame().size.width
+                if w2 > 0:
+                    self._col2_w = float(w2)
+            except Exception:
+                pass
+        # Skip the col-3 rebuild when its width did not change (height-only
+        # window resizes, duplicate split notifications): nothing to reflow.
+        if self._col3 is not None:
+            w3 = round(float(self._col3.frame().size.width), 1)
+            if w3 == getattr(self, "_last_relayout_w3", None):
+                return
+            self._last_relayout_w3 = w3
+        self._relayout_col3()
 
     def _build_nav_table(self, col1, ch: float) -> None:
         from Cocoa import (  # type: ignore[import]
@@ -3381,6 +3504,11 @@ class ConfigWindow:
             "dirty": bool(self._dirty),
             "create_kind": self._create_kind,
             "col2_hidden": bool(self._col2_hidden),
+            "col2_w": round(float(getattr(self, "_col2_w", 0)), 1),
+            "col2_actual_w": (round(float(self._col2.frame().size.width), 1)
+                              if self._col2 is not None else None),
+            "col3_w": (round(float(self._col3.frame().size.width), 1)
+                       if self._col3 is not None else None),
             "settings": (self._settings_values()
                          if self.category == "settings" else None),
             "settings_dirty": bool(getattr(self, "_settings_dirty", False)),
@@ -3401,9 +3529,9 @@ class ConfigWindow:
         }
 
     def resize(self, w: float, h: float) -> dict:
-        """Resize the window (top-left anchored). The window delegate's
-        windowDidResize_ fires _relayout_col3 in response, so col 3 re-renders
-        at the new width. Debug-only."""
+        """Resize the window (top-left anchored). The split view resizes its
+        panes (col 2 keeps width, col 3 absorbs) and its splitViewDidResize
+        hook re-renders col 3 at the new width. Debug-only."""
         if self.window is None:
             return {"error": "no window"}
         from Cocoa import NSMakeRect  # type: ignore[import]
@@ -3413,6 +3541,22 @@ class ConfigWindow:
             NSMakeRect(f.origin.x, top - h, w, h), True)
         nf = self.window.frame()
         return {"ok": True, "w": nf.size.width, "h": nf.size.height}
+
+    def set_col2_width(self, w: float) -> dict:
+        """Debug: drag the col2/col3 divider to width w (clamped by the split
+        delegate's min/max). Mirrors a real divider drag."""
+        split = getattr(self, "_split", None)
+        if split is None:
+            return {"error": "no split view"}
+        if self._col2_hidden:
+            return {"error": "col 2 is collapsed (Settings)"}
+        try:
+            split.setPosition_ofDividerAtIndex_(float(w), 0)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return {"ok": True,
+                "col2_w": round(float(self._col2.frame().size.width), 1),
+                "col3_w": round(float(self._col3.frame().size.width), 1)}
 
     def _dump_alerts(self) -> list:
         from susops.tray.mac import _DEBUG_ALERTS

@@ -1708,6 +1708,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().resize(
                     float(args[0]), float(args[1])))
                 if len(args) >= 2 else {"error": "usage: resize <w> <h>"}),
+            "set-col2-width": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().set_col2_width(
+                    float(args[0])))
+                if args else {"error": "usage: set-col2-width <w>"}),
             "set-state": _set_state,
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
