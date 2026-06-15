@@ -548,35 +548,60 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_launch_chrome(self) -> None:
-        import shutil, subprocess
-        pac_url = self.manager.get_pac_url()
-        if not pac_url:
-            self.show_alert("Error", "PAC server is not running")
-            return
-        for browser in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave-browser"):
-            if shutil.which(browser):
-                subprocess.Popen([browser, f"--proxy-pac-url={pac_url}"])
-                return
-        self.show_alert("Error", "No Chrome/Chromium browser found")
+    def do_launch_browser(self, browser, *, settings_only: bool = False) -> None:
+        """Launch a detected browser with the PAC URL pre-configured, or open
+        its proxy-settings page (settings_only).
 
-    def do_launch_firefox(self) -> None:
-        import shutil, subprocess
+        Owns the shared launch *policy* — the "is PAC running?" guard and the
+        Firefox profile-dir path — so the platform trays stay thin. The actual
+        launch runs through the run_in_background seam (subprocess spawn off the
+        UI thread); errors are surfaced via show_alert marshalled back to the
+        main thread by run_in_background's callback.
+
+        ``browser`` is a susops.core.browsers.Browser from detect_browsers().
+        """
+        from susops.core.browsers import launch_with_pac, open_proxy_settings
+
+        if settings_only:
+            def _settings_work():
+                try:
+                    open_proxy_settings(browser)
+                    return None
+                except Exception as exc:  # noqa: BLE001 — surfaced to the user
+                    return str(exc)
+
+            self.run_in_background(
+                _settings_work,
+                lambda err: self._on_browser_launch_done(browser, err),
+            )
+            return
+
+        # PAC guard + profile policy on the calling (UI) thread so the guard
+        # alert is synchronous and we never background a no-op.
         pac_url = self.manager.get_pac_url()
         if not pac_url:
-            self.show_alert("Error", "PAC server is not running")
+            self.show_alert("Proxy Not Running",
+                            "Start the proxy first so the PAC port is known.")
             return
-        profile_dir = self.manager.workspace / "firefox_profile"
-        profile_dir.mkdir(exist_ok=True)
-        (profile_dir / "user.js").write_text(
-            f'user_pref("network.proxy.type", 2);\n'
-            f'user_pref("network.proxy.autoconfig_url", "{pac_url}");\n'
-            f'user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");\n'
+        profile_dir = (None if browser.is_chromium
+                       else self.manager.workspace / "firefox_profile")
+
+        def _launch_work():
+            try:
+                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
+                return None
+            except Exception as exc:  # noqa: BLE001 — surfaced to the user
+                return str(exc)
+
+        self.run_in_background(
+            _launch_work,
+            lambda err: self._on_browser_launch_done(browser, err),
         )
-        if shutil.which("firefox"):
-            subprocess.Popen(["firefox", "-profile", str(profile_dir), "-no-remote"])
-        else:
-            self.show_alert("Error", "Firefox not found")
+
+    def _on_browser_launch_done(self, browser, err: str | None) -> None:
+        """run_in_background callback — runs on the main/UI thread."""
+        if err:
+            self.show_alert("Launch Failed", f"{browser.name}: {err}")
 
     def do_open_config_file(self) -> None:
         import subprocess, shutil

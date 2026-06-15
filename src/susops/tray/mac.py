@@ -68,22 +68,6 @@ def _get_status_icon_path(state: ProcessState) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Browser discovery (macOS)
-# ---------------------------------------------------------------------------
-
-
-def _find_installed_browsers() -> list[tuple[str, str, bool]]:
-    """Return list of (app_bundle, display_name, is_chromium) for installed browsers.
-
-    Thin adapter over susops.core.browsers.detect_browsers() — the menu
-    construction code below was written before the shared module existed
-    and expects this 3-tuple shape. Kept stable for that reason.
-    """
-    from susops.core.browsers import detect_browsers
-    return [(b.bundle, b.name, b.is_chromium) for b in detect_browsers() if b.bundle]
-
-
-# ---------------------------------------------------------------------------
 # Module-level NSObject helper for live segment preview
 # ---------------------------------------------------------------------------
 
@@ -2683,74 +2667,6 @@ class SusOpsMacTray(AbstractTrayApp):
         threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------ #
-    # Browser launch overrides (macOS)
-    # ------------------------------------------------------------------ #
-
-    def _launch_chromium_app(self, bundle_name: str) -> None:
-        pac_url = self.manager.get_pac_url()
-        if not pac_url:
-            self.show_alert("Proxy Not Running", "Start the proxy first so the PAC port is known.")
-            return
-        from susops.core.browsers import Browser, launch_with_pac
-        browser = Browser(
-            name=bundle_name,
-            launch_cmd=["open", "-a", bundle_name],
-            is_chromium=True,
-            bundle=bundle_name,
-        )
-
-        # Spawn in a background thread — `open -na` can block briefly on macOS
-        # while LaunchServices coordinates with the new app instance, and we
-        # don't want to freeze the menu bar app while that happens.
-        def _spawn():
-            try:
-                launch_with_pac(browser, pac_url)
-            except Exception as exc:
-                _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
-
-        threading.Thread(target=_spawn, daemon=True, name="susops-launch-chrome").start()
-
-    def _open_chromium_proxy_settings(self, bundle_name: str) -> None:
-        """Open Chrome/Edge/Brave/... directly on chrome://net-internals/#proxy."""
-        from susops.core.browsers import Browser, open_proxy_settings
-        browser = Browser(
-            name=bundle_name,
-            launch_cmd=["open", "-a", bundle_name],
-            is_chromium=True,
-            bundle=bundle_name,
-        )
-
-        def _spawn():
-            try:
-                open_proxy_settings(browser)
-            except Exception as exc:
-                _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
-
-        threading.Thread(target=_spawn, daemon=True, name="susops-open-browser").start()
-
-    def _launch_firefox_app(self, bundle_name: str = "Firefox") -> None:
-        pac_url = self.manager.get_pac_url()
-        if not pac_url:
-            self.show_alert("Proxy Not Running", "Start the proxy first.")
-            return
-        from susops.core.browsers import Browser, launch_with_pac
-        browser = Browser(
-            name=bundle_name,
-            launch_cmd=["open", "-a", bundle_name],
-            is_chromium=False,
-            bundle=bundle_name,
-        )
-        profile_dir = self.manager.workspace / "firefox_profile"
-
-        def _spawn():
-            try:
-                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
-            except Exception as exc:
-                _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
-
-        threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
-
-    # ------------------------------------------------------------------ #
     # Menu building
     # ------------------------------------------------------------------ #
 
@@ -2801,38 +2717,32 @@ class SusOpsMacTray(AbstractTrayApp):
         for k in list(self._browser_menu.keys()):
             del self._browser_menu[k]
 
-        installed = _find_installed_browsers()
+        from susops.core.browsers import detect_browsers
+        installed = [b for b in detect_browsers() if b.bundle]
         if not installed:
             none_item = rumps.MenuItem("No browsers found")
             none_item._menuitem.setEnabled_(False)  # type: ignore[attr-defined]
             self._browser_menu["No browsers found"] = none_item
             return
 
-        for bundle, name, chromium in installed:
-            sub = rumps.MenuItem(name)
-            sub[f"Launch {name}"] = rumps.MenuItem(
-                f"Launch {name}",
-                callback=self._make_browser_launch(bundle, chromium),
+        for browser in installed:
+            sub = rumps.MenuItem(browser.name)
+            sub[f"Launch {browser.name}"] = rumps.MenuItem(
+                f"Launch {browser.name}",
+                callback=self._make_browser_activate(browser),
             )
-            if chromium:
-                sub[f"Open {name} Proxy Settings"] = rumps.MenuItem(
-                    f"Open {name} Proxy Settings",
-                    callback=self._make_browser_settings(bundle),
+            if browser.is_chromium:
+                sub[f"Open {browser.name} Proxy Settings"] = rumps.MenuItem(
+                    f"Open {browser.name} Proxy Settings",
+                    callback=self._make_browser_activate(browser, settings_only=True),
                 )
-            self._browser_menu[name] = sub
+            self._browser_menu[browser.name] = sub
 
-    def _make_browser_launch(self, bundle: str, chromium: bool):
+    def _make_browser_activate(self, browser, *, settings_only: bool = False):
+        """rumps callback delegating to the shared base launch policy, passing
+        the full detected Browser through."""
         def handler(_sender):
-            if chromium:
-                self._launch_chromium_app(bundle)
-            else:
-                self._launch_firefox_app(bundle)
-
-        return handler
-
-    def _make_browser_settings(self, bundle: str):
-        def handler(_sender):
-            self._open_chromium_proxy_settings(bundle)
+            self.do_launch_browser(browser, settings_only=settings_only)
 
         return handler
 

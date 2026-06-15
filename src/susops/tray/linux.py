@@ -470,25 +470,23 @@ class SusOpsLinuxTray(AbstractTrayApp):
         # the macOS tray and the TUI so a new browser only needs registering
         # in one place.
         from susops.core.browsers import detect_browsers
-        found = [(b.name, b.launch_cmd[0], b.is_chromium) for b in detect_browsers()]
+        found = detect_browsers()
 
         if not found:
             ni = Gtk.MenuItem(label="No browsers found")
             ni.set_sensitive(False)
             browser_sub.append(ni)
         else:
-            for name, exe, chromium in found:
-                parent = Gtk.MenuItem(label=name)
+            for browser in found:
+                parent = Gtk.MenuItem(label=browser.name)
                 sub = Gtk.Menu()
-                li = Gtk.MenuItem(label=f"Launch {name}")
-                if chromium:
-                    li.connect("activate", self._make_chromium_launch(exe))
-                else:
-                    li.connect("activate", self._make_firefox_launch(exe))
+                li = Gtk.MenuItem(label=f"Launch {browser.name}")
+                li.connect("activate", self._make_browser_activate(browser))
                 sub.append(li)
-                if chromium:
-                    si = Gtk.MenuItem(label=f"Open {name} Proxy Settings")
-                    si.connect("activate", self._make_chromium_settings(exe))
+                if browser.is_chromium:
+                    si = Gtk.MenuItem(label=f"Open {browser.name} Proxy Settings")
+                    si.connect("activate",
+                               self._make_browser_activate(browser, settings_only=True))
                     sub.append(si)
                 parent.set_submenu(sub)
                 browser_sub.append(parent)
@@ -496,51 +494,16 @@ class SusOpsLinuxTray(AbstractTrayApp):
         browser_sub.show_all()
         self._browser_item.set_submenu(browser_sub)
 
-    def _make_chromium_launch(self, exe: str):
-        from susops.core.browsers import Browser, launch_with_pac
-        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
+    def _make_browser_activate(self, browser, *, settings_only: bool = False):
+        """GTK activate handler delegating to the shared base launch policy.
 
+        Passes the full detected Browser through (preserving launch_cmd), so
+        the shared do_launch_browser owns the PAC guard + profile path.
+        """
         def handler(_item):
-            pac_url = self.manager.get_pac_url()
-            if not pac_url:
-                self._GLib.idle_add(
-                    lambda: _alert(self._Gtk, self._root, "Proxy Not Running",
-                                   "Start the proxy first so the PAC port is known.")
-                )
-                return
-            try:
-                launch_with_pac(browser, pac_url)
-            except Exception as exc:
-                self.show_alert("Launch Failed", str(exc))
+            self.do_launch_browser(browser, settings_only=settings_only)
 
         return handler
-
-    def _make_chromium_settings(self, exe: str):
-        from susops.core.browsers import Browser, open_proxy_settings
-        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=True)
-
-        def handler(_item):
-            try:
-                open_proxy_settings(browser)
-            except Exception as exc:
-                self.show_alert("Launch Failed", str(exc))
-
-        return handler
-
-    def _make_firefox_launch(self, exe: str):
-        from susops.core.browsers import Browser, launch_with_pac
-        browser = Browser(name=exe, launch_cmd=[exe], is_chromium=False)
-
-        def handler(_item):
-            pac_url = self.manager.get_pac_url()
-            if not pac_url:
-                self.show_alert("Proxy Not Running", "Start the proxy first.")
-                return
-            profile_dir = self.manager.workspace / "firefox_profile"
-            try:
-                launch_with_pac(browser, pac_url, profile_dir=profile_dir)
-            except Exception as exc:
-                self.show_alert("Launch Failed", str(exc))
 
         return handler
 

@@ -1,89 +1,93 @@
-"""Tests for browser-launch do_* methods on AbstractTrayApp."""
+"""Tests for the consolidated do_launch_browser on AbstractTrayApp.
+
+These exercise the *real* launch path (core.browsers.launch_with_pac /
+open_proxy_settings) — the old tests only hit a since-deleted base method that
+no shipped frontend called.
+"""
 from __future__ import annotations
 
+from susops.core.browsers import Browser
 
-def test_do_launch_chrome_calls_subprocess(tray, monkeypatch):
-    """do_launch_chrome finds a browser via shutil.which and calls Popen."""
+
+def _chromium() -> Browser:
+    # No bundle → launch_with_pac uses launch_cmd + flag (Linux-style), which
+    # is the deterministic, platform-independent path for these assertions.
+    return Browser(name="Chromium", launch_cmd=["/usr/bin/chromium"], is_chromium=True)
+
+
+def _firefox() -> Browser:
+    return Browser(name="Firefox", launch_cmd=["/usr/bin/firefox"], is_chromium=False)
+
+
+def test_launch_chromium_uses_transformed_command(tray, monkeypatch):
+    """do_launch_browser launches the detected Browser with the PAC flag
+    appended — the transformed command, not the raw launch_cmd."""
     calls = []
+    monkeypatch.setattr("susops.core.browsers.subprocess.Popen",
+                        lambda cmd, *a, **k: calls.append(cmd))
+    monkeypatch.setattr(tray.manager, "get_pac_url",
+                        lambda: "http://localhost:9000/proxy.pac")
 
-    class _FakeProc:
-        pass
+    tray.do_launch_browser(_chromium())
 
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/bin/google-chrome-stable" if name == "google-chrome-stable" else None,
-    )
-    monkeypatch.setattr(
-        "subprocess.Popen",
-        lambda *a, **kw: calls.append((a, kw)) or _FakeProc(),
-    )
-    # start() will fail to connect SSH but will bring up PAC server
-    tray.do_add_connection("work", "user@host")
-    tray.do_add_pac_host("example.com")
-    tray.manager.start()
-    tray.do_launch_chrome()
-    assert calls, "subprocess.Popen should have been called"
+    assert calls == [["/usr/bin/chromium",
+                      "--proxy-pac-url=http://localhost:9000/proxy.pac"]]
+    assert not tray.alerts
 
 
-def test_do_launch_chrome_no_pac_alerts(tray, monkeypatch):
-    """When PAC isn't running, do_launch_chrome shows an alert instead of launching."""
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/bin/google-chrome-stable" if name == "google-chrome-stable" else None,
-    )
-    # Do NOT start the PAC server — no connections, no start() call
-    tray.do_launch_chrome()
-    # No PAC → manager.get_pac_url() returns "" → show_alert fires
-    assert any("PAC" in title or "PAC" in msg for title, msg in tray.alerts)
-
-
-def test_do_launch_chrome_no_browser_alerts(tray, monkeypatch):
-    """When no Chrome/Chromium is found, an appropriate alert is shown."""
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    tray.do_add_connection("work", "user@host")
-    tray.manager.start()
-    tray.do_launch_chrome()
-    # Either "Error" for no browser found, or "Error" for no PAC
-    assert any(t == "Error" for t, _ in tray.alerts)
-
-
-def test_do_launch_firefox_calls_subprocess(tray, tmp_path, monkeypatch):
-    """do_launch_firefox finds firefox and calls Popen with a profile."""
+def test_launch_without_pac_alerts_and_does_not_launch(tray, monkeypatch):
     calls = []
+    monkeypatch.setattr("susops.core.browsers.subprocess.Popen",
+                        lambda cmd, *a, **k: calls.append(cmd))
+    monkeypatch.setattr(tray.manager, "get_pac_url", lambda: "")
 
-    class _FakeProc:
-        pass
+    tray.do_launch_browser(_chromium())
 
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/bin/firefox" if name == "firefox" else None,
-    )
-    monkeypatch.setattr(
-        "subprocess.Popen",
-        lambda *a, **kw: calls.append((a, kw)) or _FakeProc(),
-    )
-    tray.do_add_connection("work", "user@host")
-    tray.manager.start()
-    tray.do_launch_firefox()
-    assert calls, "subprocess.Popen should have been called for Firefox"
+    assert not calls
+    assert any("Proxy" in t or "PAC" in m for t, m in tray.alerts)
 
 
-def test_do_launch_firefox_no_pac_alerts(tray, monkeypatch):
-    """When PAC isn't running, do_launch_firefox shows an alert."""
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/bin/firefox" if name == "firefox" else None,
-    )
-    tray.do_launch_firefox()
-    assert any("PAC" in title or "PAC" in msg for title, msg in tray.alerts)
+def test_launch_firefox_writes_profile_and_launches(tray, monkeypatch):
+    calls = []
+    monkeypatch.setattr("susops.core.browsers.subprocess.Popen",
+                        lambda cmd, *a, **k: calls.append(cmd))
+    monkeypatch.setattr(tray.manager, "get_pac_url",
+                        lambda: "http://localhost:9000/proxy.pac")
+
+    tray.do_launch_browser(_firefox())
+
+    profile = tray.manager.workspace / "firefox_profile"
+    assert (profile / "user.js").exists()
+    assert calls and "-profile" in calls[0] and str(profile) in calls[0]
+    assert not tray.alerts
+
+
+def test_settings_only_opens_proxy_page(tray, monkeypatch):
+    calls = []
+    monkeypatch.setattr("susops.core.browsers.subprocess.Popen",
+                        lambda cmd, *a, **k: calls.append(cmd))
+    # The proxy-settings page doesn't need the PAC URL.
+    tray.do_launch_browser(_chromium(), settings_only=True)
+
+    assert calls and any("net-internals" in part for part in calls[0])
+
+
+def test_launch_error_surfaces_via_alert(tray, monkeypatch):
+    def boom(cmd, *a, **k):
+        raise OSError("no such binary")
+
+    monkeypatch.setattr("susops.core.browsers.subprocess.Popen", boom)
+    monkeypatch.setattr(tray.manager, "get_pac_url",
+                        lambda: "http://localhost:9000/proxy.pac")
+
+    tray.do_launch_browser(_chromium())
+
+    assert any(t == "Launch Failed" for t, _ in tray.alerts)
 
 
 def test_do_open_config_file_calls_subprocess(tray, monkeypatch):
     """do_open_config_file calls Popen with an opener."""
     calls = []
-
-    class _FakeProc:
-        pass
 
     monkeypatch.setattr(
         "shutil.which",
@@ -91,7 +95,7 @@ def test_do_open_config_file_calls_subprocess(tray, monkeypatch):
     )
     monkeypatch.setattr(
         "subprocess.Popen",
-        lambda *a, **kw: calls.append((a, kw)) or _FakeProc(),
+        lambda *a, **kw: calls.append((a, kw)),
     )
     tray.do_open_config_file()
     assert calls, "subprocess.Popen should have been called to open config"
