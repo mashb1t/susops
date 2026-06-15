@@ -648,13 +648,20 @@ class DashboardScreen(Screen):
         pid_str = str(cs.pid) if cs.pid else "—"
         ssh_host = conn.ssh_host if conn else "—"
         socks_port_str = str(cs.socks_port) if cs.socks_port else "auto"
+        # Actual run state, mirroring the macOS tray's per-connection states:
+        # running, socket up      -> running               (green)
+        # running, socket pending -> waiting for SSH agent  (amber, master up)
+        # down, reconnect-intended-> reconnecting           (red, dropped)
+        # down                     -> stopped               (red)
         pending = getattr(cs, "pending", False)
         if not cs.enabled:
             status_str = "[dim]─ disabled[/dim]"
-        elif pending:
-            status_str = "[#ff8800]◐ pending[/#ff8800]"
-        elif cs.running:
+        elif cs.running and not pending:
             status_str = "[green]● running[/green]"
+        elif cs.running and pending:
+            status_str = "[#ff8800]◐ waiting for SSH agent[/#ff8800]"
+        elif pending:
+            status_str = "[red]○ error · reconnecting[/red]"
         else:
             status_str = "[red]○ stopped[/red]"
         uptime_str = _fmt_uptime(uptime) if uptime is not None else "—"
