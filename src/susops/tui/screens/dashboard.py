@@ -558,7 +558,7 @@ class DashboardScreen(Screen):
             f"  CPU total   {total_cpu:.1f}%{'':12} Memory  {total_mem:.1f} MB",
             f"  Connections {total_conns:<16} Fwds    {total_fwds}",
             "",
-            f"  [dim]  {'Connection':<25}  [/dim]   [blue]↓ RX[/blue] [dim]{'Total':>7}[/dim]     [green]↑ TX[/green] [dim]{'Total':>7}[/dim]",
+            f"  [dim]  {'Connection':<25}  [/dim]   [yellow]↓ RX[/yellow] [dim]{'Total':>7}[/dim]     [green]↑ TX[/green] [dim]{'Total':>7}[/dim]",
             f"  [dim]{'─' * 61}[/dim]",
             _fmt_bw_line("[bold]All[/bold]", True, total_rx, total_tx, total_rx_bytes, total_tx_bytes,
                          tag_width=25 + len("[bold][/bold]"), show_dot=False),
@@ -611,7 +611,7 @@ class DashboardScreen(Screen):
             rx_chart.plt.title(f"RX total  {_fmt_bps(total_rx)}")
             rx_chart.plt.ylim(0, rx_max)
             rx_chart.plt.yticks(rx_ticks, rx_labels)
-            rx_chart.plt.plot(rx_scaled, color="blue")
+            rx_chart.plt.plot(rx_scaled, color="yellow")
             rx_chart.refresh()
             tx_scaled, tx_unit = _scale_data(tx_agg)
             tx_max = max(1.0, max(tx_scaled))
@@ -675,7 +675,7 @@ class DashboardScreen(Screen):
             f"  CPU         {cpu:.1f}%{'':12} Memory  {mem_mb:.1f} MB",
             f"  Connections {conns:<16} Fwds    {fwd_summary}",
             "",
-            f"  [blue]↓ RX[/blue]  rate  {_fmt_bps(rx):<16} total   [cyan]{_fmt_bytes(rx_total)}[/cyan]",
+            f"  [yellow]↓ RX[/yellow]  rate  {_fmt_bps(rx):<16} total   [cyan]{_fmt_bytes(rx_total)}[/cyan]",
             f"  [green]↑ TX[/green]  rate  {_fmt_bps(tx):<16} total   [cyan]{_fmt_bytes(tx_total)}[/cyan]",
             f"  [dim]resets on stop[/dim]",
         ]
@@ -693,7 +693,7 @@ class DashboardScreen(Screen):
         rx_chart.plt.title(f"RX  {_fmt_bps(rx)}")
         rx_chart.plt.ylim(0, rx_max)
         rx_chart.plt.yticks(rx_ticks, rx_labels)
-        rx_chart.plt.plot(rx_scaled, color="blue")
+        rx_chart.plt.plot(rx_scaled, color="yellow")
         rx_chart.refresh()
         tx_scaled, tx_unit = _scale_data(tx_data)
         tx_max = max(1.0, max(tx_scaled))
