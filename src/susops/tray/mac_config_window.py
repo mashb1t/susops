@@ -616,18 +616,18 @@ def _get_row_view_cls():
 
 # ---- geometry ----
 WIN_W = 1024
-WIN_H = 545
+WIN_H = 450
 MIN_W = 1024
-MIN_H = 545
+MIN_H = 400
 COL1_W = 180
 COL2_W = 300            # default/initial list-column width (user-draggable)
 COL2_MIN = 240          # min list-column width when dragging the col2/col3 divider
 COL2_MAX = 520          # max list-column width
 COL3_MIN = 460          # min detail-column width (keeps the detail header — status
-                        # text + right-aligned note — from colliding); also bounds
-                        # how wide col 2 can get on a given window width
+
 TOP_INSET = 45          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = TOP_INSET - 9  # nav-only top inset (kept independent for fine tuning)
+
 SEARCH_H = 30
 ADDBAR_H = 40
 ADDBAR_BOTTOM_INSET = 4
@@ -3323,8 +3323,14 @@ class ConfigWindow:
             return _stack([open_btn, save_btn, status], vertical=False,
                           spacing=10, align=NSLayoutAttributeCenterY)
 
+        # Sections whose first row is a single fixed-height control (text in a
+        # vertically-centered box): the label must center against that box, not
+        # top-align (which floats it above the control's text). Multi-line
+        # sections (switches, logo) keep top-alignment with their first line.
+        CENTER_LABEL_SECTIONS = {"Servers", "Config file"}
         grid = NSGridView.alloc().init()
         section_starts = []
+        center_label_rows = set()
         for section in self.SETTINGS_SECTIONS:
             if section == "Config file":
                 contents = [_config_content()]
@@ -3339,20 +3345,27 @@ class ConfigWindow:
             for i, c in enumerate(contents):
                 if i == 0:
                     section_starts.append(grid.numberOfRows())
+                    if section in CENTER_LABEL_SECTIONS:
+                        center_label_rows.add(grid.numberOfRows())
                 grid.addRowWithViews_(
                     [_section_label(section) if i == 0 else _empty(), c])
         try:
-            from AppKit import NSGridCellPlacementTop, NSGridCellPlacementTrailing
+            from AppKit import (
+                NSGridCellPlacementCenter, NSGridCellPlacementTop,
+                NSGridCellPlacementTrailing,
+            )
             grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
             grid.columnAtIndex_(0).setWidth_(label_w)
             grid.setColumnSpacing_(self._SETTINGS_LABEL_GAP)
             grid.setRowSpacing_(10.0)
-            # Top-align both cells of every row so the section label sits level
-            # with the first line of (possibly multi-line) content.
+            # Content top-aligns with its first line; the section label centers
+            # against compact single-control rows, else tops with multi-line ones.
             for i in range(grid.numberOfRows()):
-                for ci in (0, 1):
-                    grid.cellAtColumnIndex_rowIndex_(ci, i).setYPlacement_(
-                        NSGridCellPlacementTop)
+                grid.cellAtColumnIndex_rowIndex_(1, i).setYPlacement_(
+                    NSGridCellPlacementTop)
+                grid.cellAtColumnIndex_rowIndex_(0, i).setYPlacement_(
+                    NSGridCellPlacementCenter if i in center_label_rows
+                    else NSGridCellPlacementTop)
             for ri in section_starts[1:]:
                 grid.rowAtIndex_(ri).setTopPadding_(20.0)
         except Exception:
@@ -3361,7 +3374,7 @@ class ConfigWindow:
         grid.setTranslatesAutoresizingMaskIntoConstraints_(True)
         fit = grid.fittingSize()
         doc_h = fit.height
-        scroll_top_inset = SIDEBAR_TOP_INSET
+        scroll_top_inset = TOP_INSET
         scroll_h = min(col3_h - scroll_top_inset, doc_h)
         scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
         scroll_y = (col3_h - scroll_top_inset) - scroll_h
