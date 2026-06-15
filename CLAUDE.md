@@ -20,7 +20,12 @@ pytest tests/test_pac.py::test_pac_server_reload -v
 # Run tests with coverage
 pytest --cov=susops --cov-report=term-missing
 
-# Regenerate the OpenAPI spec — REQUIRED after any change to:
+# Enable the pre-commit hook once per clone — auto-regenerates + stages
+# docs/openapi.yaml on every commit so the spec is never stale.
+git config core.hooksPath .githooks
+
+# Regenerate the OpenAPI spec manually (the hook does this for you on commit).
+# REQUIRED after any change to:
 #   - SusOpsManager methods (signature, return type, docstring)
 #   - _ALLOWED_METHODS in src/susops/core/rpc_server.py
 #   - SSE event payload shapes in src/susops/core/status.py

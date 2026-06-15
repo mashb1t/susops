@@ -1,0 +1,19 @@
+#!/bin/sh
+# Regenerate docs/openapi.yaml from the current interface and stage it, so the
+# committed spec is never stale and tests/test_openapi.py stays green.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+#
+# Uses `uv run` to match CI's locked resolution (byte-identical output);
+# falls back to the project venv when uv is absent.
+# ponytail: regenerates unconditionally — it's sub-second. Add a path filter
+# (facade.py / rpc_server.py / status.py / version.py) only if commit latency bites.
+set -e
+
+if command -v uv >/dev/null 2>&1; then
+    uv run python tools/gen_openapi.py
+else
+    "${VIRTUAL_ENV:-.venv}/bin/python" tools/gen_openapi.py
+fi
+
+git add docs/openapi.yaml
