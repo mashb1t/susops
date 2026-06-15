@@ -279,6 +279,7 @@ PALETTE = {
     "badge_fill": "3a3c44",
     "badge_text": "c7c9d1",
     "separator": "0a0a0c",   # near-black hairline
+    "dialog": "25262c",      # dialog background (same as col1)
 }
 
 
@@ -616,9 +617,9 @@ def _get_row_view_cls():
 
 # ---- geometry ----
 WIN_W = 1024
-WIN_H = 450
+WIN_H = 510
 MIN_W = 1024
-MIN_H = 400
+MIN_H = 510
 COL1_W = 180
 COL2_W = 300            # default/initial list-column width (user-draggable)
 COL2_MIN = 240          # min list-column width when dragging the col2/col3 divider
@@ -823,7 +824,7 @@ class ConfigWindow:
         win.setTitle_("SusOps Settings")
         win.setReleasedWhenClosed_(False)
         win.setHidesOnDeactivate_(False)
-        win.setTitlebarAppearsTransparent_(True)
+        win.setTitlebarAppearsTransparent_(False)
         # Pin DarkAqua so the window is always dark regardless of system mode;
         # system controls (popups, switch, search) inherit it automatically.
         try:

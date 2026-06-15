@@ -19,6 +19,7 @@ from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
 from susops.core.types import LogoStyle, ProcessState
 from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
+from susops.tray.mac_config_window import _hex_color, PALETTE
 
 BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
 
@@ -681,9 +682,7 @@ def _show_message_panel(
         )
         panel.setAppearance_(NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua))
         content.setWantsLayer_(True)
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                0x17 / 255.0, 0x18 / 255.0, 0x1C / 255.0, 1.0).CGColor())
+        content.layer().setBackgroundColor_(_hex_color(PALETTE["dialog"]).CGColor())
     except Exception:
         pass
     handlers: list = []
