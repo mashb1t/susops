@@ -3131,6 +3131,9 @@ class ConfigWindow:
     SETTINGS_SECTIONS = ("General", "Menu bar", "Servers", "Config file")
     _SETTINGS_LABEL_W = 100
     _SETTINGS_LABEL_GAP = 14
+    # Shared width for the server-port text fields and the "Open Config File…"
+    # button so they line up.
+    _SETTINGS_FIELD_W = 150
 
     def _render_settings_pane(self) -> None:
         """Build the settings grid in column 3. Section labels are bold,
@@ -3335,7 +3338,7 @@ class ConfigWindow:
         options = f.get("options", [])
         # Logo selector capped at 150 wide; the segments share that width evenly.
         n = max(1, len(options))
-        seg_total = min(float(width), 150.0)
+        seg_total = min(float(width), 245.0)
         seg_w = (seg_total - 8) / n
         seg_y = lbl_y - 30
         seg = NSSegmentedControl.alloc().initWithFrame_(
@@ -3423,7 +3426,7 @@ class ConfigWindow:
             NSTextField,
         )
         labels = {"rpc_port": "RPC", "sse_port": "SSE", "pac_port": "PAC"}
-        field_w = 110
+        field_w = self._SETTINGS_FIELD_W  # match the Open Config File… button
         sub_label_w = 46
         y = top
         for f in fields:
@@ -3486,7 +3489,7 @@ class ConfigWindow:
         # _section_label (label frame origin: section_top - 20, height: 18).
         label_center = (top - 20) + 9
         btn_y = label_center - btn_h / 2.0
-        open_w = 150
+        open_w = self._SETTINGS_FIELD_W  # match the server-port text fields
         open_btn = self._styled_neutral_button(
             "Open Config File…", NSMakeRect(x, btn_y, open_w, btn_h))
         open_handler = _get_action_handler_cls().alloc().initWithCallback_(
