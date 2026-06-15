@@ -1704,6 +1704,8 @@ class SusOpsMacTray(AbstractTrayApp):
                 if args else {"error": "usage: select <category> [index]"}),
             "dump-window": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().dump()),
+            "close-config": lambda args: _run_on_main(
+                lambda: (self._ensure_config_window().close(), {"ok": True})[1]),
             "resize": lambda args: (_run_on_main(
                 lambda: self._ensure_config_window().resize(
                     float(args[0]), float(args[1])))

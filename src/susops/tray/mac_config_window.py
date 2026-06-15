@@ -785,6 +785,14 @@ class ConfigWindow:
             except Exception:
                 pass
             self._policy_scope = None
+        # Flush geometry (saved divider width + AppKit's autosaved window frame)
+        # to disk so it survives a restart.
+        try:
+            from Foundation import NSUserDefaults  # type: ignore[import]
+            self._save_col2_width()
+            NSUserDefaults.standardUserDefaults().synchronize()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Build
@@ -884,7 +892,7 @@ class ConfigWindow:
         self._col2 = col2
         self._col3 = col3
         self._split = split
-        self._col2_w = float(COL2_W)
+        self._col2_w = self._load_col2_width()  # restore saved divider width
 
         sdelegate = _get_split_delegate_cls().alloc().initWithOwner_(self)
         self._handlers.append(sdelegate)
@@ -902,6 +910,15 @@ class ConfigWindow:
         self.window = win
         self._permanent_handler_count = len(self._handlers)
         self._render_col3_placeholder("Select an item.")
+        # Restore the saved window size (AppKit then auto-saves it on resize).
+        # The frame change reflows the columns via autoresize + the split's
+        # resizeSubviews, which lays out col 2 at the restored width above.
+        try:
+            name, _ = self._geom_keys()
+            win.setFrameAutosaveName_(name)
+            win.setFrameUsingName_(name)
+        except Exception:
+            pass
 
     def _make_band(self, frame, *, band: str):
         """Layer-backed NSView painted with the exact mockup palette so the
@@ -1017,21 +1034,77 @@ class ConfigWindow:
         else:
             self._rebuild_add_buttons()
 
+    # ---- geometry persistence (NSUserDefaults) -------------------------- #
+    # Window size uses NSWindow frame autosave; the draggable col-2 width is
+    # persisted here since the custom _layout_split_panes overrides NSSplitView's
+    # own divider autosave. Keys are namespaced by workspace so a dev instance
+    # (SUSOPS_TRAY_WORKSPACE) never overwrites the real instance's geometry —
+    # they share the process's NSUserDefaults domain.
+
+    def _geom_keys(self):
+        """(window_autosave_name, col2_width_key), namespaced per workspace."""
+        cached = getattr(self, "_geom_keys_cache", None)
+        if cached is not None:
+            return cached
+        import hashlib
+        try:
+            from susops.tray.base import _resolve_workspace
+            ws = str(_resolve_workspace())
+        except Exception:
+            ws = "default"
+        sfx = hashlib.md5(ws.encode("utf-8")).hexdigest()[:8]
+        cached = (f"SusOpsConfigWindow_{sfx}", f"SusOpsConfigCol2Width_{sfx}")
+        self._geom_keys_cache = cached
+        return cached
+
+    def _load_col2_width(self) -> float:
+        """Saved divider width, clamped to [COL2_MIN, COL2_MAX]; COL2_W default."""
+        try:
+            from Foundation import NSUserDefaults  # type: ignore[import]
+            _, key = self._geom_keys()
+            v = float(NSUserDefaults.standardUserDefaults().doubleForKey_(key))
+            if v > 0:
+                return max(COL2_MIN, min(v, COL2_MAX))
+        except Exception:
+            pass
+        return float(COL2_W)
+
+    def _save_col2_width(self) -> None:
+        """Stash the current divider width (in-memory; flushed on window close).
+        Not synchronized per call — that would hit disk on every drag frame."""
+        try:
+            from Foundation import NSUserDefaults  # type: ignore[import]
+            _, key = self._geom_keys()
+            NSUserDefaults.standardUserDefaults().setDouble_forKey_(
+                float(self._col2_w), key)
+        except Exception:
+            pass
+
     def _on_split_resized(self) -> None:
-        """Split view finished resizing (window resize or divider drag). Capture
-        the live col-2 width so it survives later window resizes — but NOT while
-        col 2 is collapsed for Settings, or leaving Settings would restore a
-        zero width — re-fit col 2's contents, then re-render col 3 to fill its
-        new width. Each side is guarded on its own width so a height-only resize
-        rebuilds nothing."""
+        """Split view finished resizing (window resize or divider drag). Re-fit
+        col 2's contents and re-render col 3, each guarded on its own width so a
+        height-only resize rebuilds nothing.
+
+        Persist the col-2 width ONLY on a real divider drag — detected by the
+        split width staying constant while col 2's width changes. A window
+        resize changes the split width and may clamp col 2 to fit; that clamp
+        must NOT overwrite the user's preferred width (else a transient narrow
+        layout during restore would destroy the saved value)."""
+        split = getattr(self, "_split", None)
+        split_w = round(float(split.frame().size.width), 1) if split else 0.0
+        prev_split_w = getattr(self, "_last_split_w", None)
+        self._last_split_w = split_w
+        split_changed = prev_split_w is None or abs(split_w - prev_split_w) > 0.5
         if not self._col2_hidden and self._col2 is not None:
             try:
                 w2 = round(float(self._col2.frame().size.width), 1)
-                if w2 > 0:
+                if w2 > 0 and not split_changed:
+                    # Pure divider drag: this IS the user's preferred width.
                     self._col2_w = float(w2)
-                    if w2 != getattr(self, "_last_col2_layout_w", None):
-                        self._last_col2_layout_w = w2
-                        self._layout_col2_contents()
+                    self._save_col2_width()
+                if w2 != getattr(self, "_last_col2_layout_w", None):
+                    self._last_col2_layout_w = w2
+                    self._layout_col2_contents()
             except Exception:
                 pass
         # Skip the col-3 rebuild when its width did not change (height-only
