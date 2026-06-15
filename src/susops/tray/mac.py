@@ -91,34 +91,6 @@ _main_dispatcher_cls = None
 _tagged_button_handler_cls = None
 _window_close_delegate_cls = None
 _url_handler_cls = None
-_modal_panel_cls = None
-
-
-def _get_modal_panel_cls():
-    """Lazily build an NSPanel subclass that always becomes key/main.
-
-    NSPanel's default behavior is `becomesKeyOnlyIfNeeded == YES` and
-    `canBecomeKeyWindow` returns NO for some configurations. That's why text
-    fields can look focused (border highlighted) yet silently reject keystrokes:
-    the panel itself never becomes key, so the first responder never receives
-    keyDown events. Subclassing and forcing both predicates to True fixes it.
-    """
-    global _modal_panel_cls
-    if _modal_panel_cls is not None:
-        return _modal_panel_cls
-
-    import objc  # type: ignore[import]
-    from AppKit import NSPanel  # type: ignore[import]
-
-    class _SusOpsModalPanel(NSPanel):
-        def canBecomeKeyWindow(self):
-            return True
-
-        def canBecomeMainWindow(self):
-            return True
-
-    _modal_panel_cls = _SusOpsModalPanel
-    return _SusOpsModalPanel
 
 
 def _get_url_handler_cls():
@@ -318,15 +290,6 @@ def _screenshot_window(window, path: str) -> dict:
 # ---------------------------------------------------------------------------
 # Dialog helpers
 # ---------------------------------------------------------------------------
-
-
-def _activate_app() -> None:
-    """Bring the SusOps app to front so dialogs receive focus."""
-    try:
-        from AppKit import NSApplication  # type: ignore[import]
-        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    except Exception:
-        pass
 
 
 # Depth-counted activation-policy management — only switches policy when the
@@ -1179,19 +1142,6 @@ def _show_confirm(title: str, message: str, *, ok: str = "OK", cancel: str = "Ca
     return r == 1
 
 
-def _show_three_way(title: str, message: str, primary: str, secondary: str, cancel: str = "Cancel") -> int:
-    """Three-button panel. Returns 1 if primary, 2 if secondary, 0 if cancel."""
-    r = _show_message_panel(
-        title, message,
-        [(primary, 1), (secondary, 2), (cancel, 0)],
-        default_index=0,
-        cancel_index=2,
-    )
-    if r in (0, 1, 2):
-        return r
-    return 0
-
-
 def _pick_file() -> str | None:
     """Show NSOpenPanel and return the chosen file path or None.
 
@@ -1260,7 +1210,7 @@ def _pick_save_path() -> str | None:
 _ABOUT_WINDOWS: dict[int, dict] = {}
 
 
-def _show_about_panel(version: str = "", *, icon_state=None) -> None:
+def _show_about_panel(version: str = "") -> None:
     """Show the About panel — non-modal, always-on-top, titlebar-X-to-close.
 
     Behavioural changes vs the original:
@@ -1270,8 +1220,6 @@ def _show_about_panel(version: str = "", *, icon_state=None) -> None:
         panel doesn't vanish when accessory mode reasserts.
       * Static icon — ``assets/icon.png`` instead of the state-dependent
         per-style status icon.
-
-    ``icon_state`` is accepted and ignored to keep the old call sites working.
     """
     if version == "":
         try:
@@ -2296,12 +2244,6 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         self._exit_create_and_select(new_identity)
 
-    def _connection_tags(self) -> list:
-        try:
-            return [c.tag for c in self.manager.list_config().connections]
-        except Exception:
-            return []
-
     def _save_connection(self, identity: tuple, values: dict) -> None:
         old_tag = identity[1]
         tag = (values.get("tag") or "").strip()
@@ -2807,12 +2749,6 @@ class SusOpsMacTray(AbstractTrayApp):
                 _on_main(lambda: self.show_alert("Launch Failed", str(exc)))
 
         threading.Thread(target=_spawn, daemon=True, name="susops-launch-firefox").start()
-
-    def do_launch_chrome(self) -> None:
-        self._launch_chromium_app("Google Chrome")
-
-    def do_launch_firefox(self) -> None:
-        self._launch_firefox_app("Firefox")
 
     # ------------------------------------------------------------------ #
     # Menu building

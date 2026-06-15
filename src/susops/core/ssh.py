@@ -42,10 +42,6 @@ def _master_name(tag: str) -> str:
     return f"{SSH_PROCESS_PREFIX}-{tag}"
 
 
-def _forward_name(conn_tag: str, fw_tag: str) -> str:
-    return f"{FWD_PROCESS_PREFIX}-{conn_tag}-{fw_tag}"
-
-
 def socket_path(tag: str, workspace: Path) -> Path:
     """Return the ControlMaster Unix socket path for a connection."""
     return workspace / _SOCKET_DIR / f"{tag}.sock"

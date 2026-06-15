@@ -600,7 +600,7 @@ class AbstractTrayApp(ABC):
         def _run():
             try:
                 info = self.manager.share(
-                    __import__("pathlib").Path(file_path),
+                    Path(file_path),
                     conn_tag,
                     password=password or None,
                     port=port or None,
@@ -644,7 +644,7 @@ class AbstractTrayApp(ABC):
     ) -> None:
         def _run():
             try:
-                out = __import__("pathlib").Path(outfile) if outfile else None
+                out = Path(outfile) if outfile else None
                 result = self.manager.fetch(
                     port=port, password=password, conn_tag=conn_tag, outfile=out
                 )

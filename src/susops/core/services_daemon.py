@@ -28,12 +28,6 @@ def _port_path(workspace: Path) -> Path:
     return workspace / "pids" / _PORT_FILENAME
 
 
-def _write_pid_file(workspace: Path) -> None:
-    p = _pid_path(workspace)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(str(os.getpid()))
-
-
 def _claim_pid_file(workspace: Path) -> bool:
     """Atomically create the PID file with this process's PID.
 
