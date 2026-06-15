@@ -49,6 +49,25 @@ __all__ = [
 WORKSPACE_DEFAULT = Path.home() / ".susops"
 CONFIG_FILENAME = "config.yaml"
 
+# ssh_host and forward addresses are interpolated into shell command strings
+# (notably socat's EXEC:'ssh … socat … UDP4-SENDTO:<addr>:<port>'), so they must
+# never carry whitespace or shell metacharacters. This is lenient on purpose —
+# it accepts hostnames, IPs (incl. 0.0.0.0), user@host, and ~/.ssh/config
+# aliases — it only rejects the characters that could break or escape the shell.
+_FORBIDDEN_HOST_CHARS = frozenset(" \t\r\n;|&$`'\"<>()\\!*?#")
+
+
+def _validate_host_token(value: str, field: str) -> str:
+    if not value or not value.strip():
+        raise ValueError(f"{field} must not be empty")
+    bad = sorted({c for c in value if c in _FORBIDDEN_HOST_CHARS})
+    if bad:
+        raise ValueError(
+            f"{field} contains forbidden character(s) {bad!r}: whitespace and "
+            f"shell metacharacters are not allowed"
+        )
+    return value
+
 
 class PortForward(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -71,6 +90,11 @@ class PortForward(BaseModel):
             data["src_port"] = int(data.pop("src"))
             data["dst_port"] = int(data.pop("dst", data["src_port"]))
         return data
+
+    @field_validator("src_addr", "dst_addr")
+    @classmethod
+    def _validate_addr(cls, v: str, info) -> str:
+        return _validate_host_token(v, info.field_name)
 
     @model_validator(mode="after")
     def require_at_least_one_protocol(self) -> "PortForward":
@@ -104,6 +128,11 @@ class Connection(BaseModel):
     pac_hosts: list[str] = []
     pac_hosts_disabled: list[str] = []
     file_shares: list[FileShare] = []
+
+    @field_validator("ssh_host")
+    @classmethod
+    def _validate_ssh_host(cls, v: str) -> str:
+        return _validate_host_token(v, "ssh_host")
 
 
 class AppConfig(BaseModel):

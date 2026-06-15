@@ -223,3 +223,32 @@ def test_port_forward_enabled_defaults_true():
 def test_port_forward_can_be_disabled():
     fw = PortForward(src_port=80, dst_port=80, enabled=False)
     assert fw.enabled is False
+
+
+def test_ssh_host_rejects_shell_metacharacters():
+    """ssh_host is interpolated into shell command strings (socat EXEC), so
+    whitespace and metacharacters must be rejected at the config boundary."""
+    import pytest
+    from susops.core.config import Connection
+
+    for bad in ["host; rm -rf /", "host with space", "h$(whoami)", "h'x", "a|b", "h`id`"]:
+        with pytest.raises(ValueError, match="ssh_host"):
+            Connection(tag="t", ssh_host=bad)
+
+    # Legitimate OpenSSH destinations must still be accepted.
+    for ok in ["user@host.example.com", "myalias", "192.168.1.10", "0.0.0.0", "[::1]"]:
+        assert Connection(tag="t", ssh_host=ok).ssh_host == ok
+
+
+def test_forward_addr_rejects_shell_metacharacters():
+    import pytest
+    from susops.core.config import PortForward
+
+    with pytest.raises(ValueError):
+        PortForward(src_port=1, dst_port=2, dst_addr="db; rm -rf /")
+    with pytest.raises(ValueError):
+        PortForward(src_port=1, dst_port=2, src_addr="a b")
+
+    # Documented bind values stay valid.
+    for ok in ["localhost", "172.17.0.1", "0.0.0.0", "db.internal"]:
+        assert PortForward(src_port=1, dst_port=2, dst_addr=ok).dst_addr == ok
