@@ -1738,6 +1738,21 @@ class SusOpsMacTray(AbstractTrayApp):
                 return {"ok": True, "samples": len(series)}
             return _run_on_main(_do)
 
+        def _bw_hover(args):
+            """Set/clear the chart hover index so the crosshair + value pill can
+            be screenshotted (real mouseMoved: can't fire from the debug socket).
+            usage: bw-hover <idx|off>."""
+            def _do():
+                cw = self._config_window
+                view = getattr(cw, "_bw_chart_view", None) if cw else None
+                if view is None:
+                    return {"error": "no bandwidth chart (select a connection)"}
+                view._hover_idx = (None if args and args[0] == "off"
+                                   else int(args[0]) if args else 20)
+                view.setNeedsDisplay_(True)
+                return {"ok": True, "hover_idx": view._hover_idx}
+            return _run_on_main(_do)
+
         def _bw_dump(args):
             """Run the real repaint (RPC fetch → chart) and report its state.
             With an idle daemon, samples is 0 — proving the fetch path runs clean."""
@@ -1783,6 +1798,7 @@ class SusOpsMacTray(AbstractTrayApp):
             "set-state": _set_state,
             "logs": _logs,
             "bw-render": _bw_render,
+            "bw-hover": _bw_hover,
             "bw-dump": _bw_dump,
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),

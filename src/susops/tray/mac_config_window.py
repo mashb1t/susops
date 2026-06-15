@@ -86,10 +86,12 @@ def _get_bandwidth_view_cls():
     if _bandwidth_view_cls is not None:
         return _bandwidth_view_cls
     from AppKit import (  # type: ignore[import]
-        NSBezierPath, NSColor, NSFont, NSFontAttributeName,
-        NSForegroundColorAttributeName, NSView,
+        NSAttributedString, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
+        NSForegroundColorAttributeName, NSMutableAttributedString,
+        NSTrackingActiveInActiveApp, NSTrackingArea,
+        NSTrackingMouseEnteredAndExited, NSTrackingMouseMoved, NSView,
     )
-    from Foundation import NSMakePoint, NSString  # type: ignore[import]
+    from Foundation import NSMakePoint, NSMakeRect, NSString  # type: ignore[import]
 
     RX = _hex_color(BW_DOWN_HEX)   # download / receive — plotted upward
     TX = _hex_color(BW_UP_HEX)     # upload / send — plotted downward
@@ -111,10 +113,41 @@ def _get_bandwidth_view_cls():
                 return None
             self._samples = []
             self._running = False
+            self._hover_idx = None
             return self
 
         def isFlipped(self):
             return False  # bottom-left origin matches NSBezierPath
+
+        def updateTrackingAreas(self):
+            objc.super(_SusOpsBandwidthView, self).updateTrackingAreas()
+            for ta in list(self.trackingAreas()):
+                self.removeTrackingArea_(ta)
+            opts = (NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited
+                    | NSTrackingActiveInActiveApp)
+            self.addTrackingArea_(
+                NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                    self.bounds(), opts, self, None))
+
+        def mouseMoved_(self, event):
+            loc = self.convertPoint_fromView_(event.locationInWindow(), None)
+            _w, _h, left, right, _b, _t, _m = self._geom()
+            n = len([s for s in (self._samples or []) if len(s) >= 2])
+            if n < 2 or loc.x < left or loc.x > right:
+                if self._hover_idx is not None:
+                    self._hover_idx = None
+                    self.setNeedsDisplay_(True)
+                return
+            idx = int(round((loc.x - left) / ((right - left) / (n - 1))))
+            idx = max(0, min(n - 1, idx))
+            if idx != self._hover_idx:
+                self._hover_idx = idx
+                self.setNeedsDisplay_(True)
+
+        def mouseExited_(self, _event):
+            if self._hover_idx is not None:
+                self._hover_idx = None
+                self.setNeedsDisplay_(True)
 
         def _geom(self):
             """Plot geometry shared by drawing (and, later, hit-testing).
@@ -183,6 +216,40 @@ def _get_bandwidth_view_cls():
             # Time axis across the bottom strip.
             _draw(f"{n - 1}s ago", NSMakePoint(left, 0), dim)
             _draw_right("now", right, 0, dim)
+
+            # Hover crosshair + value pill at the sampled point in time.
+            hi = self._hover_idx
+            if hi is not None and 0 <= hi < n:
+                hx = x(hi)
+                _hex_color(PALETTE["badge_text"]).set()
+                cross = NSBezierPath.bezierPath()
+                cross.moveToPoint_(NSMakePoint(hx, bottom))
+                cross.lineToPoint_(NSMakePoint(hx, top))
+                cross.setLineWidth_(1.0)
+                cross.stroke()
+                for v, yf, col in ((rx[hi], y_up, RX), (tx[hi], y_down, TX)):
+                    col.set()
+                    NSBezierPath.bezierPathWithOvalInRect_(
+                        NSMakeRect(hx - 2.5, yf(v) - 2.5, 5, 5)).fill()
+                pill_font = NSFont.systemFontOfSize_(11)
+                pill = NSMutableAttributedString.alloc().init()
+
+                def _seg(s, col):
+                    pill.appendAttributedString_(
+                        NSAttributedString.alloc().initWithString_attributes_(
+                            s, {NSFontAttributeName: pill_font,
+                                NSForegroundColorAttributeName: col}))
+
+                _seg("↓ " + _fmt_rate(rx[hi]), RX)
+                _seg("   ↑ " + _fmt_rate(tx[hi]), TX)
+                _seg(f"   {n - 1 - hi}s ago", NSColor.tertiaryLabelColor())
+                pad, sz = 5.0, pill.size()
+                pw, ph = sz.width + 2 * pad, sz.height + 2 * pad
+                px, py = left + 6, top - ph
+                _hex_color(PALETTE["window"], 0.92).set()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(px, py, pw, ph), 4, 4).fill()
+                pill.drawAtPoint_(NSMakePoint(px + pad, py + pad))
 
     _bandwidth_view_cls = _SusOpsBandwidthView
     return _bandwidth_view_cls

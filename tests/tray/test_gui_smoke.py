@@ -214,6 +214,11 @@ def test_bandwidth_chart_renders_for_connection(tray_proc):
     r = tray_proc.send("bw-render 40")
     assert r.get("ok"), r
     assert r["samples"] == 40
+    # Hover crosshair: setting/clearing the index repaints without error.
+    h = tray_proc.send("bw-hover 27")
+    assert h.get("ok") and h["hover_idx"] == 27, h
+    off = tray_proc.send("bw-hover off")
+    assert off.get("ok") and off["hover_idx"] is None, off
 
 
 def test_inline_edit_forward_round_trip(tray_proc):
