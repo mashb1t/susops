@@ -3137,221 +3137,106 @@ class ConfigWindow:
     _SETTINGS_FIELD_W = 150
 
     def _render_settings_pane(self) -> None:
-        """Build the settings grid in column 3. Section labels are bold,
-        right-aligned in a left column; rows render to their right. Mirrors the
-        approved settings mockup."""
-        from AppKit import NSFont, NSTextAlignmentRight  # type: ignore[import]
-        from Cocoa import (  # type: ignore[import]
-            NSColor,
-            NSMakeRect,
-            NSScrollView,
-            NSTextField,
-            NSView,
+        """Settings form in column 3: an NSGridView with a right-aligned
+        section-label column and a control column, inside a centered, top-pinned
+        scroll view. The section title shows only on its first row; compound
+        controls (description, ports, buttons) are NSStackViews in the cell."""
+        from AppKit import (  # type: ignore[import]
+            NSButton, NSFont, NSGridView, NSImage,
+            NSLayoutAttributeCenterY, NSLayoutAttributeLeading,
+            NSSegmentedControl, NSStackView, NSTextAlignmentRight,
         )
+        from Cocoa import NSColor, NSMakeRect, NSScrollView, NSTextField, NSView
         self._clear_col3()
         self._detail_spec = None
         self._settings_widgets = {}
         self._settings_kinds = {}
-
         fields, ctx = self.tray.settings_field_specs()
         self._settings_ctx = ctx
-        # Group fields by section in spec order.
         by_section: dict[str, list] = {}
         for f in fields:
-            by_section.setdefault(f.get("section", "General:"), []).append(f)
+            by_section.setdefault(f.get("section", "General"), []).append(f)
 
         col3_w = self._col3.frame().size.width
         col3_h = self._col3.frame().size.height
-        # Cap the form width and center it horizontally in the (wide) settings
-        # area so it reads as an intentional macOS settings layout rather than a
-        # narrow form lost in a sea of empty space on the right.
         content_w = min(600, max(360, col3_w - 2 * CONTENT_PAD))
-        label_x = 0
         label_w = self._SETTINGS_LABEL_W
-        row_x = label_x + label_w + self._SETTINGS_LABEL_GAP
-        row_w = content_w - (label_w + self._SETTINGS_LABEL_GAP)
 
-        # Build into a tall document view inside a scroll view so the pane
-        # scrolls if the window is short. Lay out top-down against a 4000-tall
-        # doc, then trim the doc to the used height and shift subviews to the
-        # top (non-flipped doc: top = max-y).
-        doc = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, content_w, 4000))
-        try:
-            doc.setWantsLayer_(True)
-            doc.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
-        except Exception:
-            pass
-
-        # We lay out with a descending y cursor from the top of the doc; the
-        # doc height is trimmed at the end and the scroll view scrolled to top.
-        top = 4000 - 12
-        y = top
-        SECTION_GAP = 20
-        ROW_GAP = 10
-
-        def _section_label(title, sy):
-            lbl = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(label_x, sy - 18, label_w, 18))
-            lbl.setStringValue_(title)
+        def _section_label(title):
+            lbl = NSTextField.labelWithString_(title)
             lbl.setFont_(NSFont.boldSystemFontOfSize_(12))
             lbl.setAlignment_(NSTextAlignmentRight)
-            lbl.setBezeled_(False)
-            lbl.setDrawsBackground_(False)
-            lbl.setEditable_(False)
             lbl.setTextColor_(NSColor.labelColor())
-            doc.addSubview_(lbl)
+            return lbl
 
-        for section in self.SETTINGS_SECTIONS:
-            section_top = y
-            _section_label(section, section_top - 2)
-            if section == "Config file":
-                y = self._render_config_file_row(doc, row_x, row_w, section_top)
-            elif section == "Servers":
-                y = self._render_server_rows(
-                    doc, by_section.get(section, []), row_x, row_w, section_top)
-            else:
-                rows = by_section.get(section, [])
-                ry = section_top
-                for f in rows:
-                    ry = self._render_setting_row(doc, f, row_x, row_w, ry)
-                    ry -= ROW_GAP
-                y = ry
-            y -= SECTION_GAP
+        def _empty():
+            return NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 1, 1))
 
-        used = top - y
-        doc_h = used + 24
-        # Reposition all subviews so the content sits at the TOP of a doc that
-        # is exactly doc_h tall (subviews were placed against a 4000-tall doc).
-        shift = doc_h - 4000
-        for v in doc.subviews():
-            fr = v.frame()
-            v.setFrame_(NSMakeRect(fr.origin.x, fr.origin.y + shift,
-                                   fr.size.width, fr.size.height))
-        doc.setFrame_(NSMakeRect(0, 0, content_w, doc_h))
+        col1_w = max(160.0, content_w - label_w - self._SETTINGS_LABEL_GAP)
 
-        # Center the capped-width form horizontally. Flexible left+right margins
-        # keep it centered as the window resizes. A small top inset below the
-        # transparent titlebar avoids a large gap above "General:".
-        scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
-        # Align the first row ("General") with the nav's first row ("Connections")
-        # by starting at the same top inset the nav uses.
-        scroll_top_inset = SIDEBAR_TOP_INSET
-        avail_h = col3_h - scroll_top_inset
-        # Pin the form to the TOP: when the content is shorter than the available
-        # height, size the scroll to the content and place it at the top edge so
-        # the doc does not float at the bottom of an oversized clip view (which
-        # left a large empty band above "General:").
-        scroll_h = min(avail_h, doc_h)
-        scroll_y = (col3_h - scroll_top_inset) - scroll_h
-        scroll = NSScrollView.alloc().initWithFrame_(
-            NSMakeRect(scroll_x, scroll_y, content_w, scroll_h))
-        scroll.setDrawsBackground_(False)
-        scroll.setHasVerticalScroller_(True)
-        scroll.setAutohidesScrollers_(True)
-        # MinXMargin | MaxXMargin | MinYMargin -> fixed size, stays centered
-        # horizontally and pinned to the top as the window resizes.
-        scroll.setAutoresizingMask_(1 | 4 | 8)
-        scroll.setDocumentView_(doc)
-        self._col3.addSubview_(scroll)
-        # Non-flipped doc: the top of the content sits at high y. Scroll the
-        # clip view there so the pane opens at the top, not the bottom.
-        try:
-            clip = scroll.contentView()
-            visible_h = clip.bounds().size.height
-            from Foundation import NSMakePoint  # type: ignore[import]
-            clip.scrollToPoint_(NSMakePoint(0, max(0, doc_h - visible_h)))
-            scroll.reflectScrolledClipView_(clip)
-        except Exception:
-            pass
-
-    def _render_setting_row(self, doc, f, x, width, top) -> float:
-        """One checkbox row + an optional indented gray description. Returns the
-        y of the bottom of the row (next row's top)."""
-        from AppKit import NSFont  # type: ignore[import]
-        from Cocoa import (  # type: ignore[import]
-            NSButton,
-            NSColor,
-            NSMakeRect,
-            NSTextField,
-        )
-        key = f["key"]
-        kind = f["kind"]
-        if kind == "segmented":
-            return self._render_logo_row(doc, f, x, width, top)
-        # switch -> checkbox.
-        cb_y = top - 20
-        cb = NSButton.alloc().initWithFrame_(NSMakeRect(x, cb_y, width, 20))
-        try:
-            cb.setButtonType_(3)  # NSButtonTypeSwitch
-        except Exception:
-            pass
-        cb.setTitle_(f["label"])
-        cb.setState_(1 if f.get("default") else 0)
-        handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda sender, k=key: self._on_setting_toggle(k, bool(sender.state())))
-        self._handlers.append(handler)
-        cb.setTarget_(handler)
-        cb.setAction_("fire:")
-        doc.addSubview_(cb)
-        self._settings_widgets[key] = cb
-        self._settings_kinds[key] = "switch"
-        y = cb_y
-        desc = f.get("description")
-        if desc:
-            # Indented gray wrapped description under the checkbox.
-            indent = 20
-            d_h = 16
-            d = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(x + indent, cb_y - d_h - 1, width - indent, d_h))
-            d.setStringValue_(desc)
-            d.setFont_(NSFont.systemFontOfSize_(11))
-            d.setBezeled_(False)
-            d.setDrawsBackground_(False)
-            d.setEditable_(False)
-            d.setTextColor_(NSColor.tertiaryLabelColor())
+        def _w(view, width):
             try:
-                d.cell().setWraps_(True)
-                d.setFrameSize_(d.cell().cellSizeForBounds_(
-                    NSMakeRect(0, 0, width - indent, 999)))
-                d.setFrameOrigin_(NSMakeRect(
-                    x + indent, cb_y - d.frame().size.height - 1, 0, 0).origin)
+                view.widthAnchor().constraintEqualToConstant_(float(width)).setActive_(True)
             except Exception:
                 pass
-            doc.addSubview_(d)
-            y = d.frame().origin.y
-        return y
 
-    def _render_logo_row(self, doc, f, x, width, top) -> float:
-        """Logo segmented control with live preview + instant persist."""
-        from AppKit import NSFont, NSSegmentedControl  # type: ignore[import]
-        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
-        key = f["key"]
-        lbl_y = top - 18
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(x, lbl_y, width, 16))
-        lbl.setStringValue_(f["label"])
-        lbl.setFont_(NSFont.systemFontOfSize_(12))
-        lbl.setBezeled_(False)
-        lbl.setDrawsBackground_(False)
-        lbl.setEditable_(False)
-        lbl.setTextColor_(NSColor.labelColor())
-        doc.addSubview_(lbl)
-
-        options = f.get("options", [])
-        # Logo selector capped at 150 wide; the segments share that width evenly.
-        n = max(1, len(options))
-        seg_total = min(float(width), 245.0)
-        seg_w = (seg_total - 8) / n
-        seg_y = lbl_y - 30
-        seg = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(x, seg_y, seg_total, 26))
-        try:
-            seg.setSegmentCount_(len(options))
-        except Exception:
-            pass
-        for i, (title, img_path) in enumerate(options):
+        def _h(view, height):
             try:
+                view.heightAnchor().constraintEqualToConstant_(float(height)).setActive_(True)
+            except Exception:
+                pass
+
+        def _stack(views, *, vertical, spacing, align):
+            s = NSStackView.alloc().init()
+            s.setOrientation_(1 if vertical else 0)
+            s.setSpacing_(spacing)
+            s.setAlignment_(align)
+            for v in views:
+                s.addArrangedSubview_(v)
+            return s
+
+        def _checkbox(f):
+            cb = NSButton.alloc().init()
+            cb.setButtonType_(3)
+            cb.setTitle_(f["label"])
+            cb.setState_(1 if f.get("default") else 0)
+            h = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda s, k=f["key"]: self._on_setting_toggle(k, bool(s.state())))
+            self._handlers.append(h)
+            cb.setTarget_(h)
+            cb.setAction_("fire:")
+            self._settings_widgets[f["key"]] = cb
+            self._settings_kinds[f["key"]] = "switch"
+            return cb
+
+        def _switch_content(f):
+            cb = _checkbox(f)
+            desc = f.get("description")
+            if not desc:
+                return cb
+            d = NSTextField.wrappingLabelWithString_(desc)
+            d.setFont_(NSFont.systemFontOfSize_(11))
+            d.setTextColor_(NSColor.tertiaryLabelColor())
+            _w(d, col1_w - 20)
+            spacer = NSView.alloc().init()
+            _w(spacer, 20)
+            drow = _stack([spacer, d], vertical=False, spacing=0,
+                          align=NSLayoutAttributeLeading)
+            return _stack([cb, drow], vertical=True, spacing=3,
+                          align=NSLayoutAttributeLeading)
+
+        def _logo_content(f):
+            lbl = NSTextField.labelWithString_(f["label"])
+            lbl.setFont_(NSFont.systemFontOfSize_(12))
+            lbl.setTextColor_(NSColor.labelColor())
+            options = f.get("options", [])
+            n = max(1, len(options))
+            seg_total = min(col1_w, 245.0)
+            seg_w = (seg_total - 8) / n
+            seg = NSSegmentedControl.alloc().init()
+            seg.setSegmentCount_(len(options))
+            for i, (title, img_path) in enumerate(options):
                 if img_path:
-                    from AppKit import NSImage  # type: ignore[import]
                     img = NSImage.alloc().initWithContentsOfFile_(img_path)
                     if img is not None:
                         img.setSize_(NSMakeRect(0, 0, 18, 18).size)
@@ -3359,27 +3244,139 @@ class ConfigWindow:
                 if title:
                     seg.setLabel_forSegment_(str(title), i)
                 seg.setWidth_forSegment_(seg_w, i)
-            except Exception:
-                pass
-        default_idx = int(f.get("default") or 0)
+            seg.setSelectedSegment_(int(f.get("default") or 0))
+            h = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda s, k=f["key"]: self._on_setting_toggle(
+                    k, int(s.selectedSegment())))
+            self._handlers.append(h)
+            seg.setTarget_(h)
+            seg.setAction_("fire:")
+            self._settings_widgets[f["key"]] = seg
+            self._settings_kinds[f["key"]] = "segmented"
+            self._logo_seg_state = getattr(self.tray, "state", None)
+            self._logo_seg_paths = [img for _t, img in options]
+            _w(seg, seg_total)
+            _h(seg, 26)
+            return _stack([lbl, seg], vertical=True, spacing=6,
+                          align=NSLayoutAttributeLeading)
+
+        _PORT_LABELS = {"rpc_port": "RPC", "sse_port": "SSE", "pac_port": "PAC"}
+
+        def _port_content(f):
+            sub = NSTextField.labelWithString_(_PORT_LABELS.get(f["key"], f["key"]))
+            sub.setFont_(NSFont.systemFontOfSize_(12))
+            sub.setTextColor_(NSColor.labelColor())
+            _w(sub, 40)
+            tf = NSTextField.alloc().init()
+            tf.setStringValue_(str(f.get("default") or ""))
+            tf.setFont_(NSFont.systemFontOfSize_(13))
+            tf.setBezeled_(False)
+            tf.setDrawsBackground_(False)
+            tf.setEditable_(True)
+            tf.setSelectable_(True)
+            tf.setTextColor_(_hex_color(PALETTE["input_text"]))
+            if f.get("placeholder"):
+                try:
+                    tf.cell().setPlaceholderString_(f["placeholder"])
+                except Exception:
+                    pass
+            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
+            self._style_input_field(tf)
+            _w(tf, self._SETTINGS_FIELD_W - (40 + 6))
+            _h(tf, 22)
+            self._settings_widgets[f["key"]] = tf
+            self._settings_kinds[f["key"]] = "text"
+            views = [sub, tf]
+            note = f.get("note")
+            if note:
+                n = NSTextField.labelWithString_(note)
+                n.setFont_(NSFont.systemFontOfSize_(11))
+                n.setTextColor_(NSColor.tertiaryLabelColor())
+                views.append(n)
+            return _stack(views, vertical=False, spacing=6,
+                          align=NSLayoutAttributeCenterY)
+
+        def _config_content():
+            open_btn = self._styled_neutral_button(
+                "Open Config File…", NSMakeRect(0, 0, self._SETTINGS_FIELD_W, 28))
+            _w(open_btn, self._SETTINGS_FIELD_W)
+            _h(open_btn, 28)
+            oh = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s: self._dispatch("settings.open_config"))
+            self._handlers.append(oh)
+            open_btn.setTarget_(oh)
+            open_btn.setAction_("fire:")
+            save_btn = self._styled_save_button("Save", NSMakeRect(0, 0, 84, 28))
+            _w(save_btn, 84)
+            _h(save_btn, 28)
+            save_btn.setEnabled_(True)
+            self._restyle_save_button(save_btn, True)
+            sh = _get_action_handler_cls().alloc().initWithCallback_(
+                lambda _s: self._on_apply_settings())
+            self._handlers.append(sh)
+            save_btn.setTarget_(sh)
+            save_btn.setAction_("fire:")
+            status = NSTextField.labelWithString_("")
+            status.setFont_(NSFont.systemFontOfSize_(11))
+            status.setTextColor_(NSColor.tertiaryLabelColor())
+            self._settings_status_label = status
+            return _stack([open_btn, save_btn, status], vertical=False,
+                          spacing=10, align=NSLayoutAttributeCenterY)
+
+        grid = NSGridView.alloc().init()
+        section_starts = []
+        for section in self.SETTINGS_SECTIONS:
+            if section == "Config file":
+                contents = [_config_content()]
+            elif section == "Servers":
+                contents = [_port_content(f) for f in by_section.get(section, [])]
+            else:
+                contents = []
+                for f in by_section.get(section, []):
+                    contents.append(
+                        _logo_content(f) if f.get("kind") == "segmented"
+                        else _switch_content(f))
+            for i, c in enumerate(contents):
+                if i == 0:
+                    section_starts.append(grid.numberOfRows())
+                grid.addRowWithViews_(
+                    [_section_label(section) if i == 0 else _empty(), c])
         try:
-            seg.setSelectedSegment_(default_idx)
+            from AppKit import NSGridCellPlacementTop, NSGridCellPlacementTrailing
+            grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
+            grid.columnAtIndex_(0).setWidth_(label_w)
+            grid.setColumnSpacing_(self._SETTINGS_LABEL_GAP)
+            grid.setRowSpacing_(10.0)
+            # Top-align both cells of every row so the section label sits level
+            # with the first line of (possibly multi-line) content.
+            for i in range(grid.numberOfRows()):
+                for ci in (0, 1):
+                    grid.cellAtColumnIndex_rowIndex_(ci, i).setYPlacement_(
+                        NSGridCellPlacementTop)
+            for ri in section_starts[1:]:
+                grid.rowAtIndex_(ri).setTopPadding_(20.0)
         except Exception:
             pass
-        handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda sender, k=key: self._on_setting_toggle(
-                k, int(sender.selectedSegment())))
-        self._handlers.append(handler)
-        seg.setTarget_(handler)
-        seg.setAction_("fire:")
-        doc.addSubview_(seg)
-        self._settings_widgets[key] = seg
-        self._settings_kinds[key] = "segmented"
-        # Seed the per-state cache so refresh_logo_segment_images only repaints
-        # when the run state actually changes (update_icon fires on every poll).
-        self._logo_seg_state = getattr(self.tray, "state", None)
-        self._logo_seg_paths = [img for _t, img in options]
-        return seg_y
+
+        grid.setTranslatesAutoresizingMaskIntoConstraints_(True)
+        fit = grid.fittingSize()
+        doc_h = fit.height
+        scroll_top_inset = SIDEBAR_TOP_INSET
+        scroll_h = min(col3_h - scroll_top_inset, doc_h)
+        scroll_x = max(CONTENT_PAD, (col3_w - content_w) / 2.0)
+        scroll_y = (col3_h - scroll_top_inset) - scroll_h
+        grid.setFrame_(NSMakeRect(0, 0, content_w, doc_h))
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(scroll_x, scroll_y, content_w, scroll_h))
+        scroll.setDrawsBackground_(False)
+        scroll.setHasVerticalScroller_(True)
+        scroll.setAutohidesScrollers_(True)
+        scroll.setAutoresizingMask_(1 | 4 | 8)
+        scroll.setDocumentView_(grid)
+        self._col3.addSubview_(scroll)
+        # Restore any pending save-feedback message into the fresh status label.
+        self._set_settings_save_feedback(
+            self._settings_save_message, is_error=self._settings_save_error)
 
     def refresh_logo_segment_images(self) -> None:
         """Repaint the Logo-style segmented control's per-segment images to the
@@ -3416,127 +3413,6 @@ class ConfigWindow:
                     pass
         self._logo_seg_state = state
         self._logo_seg_paths = [img for _t, img in options]
-
-    def _render_server_rows(self, doc, fields, x, width, top) -> float:
-        """RPC / SSE / PAC port text fields ("auto" placeholder) + per-field
-        gray note. The Save button lives on the Config-file row, not here."""
-        from AppKit import NSFont  # type: ignore[import]
-        from Cocoa import (  # type: ignore[import]
-            NSColor,
-            NSMakeRect,
-            NSTextField,
-        )
-        labels = {"rpc_port": "RPC", "sse_port": "SSE", "pac_port": "PAC"}
-        sub_label_w = 46
-        # Field right edge aligns with the Open Config File… button: the button
-        # spans the whole row (sub-label + gap + field), so subtract them here.
-        field_w = self._SETTINGS_FIELD_W - (sub_label_w + 6)
-        y = top
-        for f in fields:
-            key = f["key"]
-            row_y = y - 24
-            sub = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(x, row_y + 3, sub_label_w, 18))
-            sub.setStringValue_(labels.get(key, key))
-            sub.setFont_(NSFont.systemFontOfSize_(12))
-            sub.setBezeled_(False)
-            sub.setDrawsBackground_(False)
-            sub.setEditable_(False)
-            sub.setTextColor_(NSColor.labelColor())
-            doc.addSubview_(sub)
-
-            tf = NSTextField.alloc().initWithFrame_(
-                NSMakeRect(x + sub_label_w + 6, row_y, field_w, 22))
-            tf.setStringValue_(str(f.get("default") or ""))
-            tf.setFont_(NSFont.systemFontOfSize_(13))
-            tf.setBezeled_(False)
-            tf.setDrawsBackground_(False)
-            tf.setEditable_(True)
-            tf.setSelectable_(True)
-            tf.setTextColor_(_hex_color(PALETTE["input_text"]))
-            if f.get("placeholder"):
-                try:
-                    tf.cell().setPlaceholderString_(f["placeholder"])
-                except Exception:
-                    pass
-            _apply_vcenter_cell(tf, _get_vcenter_text_cell_cls(), padding=10.0)
-            self._style_input_field(tf)
-            doc.addSubview_(tf)
-            self._settings_widgets[key] = tf
-            self._settings_kinds[key] = "text"
-
-            note = f.get("note")
-            if note:
-                n = NSTextField.alloc().initWithFrame_(
-                    NSMakeRect(x + sub_label_w + 6 + field_w + 10, row_y + 3,
-                               width - (sub_label_w + 6 + field_w + 10), 16))
-                n.setStringValue_(note)
-                n.setFont_(NSFont.systemFontOfSize_(11))
-                n.setBezeled_(False)
-                n.setDrawsBackground_(False)
-                n.setEditable_(False)
-                n.setTextColor_(NSColor.tertiaryLabelColor())
-                doc.addSubview_(n)
-            y = row_y - 6
-        return y
-
-    def _render_config_file_row(self, doc, x, width, top) -> float:
-        """Config file row: "Open Config File…" and the blue "Save" button on a
-        single row. Save commits ALL staged settings (toggles + logo + login +
-        ports); it is always enabled. Open Config File opens the YAML in
-        $EDITOR."""
-        from AppKit import NSFont  # type: ignore[import]
-        from Cocoa import NSColor, NSMakeRect, NSTextField  # type: ignore[import]
-        btn_h = 28
-        # Match the button baseline to the section-label baseline used in
-        # _section_label (label frame origin: section_top - 20, height: 18).
-        label_center = (top - 20) + 9
-        btn_y = label_center - btn_h / 2.0
-        open_w = self._SETTINGS_FIELD_W  # match the server-port text fields
-        open_btn = self._styled_neutral_button(
-            "Open Config File…", NSMakeRect(x, btn_y, open_w, btn_h))
-        open_handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda _s: self._dispatch("settings.open_config"))
-        self._handlers.append(open_handler)
-        open_btn.setTarget_(open_handler)
-        open_btn.setAction_("fire:")
-        doc.addSubview_(open_btn)
-
-        # Save sits immediately to the right of Open Config File…, same row.
-        save_w = 84
-        save_x = x + open_w + 10
-        save_btn = self._styled_save_button(
-            "Save", NSMakeRect(save_x, btn_y, save_w, btn_h))
-        save_btn.setEnabled_(True)
-        self._restyle_save_button(save_btn, True)
-        save_handler = _get_action_handler_cls().alloc().initWithCallback_(
-            lambda _s: self._on_apply_settings())
-        self._handlers.append(save_handler)
-        save_btn.setTarget_(save_handler)
-        save_btn.setAction_("fire:")
-        doc.addSubview_(save_btn)
-
-        # Inline save feedback gives immediate visual confirmation without
-        # requiring another dialog.
-        status_x = save_x + save_w + 12
-        status_w = max(80, width - (status_x - x))
-        status = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(status_x, btn_y + 5, status_w, 16))
-        status.setStringValue_("")
-        status.setFont_(NSFont.systemFontOfSize_(11))
-        status.setBezeled_(False)
-        status.setDrawsBackground_(False)
-        status.setEditable_(False)
-        status.setSelectable_(False)
-        status.setTextColor_(NSColor.tertiaryLabelColor())
-        doc.addSubview_(status)
-        self._settings_status_label = status
-        self._set_settings_save_feedback(
-            self._settings_save_message,
-            is_error=self._settings_save_error,
-        )
-        # Keep the section height consistent with other rows.
-        return btn_y - 6
 
     def _on_setting_toggle(self, key: str, value) -> None:
         """Stage one toggle/logo change locally - NOTHING persists until Apply.
