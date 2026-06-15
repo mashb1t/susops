@@ -1683,6 +1683,10 @@ class SusOpsMacTray(AbstractTrayApp):
                 if args else {"error": "usage: select <category> [index]"}),
             "dump-window": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().dump()),
+            "resize": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().resize(
+                    float(args[0]), float(args[1])))
+                if len(args) >= 2 else {"error": "usage: resize <w> <h>"}),
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
             "set-field": lambda args: (_run_on_main(

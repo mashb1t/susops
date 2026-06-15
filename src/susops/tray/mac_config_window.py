@@ -708,6 +708,7 @@ class ConfigWindow:
             NSWindow,
             NSWindowStyleMaskClosable,
             NSWindowStyleMaskFullSizeContentView,
+            NSWindowStyleMaskResizable,
             NSWindowStyleMaskTitled,
             NSWindowTitleVisible,
         )
@@ -718,7 +719,8 @@ class ConfigWindow:
         )
 
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                 | NSWindowStyleMaskFullSizeContentView)
+                 | NSWindowStyleMaskFullSizeContentView
+                 | NSWindowStyleMaskResizable)
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, WIN_W, WIN_H), style, NSBackingStoreBuffered, False,
         )
@@ -1850,10 +1852,11 @@ class ConfigWindow:
         self._set_settings_save_feedback("Save failed", is_error=True)
 
     def _content_column(self):
-        """Create the content column: a fixed CONTENT_MAX_W view anchored
-        top-left with CONTENT_PAD. No horizontal autoresize bits are set, so
-        width and left edge stay fixed and the column never stretches to the
-        window edge on resize. Returns (container, content_w)."""
+        """Create the content column: a fixed CONTENT_MAX_W view pinned to the
+        top-left with CONTENT_PAD. Mask 8 (MinYMargin) keeps the top edge flush
+        and a fixed width/left edge, so the content rides the top of col 3 as
+        the window resizes instead of floating down with the bottom-left origin.
+        Returns (container, content_w)."""
         from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
         w = self._col3.frame().size.width
         h = self._col3.frame().size.height
@@ -1865,7 +1868,7 @@ class ConfigWindow:
             container.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         except Exception:
             pass
-        container.setAutoresizingMask_(16 | 32)  # HeightSizable | MaxYMargin
+        container.setAutoresizingMask_(8)  # MinYMargin: pin top, fixed size/left
         self._col3.addSubview_(container)
         return container, cw
 
@@ -2811,6 +2814,7 @@ class ConfigWindow:
             lbl.cell().setWraps_(True)
         except Exception:
             pass
+        lbl.setAutoresizingMask_(8)  # MinYMargin: ride the top on resize
         self._col3.addSubview_(lbl)
         self._col3_text = text
 
@@ -3323,6 +3327,20 @@ class ConfigWindow:
             # (NSButton does not retain its target).
             "addbar_handlers": len(self._addbar_handlers),
         }
+
+    def resize(self, w: float, h: float) -> dict:
+        """Resize the window (top-left anchored) WITHOUT re-rendering col 3, so
+        the screenshot exercises the autoresizing masks rather than a fresh
+        render at the new size. Debug-only."""
+        if self.window is None:
+            return {"error": "no window"}
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        f = self.window.frame()
+        top = f.origin.y + f.size.height
+        self.window.setFrame_display_(
+            NSMakeRect(f.origin.x, top - h, w, h), True)
+        nf = self.window.frame()
+        return {"ok": True, "w": nf.size.width, "h": nf.size.height}
 
     def _dump_alerts(self) -> list:
         from susops.tray.mac import _DEBUG_ALERTS
