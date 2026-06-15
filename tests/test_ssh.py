@@ -114,3 +114,41 @@ def test_find_master_pid_strict_match(monkeypatch, workspace):
     # No matching process at all → None.
     monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: iter(procs[1:]))
     assert find_master_pid("test", workspace) is None
+
+
+def test_cancel_forward_missing_socket_is_noop(tmp_path, monkeypatch):
+    """cancel_forward returns without invoking ssh when the socket is gone."""
+    from susops.core.config import Connection, PortForward
+
+    calls = []
+    monkeypatch.setattr("susops.core.ssh.subprocess.run",
+                        lambda cmd, **kw: calls.append(cmd))
+    conn = Connection(tag="t", ssh_host="user@h")
+    fw = PortForward(src_port=5432, dst_port=5432, dst_addr="db.internal", tag="pg")
+
+    ssh_mod.cancel_forward(conn, fw, "local", tmp_path)  # no socket yet
+    assert calls == []
+
+
+def test_cancel_forward_invokes_ssh_O_cancel(tmp_path, monkeypatch):
+    """With a live socket, cancel_forward runs ssh -O cancel with the right spec."""
+    from susops.core.config import Connection, PortForward
+
+    calls = []
+    monkeypatch.setattr("susops.core.ssh.subprocess.run",
+                        lambda cmd, **kw: calls.append(cmd))
+    conn = Connection(tag="t", ssh_host="user@h")
+    fw = PortForward(src_port=5432, dst_port=6432, dst_addr="db.internal", tag="pg")
+
+    sock = socket_path("t", tmp_path)
+    sock.parent.mkdir(parents=True, exist_ok=True)
+    sock.touch()
+
+    ssh_mod.cancel_forward(conn, fw, "local", tmp_path)
+
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[:3] == ["ssh", "-O", "cancel"]
+    assert "-L" in argv  # local → -L
+    assert "localhost:5432:db.internal:6432" in argv
+    assert "user@h" in argv

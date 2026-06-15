@@ -146,3 +146,26 @@ def test_track_existing_records_create_time(mgr, tmp_path):
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_kill_all_skips_services_daemon(mgr, tmp_path):
+    """kill_all must never signal or remove the daemon's own pid file."""
+    daemon_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        # Daemon pid file is written bare-int by services_daemon and is blacklisted.
+        (tmp_path / "pids" / "susops-services.pid").write_text(str(daemon_proc.pid))
+        mgr.track_existing("susops-ssh-victim", victim.pid)
+
+        mgr.kill_all()
+
+        assert (tmp_path / "pids" / "susops-services.pid").exists()
+        assert daemon_proc.poll() is None  # daemon left untouched
+        assert not (tmp_path / "pids" / "susops-ssh-victim.pid").exists()
+    finally:
+        for p in (daemon_proc, victim):
+            try:
+                p.kill()
+                p.wait(timeout=2)
+            except Exception:
+                pass

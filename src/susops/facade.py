@@ -2044,27 +2044,36 @@ class SusOpsManager:
     # Testing
     # ------------------------------------------------------------------ #
 
-    def test(self, target: str) -> TestResult:
-        conn = get_default_connection(self.config)
-        if conn is None or conn.socks_proxy_port == 0:
-            return TestResult(target=target, success=False, message="No active SOCKS proxy")
-        proxy = f"socks5h://127.0.0.1:{conn.socks_proxy_port}"
+    def _http_probe_via_socks(
+            self, host: str, socks_port: int
+    ) -> tuple[bool, str, float | None]:
+        """Probe http://<host> through the SOCKS proxy on socks_port.
+
+        Returns (success, message, latency_ms). The single subprocess seam that
+        test() and test_domain() share — tests can patch this method instead of
+        the module-global subprocess.run.
+        """
+        proxy = f"socks5h://127.0.0.1:{socks_port}"
         start = time.monotonic()
         try:
             result = subprocess.run(
                 ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                 "--proxy", proxy, "--max-time", "10", f"http://{target}"],
+                 "--proxy", proxy, "--max-time", "10", f"http://{host}"],
                 capture_output=True, timeout=15, text=True,
             )
-            latency = (time.monotonic() - start) * 1000
-            success = result.returncode == 0
-            return TestResult(
-                target=target, success=success,
-                message=f"HTTP {result.stdout.strip()}" if success else result.stderr.strip(),
-                latency_ms=latency if success else None,
-            )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            return TestResult(target=target, success=False, message=str(exc))
+            return False, str(exc), None
+        latency = (time.monotonic() - start) * 1000
+        success = result.returncode == 0
+        message = f"HTTP {result.stdout.strip()}" if success else result.stderr.strip()
+        return success, message, (latency if success else None)
+
+    def test(self, target: str) -> TestResult:
+        conn = get_default_connection(self.config)
+        if conn is None or conn.socks_proxy_port == 0:
+            return TestResult(target=target, success=False, message="No active SOCKS proxy")
+        success, message, latency = self._http_probe_via_socks(target, conn.socks_proxy_port)
+        return TestResult(target=target, success=success, message=message, latency_ms=latency)
 
     def test_all(self) -> list[TestResult]:
         return [self.test(host) for conn in self.config.connections for host in conn.pac_hosts]
@@ -2091,24 +2100,9 @@ class SusOpsManager:
         conn = get_connection(self.config, conn_tag)
         if conn is None or conn.socks_proxy_port == 0:
             return TestResult(target=host, success=False, message="No active SOCKS proxy")
-        proxy = f"socks5h://127.0.0.1:{conn.socks_proxy_port}"
         clean_host = host.lstrip("*.")
-        start = time.monotonic()
-        try:
-            result = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                 "--proxy", proxy, "--max-time", "10", f"http://{clean_host}"],
-                capture_output=True, timeout=15, text=True,
-            )
-            latency = (time.monotonic() - start) * 1000
-            success = result.returncode == 0
-            return TestResult(
-                target=host, success=success,
-                message=f"HTTP {result.stdout.strip()}" if success else result.stderr.strip(),
-                latency_ms=latency if success else None,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            return TestResult(target=host, success=False, message=str(exc))
+        success, message, latency = self._http_probe_via_socks(clean_host, conn.socks_proxy_port)
+        return TestResult(target=host, success=success, message=message, latency_ms=latency)
 
     def test_forward(self, conn_tag: str, src_port: int, direction: str) -> dict[str, bool]:
         """Check if a port forward is active.
