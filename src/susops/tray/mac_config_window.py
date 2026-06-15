@@ -420,6 +420,7 @@ def _get_window_delegate_cls():
             if self is None:
                 return None
             self._cb = cb
+            self._resize_cb = None
             return self
 
         def windowShouldClose_(self, _sender):
@@ -428,6 +429,14 @@ def _get_window_delegate_cls():
             except Exception:
                 pass
             return True
+
+        def windowDidResize_(self, _notification):
+            cb = getattr(self, "_resize_cb", None)
+            if cb is not None:
+                try:
+                    cb()
+                except Exception:
+                    pass
 
     _window_delegate_cls = _SusOpsConfigWindowDelegate
     return _SusOpsConfigWindowDelegate
@@ -540,12 +549,12 @@ def _get_row_view_cls():
 
 
 # ---- geometry ----
-WIN_W = 900
+WIN_W = 1024
 WIN_H = 545
-MIN_W = 900
+MIN_W = 1024
 MIN_H = 545
 COL1_W = 180
-COL2_W = 270
+COL2_W = 300
 TOP_INSET = 45          # traffic lights overlay col 1; start content below them
 SIDEBAR_TOP_INSET = TOP_INSET - 9  # nav-only top inset (kept independent for fine tuning)
 SEARCH_H = 30
@@ -557,10 +566,11 @@ NAV_ICON_INSET_X = 8  # nav icon left inset within row pill
 NAV_COUNT_RIGHT_INSET = NAV_ICON_INSET_X + 28  # match count inset to icon inset
 DEBUG_ROW_BOUNDS = False  # temporary visual aid: draw row pills in red
 
-# Column-3 content is constrained to a fixed-width column anchored top-left,
-# NOT stretched to the window edge. The Enabled toggle anchors to the RIGHT
-# EDGE of this content column (near the title), not the window border.
-CONTENT_MAX_W = 540
+# Column-3 detail/editor content fills the available width (CONTENT_PAD on
+# each side) and re-renders on window resize via _relayout_col3. The Enabled
+# toggle and action buttons anchor to the RIGHT EDGE of that content column.
+# CONTENT_MAX_W only caps the width of the "Select an item." placeholder label.
+CONTENT_MAX_W = 900
 CONTENT_PAD = 16
 
 # Balanced inner padding for the detail card: the same inset on all four sides
@@ -797,6 +807,7 @@ class ConfigWindow:
 
         delegate = _get_window_delegate_cls().alloc().initWithCallback_(
             self._on_closed)
+        delegate._resize_cb = self._relayout_col3
         self._handlers.append(delegate)
         win.setDelegate_(delegate)
         self.window = win
@@ -1851,16 +1862,32 @@ class ConfigWindow:
     def mark_settings_save_failed(self) -> None:
         self._set_settings_save_feedback("Save failed", is_error=True)
 
+    def _relayout_col3(self) -> None:
+        """Re-render column 3 at the current window width (window resize hook)
+        so the detail/editor content fills the available width. Skipped while a
+        form is mid-edit (a rebuild would drop typed-but-unsaved values) and for
+        settings (its form is centered by autoresizing mask, no rebuild needed).
+        Teardown+rebuild happens within one runloop turn, so there is no flicker."""
+        if self.window is None:
+            return
+        if self._dirty or self.category == "settings":
+            return
+        if self._detail_spec is not None:
+            self._render_detail(self._detail_spec)
+        else:
+            self._render_col3_placeholder(self._col3_text)
+
     def _content_column(self):
-        """Create the content column: a fixed CONTENT_MAX_W view pinned to the
-        top-left with CONTENT_PAD. Mask 8 (MinYMargin) keeps the top edge flush
-        and a fixed width/left edge, so the content rides the top of col 3 as
-        the window resizes instead of floating down with the bottom-left origin.
+        """Create the content column: a view pinned to the top-left with
+        CONTENT_PAD that fills the available col-3 width. Mask 8 (MinYMargin)
+        keeps the top edge flush, so the content rides the top of col 3 on
+        resize instead of floating down with the bottom-left origin; the width
+        is recomputed each render (_relayout_col3 re-renders on window resize).
         Returns (container, content_w)."""
         from Cocoa import NSColor, NSMakeRect, NSView  # type: ignore[import]
         w = self._col3.frame().size.width
         h = self._col3.frame().size.height
-        cw = min(CONTENT_MAX_W, max(0, w - 2 * CONTENT_PAD))
+        cw = max(0, w - 2 * CONTENT_PAD)
         container = NSView.alloc().initWithFrame_(
             NSMakeRect(CONTENT_PAD, 0, cw, h))
         try:
@@ -3329,9 +3356,9 @@ class ConfigWindow:
         }
 
     def resize(self, w: float, h: float) -> dict:
-        """Resize the window (top-left anchored) WITHOUT re-rendering col 3, so
-        the screenshot exercises the autoresizing masks rather than a fresh
-        render at the new size. Debug-only."""
+        """Resize the window (top-left anchored). The window delegate's
+        windowDidResize_ fires _relayout_col3 in response, so col 3 re-renders
+        at the new width. Debug-only."""
         if self.window is None:
             return {"error": "no window"}
         from Cocoa import NSMakeRect  # type: ignore[import]
