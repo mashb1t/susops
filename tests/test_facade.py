@@ -1458,6 +1458,43 @@ def test_list_shares_concurrent_with_mutation(tmp_path):
     assert not errors, f"list_shares crashed under concurrent mutation: {errors!r}"
 
 
+def test_concurrent_start_spawns_one_master(tmp_path, monkeypatch):
+    """The per-tag start lock must prevent two concurrent starts from each
+    spawning a ControlMaster (the facade.py:579 race)."""
+    import threading
+    import time as _time
+    from susops import facade as facade_mod
+    from susops.core.ssh import socket_path
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    mgr.add_connection("work", "user@host")
+
+    calls: list[str] = []
+    running = {"v": False}
+
+    def fake_start_master(conn, pmgr, ws):
+        calls.append(conn.tag)
+        _time.sleep(0.05)  # widen the race window
+        running["v"] = True
+        sp = socket_path(conn.tag, ws)
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.touch()  # let the wait-for-socket loop exit immediately
+        return 4242
+
+    monkeypatch.setattr(facade_mod, "start_master", fake_start_master)
+    monkeypatch.setattr(facade_mod, "is_tunnel_running", lambda tag, pmgr: running["v"])
+    monkeypatch.setattr(facade_mod, "is_socket_alive", lambda tag, ws: False)
+
+    threads = [threading.Thread(target=mgr._start_master_only, args=("work",))
+               for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls == ["work"], f"expected exactly one master spawn, got {calls}"
+
+
 def test_is_idle_fresh_workspace(tmp_path):
     """A brand-new workspace with no tracked processes is idle."""
     from susops.facade import SusOpsManager

@@ -580,6 +580,14 @@ class SusOpsManager:
         # to bind the same port, one wins and the rest log spurious EADDRINUSE
         # / "PAC server is already running" errors.
         self._pac_start_lock = threading.Lock()
+        # Per-connection lock around the master check-then-start. Without it,
+        # concurrent start(tag=X) calls (RPC runs in executor threads) or a
+        # start racing the reconnect monitor both see is_tunnel_running()==False
+        # and each spawn a master, overwriting the PID file — see the comment
+        # below. Held ONLY around the check + start_master, never across config
+        # I/O or downloads (so fetch can't block stop), so it stays a leaf.
+        self._start_locks: dict[str, threading.Lock] = {}
+        self._start_locks_guard = threading.Lock()
         self._process_mgr = ProcessManager(workspace)
         self._pac_server = PacServer()
         self._status_server = StatusServer()
@@ -1216,18 +1224,21 @@ class SusOpsManager:
                 self._log(f"[{conn.tag}] Disabled — skipping")
                 statuses.append(self._connection_status(conn))
                 continue
-            if is_tunnel_running(conn.tag, self._process_mgr):
+            # Serialise the check-then-start so two concurrent start()s (or a
+            # start racing the reconnect monitor) can't both spawn a master.
+            with self._tag_start_lock(conn.tag):
+              if is_tunnel_running(conn.tag, self._process_mgr):
                 self._log(f"[{conn.tag}] Already running")
                 statuses.append(self._connection_status(conn))
                 continue
-            if is_socket_alive(conn.tag, self.workspace):
+              if is_socket_alive(conn.tag, self.workspace):
                 # ControlMaster is alive but our PID file is stale (e.g.
                 # process was a zombie that was reaped). Don't start a
                 # second master — re-adopt by re-tracking the socket owner.
                 self._log(f"[{conn.tag}] Socket alive but PID stale — skipping new master")
                 statuses.append(self._connection_status(conn))
                 continue
-            try:
+              try:
                 conn = self._ensure_socks_port(conn)
                 pid = start_master(conn, self._process_mgr, self.workspace)
                 self._log(f"[{conn.tag}] Master started (PID {pid})")
@@ -1248,7 +1259,7 @@ class SusOpsManager:
                 self._start_times[conn.tag] = time.monotonic()
                 self._emit("state", {"tag": conn.tag, "running": True, "pid": pid})
                 self._reconnect_monitor.mark_running(conn.tag)
-            except Exception as exc:
+              except Exception as exc:
                 log_path = self.workspace / "logs" / f"susops-ssh-{conn.tag}.log"
                 tail = ""
                 if log_path.exists():
@@ -1468,6 +1479,15 @@ class SusOpsManager:
             if is_tunnel_running(conn.tag, self._process_mgr) or is_socket_alive(conn.tag, self.workspace)
         }
 
+    def _tag_start_lock(self, tag: str) -> threading.Lock:
+        """Get-or-create the per-connection start lock for tag."""
+        with self._start_locks_guard:
+            lock = self._start_locks.get(tag)
+            if lock is None:
+                lock = threading.Lock()
+                self._start_locks[tag] = lock
+            return lock
+
     def _start_master_only(self, conn_tag: str) -> None:
         """Start only the SSH ControlMaster for conn_tag — no forwards, PAC, or shares.
 
@@ -1477,11 +1497,14 @@ class SusOpsManager:
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection '{conn_tag}' not found")
-        if is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace):
-            return  # already up
-        conn = self._ensure_socks_port(conn)
-        pid = start_master(conn, self._process_mgr, self.workspace)
-        self._log(f"[{conn_tag}] Master started for fetch (PID {pid})")
+        # Lock only the check-then-start, not the wait-for-socket loop below,
+        # so fetch never holds the lock across its (slow) download.
+        with self._tag_start_lock(conn_tag):
+            if is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace):
+                return  # already up
+            conn = self._ensure_socks_port(conn)
+            pid = start_master(conn, self._process_mgr, self.workspace)
+            self._log(f"[{conn_tag}] Master started for fetch (PID {pid})")
         sock = socket_path(conn_tag, self.workspace)
         for _ in range(50):
             if sock.exists():
@@ -1498,33 +1521,37 @@ class SusOpsManager:
 
         Called by _ReconnectMonitor on every poll while the socket is down.
         """
-        if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
-            return True
-        self._reload_config()
-        conn = get_connection(self.config, tag)
-        if conn is None or not conn.enabled:
-            return False
-        try:
-            conn = self._ensure_socks_port(conn)
-            pid = start_master(conn, self._process_mgr, self.workspace)
-            self._log(f"[{tag}] Reconnect started (PID {pid}), waiting for socket…")
-            # Wait up to 10 s for the socket file to appear, then verify it is
-            # actually responding.  If SSH fails (host unreachable, auth error)
-            # the process exits and the socket never becomes alive — return False
-            # so the caller does not prematurely declare success.
-            sock = socket_path(tag, self.workspace)
-            for _ in range(100):
-                if sock.exists():
-                    break
-                time.sleep(0.1)
-            if not is_socket_alive(tag, self.workspace):
-                self._log(f"[{tag}] Reconnect started but socket not ready — will retry")
+        # Serialise the check-then-start under the per-tag lock so the monitor
+        # and a concurrent start() can't both spawn a master. Release it before
+        # the (slow) wait-for-socket loop so a manual start isn't blocked.
+        with self._tag_start_lock(tag):
+            if is_tunnel_running(tag, self._process_mgr) or is_socket_alive(tag, self.workspace):
+                return True
+            self._reload_config()
+            conn = get_connection(self.config, tag)
+            if conn is None or not conn.enabled:
                 return False
-            self._log(f"[{tag}] Reconnected (PID {pid})")
-            return True
-        except Exception as exc:
-            self._log(f"[{tag}] Reconnect attempt failed: {exc}")
+            try:
+                conn = self._ensure_socks_port(conn)
+                pid = start_master(conn, self._process_mgr, self.workspace)
+            except Exception as exc:
+                self._log(f"[{tag}] Reconnect attempt failed: {exc}")
+                return False
+        self._log(f"[{tag}] Reconnect started (PID {pid}), waiting for socket…")
+        # Wait up to 10 s for the socket file to appear, then verify it is
+        # actually responding.  If SSH fails (host unreachable, auth error)
+        # the process exits and the socket never becomes alive — return False
+        # so the caller does not prematurely declare success.
+        sock = socket_path(tag, self.workspace)
+        for _ in range(100):
+            if sock.exists():
+                break
+            time.sleep(0.1)
+        if not is_socket_alive(tag, self.workspace):
+            self._log(f"[{tag}] Reconnect started but socket not ready — will retry")
             return False
+        self._log(f"[{tag}] Reconnected (PID {pid})")
+        return True
 
     def _reregister_forwards(self, tag: str) -> None:
         """Re-register all enabled forwards
