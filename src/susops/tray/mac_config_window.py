@@ -988,10 +988,13 @@ class ConfigWindow:
         self._col3.setFrame_(NSMakeRect(x3, 0, max(0.0, w - x3), h))
 
     def _layout_col2_contents(self) -> None:
-        """Fit col 2's search field + add-button bar to col 2's current width.
-        The list scroll tracks col 2 via its autoresizing mask; the search field
-        and add buttons are pinned here so they fill col 2 exactly (never spill
-        into col 3, never leave a gap) at any divider position."""
+        """Fit col 2's search field, list table + add-button bar to col 2's
+        current width. The list scroll tracks col 2 via its autoresizing mask,
+        but the search field, the table column width, and the add buttons are
+        pinned here so they fill col 2 exactly (never spill into col 3, never
+        leave a gap) at any divider position. The list cells are re-vended so
+        the right-aligned connection-tag badge tracks the column's right edge
+        instantly instead of waiting for the ~2 s poll to rebuild them."""
         col2 = getattr(self, "_col2", None)
         if col2 is None or self._col2_hidden:
             return
@@ -1005,7 +1008,14 @@ class ConfigWindow:
             sf.setFrame_(NSMakeRect(ROW_PILL_INSET_X, f.origin.y,
                                     max(0.0, w - 2 * ROW_PILL_INSET_X),
                                     f.size.height))
-        self._rebuild_add_buttons()
+        # Re-vend the list at the new width (fits the table column + repositions
+        # the right-aligned badge) and rebuild the add bar. _reload_list restores
+        # the selection pill (plain reloadData drops it); skip_detail keeps col 3
+        # untouched — this is a pure col-2 relayout, not a selection change.
+        if getattr(self, "_list_tv", None) is not None:
+            self._reload_list(preserve=True, skip_detail=True)
+        else:
+            self._rebuild_add_buttons()
 
     def _on_split_resized(self) -> None:
         """Split view finished resizing (window resize or divider drag). Capture
