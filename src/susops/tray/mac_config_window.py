@@ -91,11 +91,18 @@ def _get_bandwidth_view_cls():
     )
     from Foundation import NSMakePoint, NSString  # type: ignore[import]
 
-    RX = _hex_color(BW_DOWN_HEX)
-    TX = _hex_color(BW_UP_HEX)
+    RX = _hex_color(BW_DOWN_HEX)   # download / receive — plotted upward
+    TX = _hex_color(BW_UP_HEX)     # upload / send — plotted downward
+    GUTTER = 52.0                  # left gutter for the Y-axis rate labels
+    XAXIS_H = 14.0                 # bottom strip for the time-axis labels
 
     def _draw(s, point, attrs):
         NSString.stringWithString_(s).drawAtPoint_withAttributes_(point, attrs)
+
+    def _draw_right(s, right_x, y, attrs):
+        ns = NSString.stringWithString_(s)
+        ns.drawAtPoint_withAttributes_(
+            NSMakePoint(right_x - ns.sizeWithAttributes_(attrs).width, y), attrs)
 
     class _SusOpsBandwidthView(NSView):
         def initWithFrame_(self, frame):
@@ -109,14 +116,27 @@ def _get_bandwidth_view_cls():
         def isFlipped(self):
             return False  # bottom-left origin matches NSBezierPath
 
-        def drawRect_(self, _rect):
+        def _geom(self):
+            """Plot geometry shared by drawing (and, later, hit-testing).
+            Mirror layout: a center baseline, download above it, upload below."""
             b = self.bounds()
             w, h = float(b.size.width), float(b.size.height)
-            base_y, top_y = 20.0, h - 6.0
+            left, right = GUTTER, w
+            bottom, top = XAXIS_H, h - 6.0
+            mid = (bottom + top) / 2.0
+            return w, h, left, right, bottom, top, mid
+
+        def drawRect_(self, _rect):
+            w, h, left, right, bottom, top, mid = self._geom()
+            font = NSFont.systemFontOfSize_(10)
+            dim = {NSFontAttributeName: font,
+                   NSForegroundColorAttributeName: NSColor.tertiaryLabelColor()}
+
+            # Center baseline (0); download is drawn above it, upload below.
             _hex_color(PALETTE["input_border"]).set()
             base = NSBezierPath.bezierPath()
-            base.moveToPoint_(NSMakePoint(0, base_y))
-            base.lineToPoint_(NSMakePoint(w, base_y))
+            base.moveToPoint_(NSMakePoint(left, mid))
+            base.lineToPoint_(NSMakePoint(right, mid))
             base.setLineWidth_(1.0)
             base.stroke()
 
@@ -124,37 +144,45 @@ def _get_bandwidth_view_cls():
             rx = [float(s[0]) for s in samples]
             tx = [float(s[1]) for s in samples]
             if len(rx) < 2:
-                font = NSFont.systemFontOfSize_(11)
-                a_dim = {NSFontAttributeName: font,
-                         NSForegroundColorAttributeName: NSColor.tertiaryLabelColor()}
                 msg = "measuring…" if self._running else "no bandwidth data"
-                _draw(msg, NSMakePoint(0, base_y + (top_y - base_y) / 2 - 6), a_dim)
+                _draw(msg, NSMakePoint(left, mid - 6), dim)
                 return
 
             peak = max(max(rx), max(tx), 1.0)
             n = len(rx)
-            x = lambda i: i * (w / (n - 1))
-            y = lambda v: base_y + (v / peak) * (top_y - base_y)
+            span = top - mid  # symmetric (== mid - bottom)
+            x = lambda i: left + i * ((right - left) / (n - 1))
+            y_up = lambda v: mid + (v / peak) * span      # download upward
+            y_down = lambda v: mid - (v / peak) * span    # upload downward
 
-            def _plot(series, color):
+            def _plot(series, color, yf):
                 area = NSBezierPath.bezierPath()
-                area.moveToPoint_(NSMakePoint(0, base_y))
+                area.moveToPoint_(NSMakePoint(left, mid))
                 for i, v in enumerate(series):
-                    area.lineToPoint_(NSMakePoint(x(i), y(v)))
-                area.lineToPoint_(NSMakePoint(w, base_y))
+                    area.lineToPoint_(NSMakePoint(x(i), yf(v)))
+                area.lineToPoint_(NSMakePoint(right, mid))
                 area.closePath()
                 color.colorWithAlphaComponent_(0.16).set()
                 area.fill()
                 line = NSBezierPath.bezierPath()
-                line.moveToPoint_(NSMakePoint(0, y(series[0])))
+                line.moveToPoint_(NSMakePoint(left, yf(series[0])))
                 for i, v in enumerate(series[1:], 1):
-                    line.lineToPoint_(NSMakePoint(x(i), y(v)))
-                line.setLineWidth_(1.75)
+                    line.lineToPoint_(NSMakePoint(x(i), yf(v)))
+                line.setLineWidth_(1.6)
                 color.set()
                 line.stroke()
 
-            _plot(rx, RX)
-            _plot(tx, TX)
+            _plot(rx, RX, y_up)
+            _plot(tx, TX, y_down)
+
+            # Y axis (shared peak): download peak at top, 0 at the baseline,
+            # upload peak at the bottom — all in the clear left gutter.
+            _draw_right(_fmt_rate(peak), GUTTER - 6, top - 12, dim)
+            _draw_right("0", GUTTER - 6, mid - 5, dim)
+            _draw_right(_fmt_rate(peak), GUTTER - 6, bottom, dim)
+            # Time axis across the bottom strip.
+            _draw(f"{n - 1}s ago", NSMakePoint(left, 0), dim)
+            _draw_right("now", right, 0, dim)
 
     _bandwidth_view_cls = _SusOpsBandwidthView
     return _bandwidth_view_cls
