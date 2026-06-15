@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from susops.core.bandwidth import BandwidthSampler
 from susops.core.process import ProcessManager
-from susops.facade import _BandwidthSampler
 
 
 @pytest.fixture
@@ -14,8 +14,20 @@ def sampler(tmp_path):
     """Sampler with background thread started but no real sampling."""
     mgr = MagicMock(spec=ProcessManager)
     mgr.status_all.return_value = {}
-    s = _BandwidthSampler(mgr)
+    s = BandwidthSampler(mgr)
     yield s
+
+
+def test_parse_nettop_line():
+    """The macOS nettop parser handles process names with dots and spaces."""
+    # name.pid  bytes_in  bytes_out
+    assert BandwidthSampler._parse_nettop_line("ssh.4242 1000 2000") == (4242, 1000, 2000)
+    # Process names can contain spaces and dots ("Brave Browser H.879").
+    assert BandwidthSampler._parse_nettop_line("Brave Browser H.879 50 60") == (879, 50, 60)
+    # Header / malformed rows return None.
+    assert BandwidthSampler._parse_nettop_line("bytes_in bytes_out") is None
+    assert BandwidthSampler._parse_nettop_line("noPidHere 1 2") is None
+    assert BandwidthSampler._parse_nettop_line("ssh.4242 notanumber 2000") is None
 
 
 def test_totals_start_at_zero(sampler):
