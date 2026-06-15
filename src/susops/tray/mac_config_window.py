@@ -949,9 +949,15 @@ class ConfigWindow:
             # autoresizing mask corrupts when col 2 collapses to 0 and does not
             # recover the search field width on its own.
             self._layout_col2_contents()
-        # Re-query shouldHideDivider + repaint so the col2/col3 divider appears
-        # or disappears with col 2.
+        # NSSplitView caches its divider visibility + layout; reframing the panes
+        # by hand does NOT make it re-query shouldHideDivider, so the divider
+        # lingers until the next real resize. Nudge the split frame 1px and back
+        # to force that re-layout now (mirrors "a 1px resize fixes it").
         try:
+            from Cocoa import NSMakeSize  # type: ignore[import]
+            sz = self._split.frame().size
+            self._split.setFrameSize_(NSMakeSize(sz.width + 1.0, sz.height))
+            self._split.setFrameSize_(sz)
             self._split.setNeedsDisplay_(True)
         except Exception:
             pass
