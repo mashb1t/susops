@@ -158,10 +158,10 @@ class SharesScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_share", "Add"),
+        Binding("d", "delete_share", "Delete"),
         Binding("f", "fetch_file", "Fetch"),
-        Binding("d", "stop_share", "Stop"),
         Binding("s", "start_share", "Start"),
-        Binding("x", "delete_share", "Delete"),
+        Binding("x", "stop_share", "Stop"),
     ]
 
     def compose(self) -> ComposeResult:
