@@ -718,6 +718,7 @@ class ConfigWindow:
         # Split view (col2 | col3) + the user-draggable col-2 width. Set in
         # _build; col 1 is a fixed rail outside the split.
         self._split = None
+        self._col1_sep = None
         self._col2 = None
         self._col3 = None
         self._col2_w = float(COL2_W)
@@ -854,7 +855,8 @@ class ConfigWindow:
         content.addSubview_(col1)
         self._col1 = col1
         # Static col1/col2 separator (the col2/col3 one is the split divider).
-        self._add_separator(content, COL1_W, ch)
+        # Stored so it can be hidden in Settings (which spans cols 2+3).
+        self._col1_sep = self._add_separator(content, COL1_W, ch)
 
         # --- Columns 2 + 3 live in a 2-pane NSSplitView so the col2/col3
         #     divider is user-draggable. col 1 stays a fixed rail to its left.
@@ -935,9 +937,18 @@ class ConfigWindow:
         self._col2_hidden = not visible
         try:
             self._col2.setHidden_(not visible)
+            # Hide the static col1/col2 separator in Settings too, so no divider
+            # line shows while the pane spans cols 2+3.
+            if self._col1_sep is not None:
+                self._col1_sep.setHidden_(self._col2_hidden)
         except Exception:
             pass
         self._layout_split_panes()
+        if visible:
+            # Restore search + add-bar to col 2's width explicitly: the
+            # autoresizing mask corrupts when col 2 collapses to 0 and does not
+            # recover the search field width on its own.
+            self._layout_col2_contents()
         # Re-query shouldHideDivider + repaint so the col2/col3 divider appears
         # or disappears with col 2.
         try:
