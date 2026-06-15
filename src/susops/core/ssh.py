@@ -261,28 +261,62 @@ def stop_tunnel(
     return stopped
 
 
-def _sweep_orphan_masters(tag: str, workspace: Path) -> None:
-    """Kill any ssh process whose argv references our ControlPath socket but
-    that ProcessManager isn't tracking. No-op if psutil is unavailable.
+def _ssh_master_pids_for_socket(sock_str: str) -> list[int]:
+    """PIDs of ssh ControlMaster processes bound to exactly this socket and
+    owned by the current user. Cross-platform (psutil). Empty if psutil is
+    unavailable.
+
+    Strict match — the argv must carry the *exact* ``ControlPath=<sock>`` and
+    ``ControlMaster=yes`` tokens that build_master_cmd emits, not merely
+    contain the socket path as a substring. A substring match could kill an
+    unrelated ssh process that happens to mention the path.
     """
     try:
         import psutil
     except ImportError:
-        return
+        return []
+    control_path_token = f"ControlPath={sock_str}"
+    try:
+        my_uid = os.getuid()
+    except AttributeError:
+        my_uid = None
+    pids: list[int] = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "uids"]):
+        try:
+            if proc.info.get("name") != "ssh":
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            if control_path_token not in cmdline or "ControlMaster=yes" not in cmdline:
+                continue
+            if my_uid is not None:
+                uids = proc.info.get("uids")
+                if uids is not None and uids.real != my_uid:
+                    continue
+            pids.append(proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return pids
+
+
+def _sweep_orphan_masters(tag: str, workspace: Path) -> None:
+    """Kill any ssh ControlMaster bound to our socket that ProcessManager isn't
+    tracking. Uses the strict matcher so it can never kill an unrelated ssh
+    process. No-op if psutil is unavailable.
+    """
     sock_str = str(socket_path(tag, workspace))
     try:
         own_pid = os.getpid()
     except Exception:
         own_pid = -1
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    try:
+        import psutil
+    except ImportError:
+        return
+    for pid in _ssh_master_pids_for_socket(sock_str):
+        if pid == own_pid:
+            continue
         try:
-            if proc.info["pid"] == own_pid:
-                continue
-            if proc.info.get("name") != "ssh":
-                continue
-            cmdline = proc.info.get("cmdline") or []
-            if any(sock_str in arg for arg in cmdline):
-                proc.kill()
+            psutil.Process(pid).kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
@@ -293,25 +327,16 @@ def is_tunnel_running(tag: str, process_mgr: ProcessManager) -> bool:
 
 
 def find_master_pid(tag: str, workspace: Path) -> int | None:
-    """Find the PID of the ControlMaster by scanning /proc cmdline (Linux only).
+    """Find the PID of the ControlMaster for a connection (cross-platform).
 
     Used to recover the PID when the PID file is stale but the socket is alive.
-    Returns None if the process cannot be found or /proc is unavailable.
+    Matches strictly on the exact ControlPath socket + ControlMaster=yes tokens
+    and the current UID (see _ssh_master_pids_for_socket), so it can never adopt
+    an unrelated process. Returns None if no match is found.
     """
     sock_str = str(socket_path(tag, workspace))
-    proc = Path("/proc")
-    if not proc.exists():
-        return None
-    for pid_dir in proc.iterdir():
-        if not pid_dir.name.isdigit():
-            continue
-        try:
-            cmdline = (pid_dir / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
-            if "ControlMaster=yes" in cmdline and sock_str in cmdline:
-                return int(pid_dir.name)
-        except OSError:
-            continue
-    return None
+    pids = _ssh_master_pids_for_socket(sock_str)
+    return pids[0] if pids else None
 
 
 def is_socket_alive(tag: str, workspace: Path) -> bool:

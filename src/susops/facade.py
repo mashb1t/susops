@@ -887,11 +887,12 @@ class SusOpsManager:
         # or master restarted outside our control).
         if not running and is_socket_alive(conn.tag, self.workspace):
             running = True
-            # Try to recover the PID from /proc so the dashboard can show it.
+            # Recover the PID so the dashboard can show it; track_existing
+            # stamps create_time so the recovered PID isn't reuse-vulnerable.
             recovered = find_master_pid(conn.tag, self.workspace)
             if recovered:
                 name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
-                self._process_mgr._pid_file(name).write_text(str(recovered))
+                self._process_mgr.track_existing(name, recovered)
         # Pending covers two scenarios:
         #   1. ssh master alive but socket not yet up → waiting on agent prompt
         #   2. ssh master not alive but the reconnect monitor still intends
@@ -1032,7 +1033,7 @@ class SusOpsManager:
                 recovered = find_master_pid(conn.tag, self.workspace)
                 if recovered:
                     name = f"{SSH_PROCESS_PREFIX}-{conn.tag}"
-                    self._process_mgr._pid_file(name).write_text(str(recovered))
+                    self._process_mgr.track_existing(name, recovered)
         if not any_tunnel:
             return
         port = self.config.pac_server_port

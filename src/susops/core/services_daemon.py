@@ -13,6 +13,8 @@ import sys
 import threading
 from pathlib import Path
 
+from susops.core.process import atomic_write
+
 WORKSPACE_DEFAULT = Path.home() / ".susops"
 _PID_FILENAME = "susops-services.pid"
 _PORT_FILENAME = "susops-services.port"
@@ -42,7 +44,7 @@ def _claim_pid_file(workspace: Path) -> bool:
     p = _pid_path(workspace)
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return False
     try:
@@ -221,7 +223,9 @@ def main() -> int:
                 update={"rpc_server_port": actual_port}
             )
             mgr._save()
-        _port_path(workspace).write_text(str(actual_port))
+        # Atomic write (temp+chmod+replace, 0600): SusOpsClient polls this file
+        # every 100 ms, so a plain truncating write would expose an empty file.
+        atomic_write(_port_path(workspace), str(actual_port))
         log.info("RPC listening on 127.0.0.1:%d", actual_port)
 
         # Start the SSE status server eagerly so frontends can connect

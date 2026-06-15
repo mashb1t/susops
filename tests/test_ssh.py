@@ -1,13 +1,18 @@
 """Tests for susops.core.ssh — ControlMaster command building."""
 from __future__ import annotations
 
+import os
+
+import psutil
 import pytest
 
+from susops.core import ssh as ssh_mod
 from susops.core.config import Connection, PortForward
 from susops.core.ssh import (
     FWD_PROCESS_PREFIX,
     SSH_PROCESS_PREFIX,
     build_master_cmd,
+    find_master_pid,
     socket_path,
 )
 
@@ -75,3 +80,37 @@ def test_ssh_process_prefix():
 
 def test_fwd_process_prefix():
     assert FWD_PROCESS_PREFIX == "susops-fwd"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="requires POSIX uids")
+def test_find_master_pid_strict_match(monkeypatch, workspace):
+    """find_master_pid matches only an ssh process owning the EXACT ControlPath
+    token + ControlMaster=yes + our uid — never a substring or foreign owner."""
+    sock = str(socket_path("test", workspace))
+    my_uid = os.getuid()
+
+    class _UID:
+        def __init__(self, real):
+            self.real = real
+
+    class _Proc:
+        def __init__(self, pid, name, cmdline, uid):
+            self.info = {"pid": pid, "name": name, "cmdline": cmdline, "uids": _UID(uid)}
+
+    procs = [
+        # the real master — exact tokens, our uid
+        _Proc(111, "ssh", ["ssh", "-N", "-T", "-o", "ControlMaster=yes",
+                            "-o", f"ControlPath={sock}", "user@h"], my_uid),
+        # path appears only as a substring of an unrelated arg → must NOT match
+        _Proc(222, "ssh", ["ssh", f"--note=see {sock} later", "ControlMaster=yes"], my_uid),
+        # right argv, wrong process name
+        _Proc(333, "python", ["python", "ControlMaster=yes", f"ControlPath={sock}"], my_uid),
+        # right argv, foreign uid
+        _Proc(444, "ssh", ["ssh", "ControlMaster=yes", f"ControlPath={sock}"], my_uid + 1),
+    ]
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: iter(procs))
+    assert find_master_pid("test", workspace) == 111
+
+    # No matching process at all → None.
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: iter(procs[1:]))
+    assert find_master_pid("test", workspace) is None
