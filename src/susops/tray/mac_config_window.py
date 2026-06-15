@@ -488,6 +488,10 @@ def _get_split_delegate_cls():
             w = sv.frame().size.width
             return float(min(COL2_MAX, w - COL3_MIN))
 
+        def splitView_shouldHideDividerAtIndex_(self, _sv, _idx):
+            # Hide the col2/col3 divider in Settings (col 2 collapsed to 0).
+            return bool(getattr(self._owner, "_col2_hidden", False))
+
         def splitView_resizeSubviewsWithOldSize_(self, sv, _old):
             try:
                 self._owner._layout_split_panes()
@@ -934,6 +938,12 @@ class ConfigWindow:
         except Exception:
             pass
         self._layout_split_panes()
+        # Re-query shouldHideDivider + repaint so the col2/col3 divider appears
+        # or disappears with col 2.
+        try:
+            self._split.setNeedsDisplay_(True)
+        except Exception:
+            pass
 
     def _layout_split_panes(self) -> None:
         """Lay out col 2 + col 3 inside the split view: col 2 at its current
@@ -960,16 +970,41 @@ class ConfigWindow:
         self._col2.setFrame_(NSMakeRect(0, 0, w2, h))
         self._col3.setFrame_(NSMakeRect(x3, 0, max(0.0, w - x3), h))
 
+    def _layout_col2_contents(self) -> None:
+        """Fit col 2's search field + add-button bar to col 2's current width.
+        The list scroll tracks col 2 via its autoresizing mask; the search field
+        and add buttons are pinned here so they fill col 2 exactly (never spill
+        into col 3, never leave a gap) at any divider position."""
+        col2 = getattr(self, "_col2", None)
+        if col2 is None or self._col2_hidden:
+            return
+        w = col2.frame().size.width
+        if w <= 0:
+            return
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        sf = getattr(self, "_search_field", None)
+        if sf is not None:
+            f = sf.frame()
+            sf.setFrame_(NSMakeRect(ROW_PILL_INSET_X, f.origin.y,
+                                    max(0.0, w - 2 * ROW_PILL_INSET_X),
+                                    f.size.height))
+        self._rebuild_add_buttons()
+
     def _on_split_resized(self) -> None:
         """Split view finished resizing (window resize or divider drag). Capture
         the live col-2 width so it survives later window resizes — but NOT while
         col 2 is collapsed for Settings, or leaving Settings would restore a
-        zero width — then re-render col 3 to fill its new width."""
+        zero width — re-fit col 2's contents, then re-render col 3 to fill its
+        new width. Each side is guarded on its own width so a height-only resize
+        rebuilds nothing."""
         if not self._col2_hidden and self._col2 is not None:
             try:
-                w2 = self._col2.frame().size.width
+                w2 = round(float(self._col2.frame().size.width), 1)
                 if w2 > 0:
                     self._col2_w = float(w2)
+                    if w2 != getattr(self, "_last_col2_layout_w", None):
+                        self._last_col2_layout_w = w2
+                        self._layout_col2_contents()
             except Exception:
                 pass
         # Skip the col-3 rebuild when its width did not change (height-only
@@ -1710,13 +1745,19 @@ class ConfigWindow:
         specs = self._add_button_specs()
         if not specs:
             return
+        # Size the bar + buttons to col 2's CURRENT width (it is draggable), not
+        # the COL2_W default, so the buttons always fill the column.
+        col2_w = (self._col2.frame().size.width
+                  if self._col2 is not None else COL2_W)
+        if col2_w <= 0:
+            col2_w = COL2_W
         bar = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, ADDBAR_BOTTOM_INSET, COL2_W, ADDBAR_H)
+            NSMakeRect(0, ADDBAR_BOTTOM_INSET, col2_w, ADDBAR_H)
         )
         bar.setAutoresizingMask_(2 | 32)  # WidthSizable | MaxYMargin
         n = len(specs)
         gap = 8
-        bw = (COL2_W - gap * (n + 1)) / n
+        bw = (col2_w - gap * (n + 1)) / n
         x = gap
         for label, kind in specs:
             btn = self._styled_neutral_button(
