@@ -1667,6 +1667,27 @@ class SusOpsMacTray(AbstractTrayApp):
             _on_main(lambda: self._rumps.quit_application())
             return {"ok": True}
 
+        def _set_state(args):
+            """Force a run-state transition (no SSH) so state-driven UI like the
+            Settings logo preview can be exercised deterministically."""
+            if not args:
+                return {"error": "usage: set-state "
+                        "<running|stopped|stopped_partially|error|initial>"}
+            states = {s.value.lower(): s for s in ProcessState}
+            # Allow the friendly names too (enum .value may differ from these).
+            states.update({
+                "running": ProcessState.RUNNING,
+                "stopped": ProcessState.STOPPED,
+                "stopped_partially": ProcessState.STOPPED_PARTIALLY,
+                "error": ProcessState.ERROR,
+                "initial": ProcessState.INITIAL,
+            })
+            st = states.get(args[0].lower())
+            if st is None:
+                return {"error": f"unknown state: {args[0]}"}
+            _on_main(lambda: self._on_state_change_safe(st))
+            return {"ok": True, "state": st.value}
+
         return {
             "ping": lambda args: {"ok": True},
             "dump-menu": lambda args: _run_on_main(
@@ -1687,12 +1708,17 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().resize(
                     float(args[0]), float(args[1])))
                 if len(args) >= 2 else {"error": "usage: resize <w> <h>"}),
+            "set-state": _set_state,
             "search": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().set_search(" ".join(args))),
             "set-field": lambda args: (_run_on_main(
                 lambda: self._ensure_config_window().set_field(
                     args[0], " ".join(args[1:])))
                 if args else {"error": "usage: set-field <key> <value…>"}),
+            "set-settings-field": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().set_settings_field(
+                    args[0], " ".join(args[1:])))
+                if args else {"error": "usage: set-settings-field <key> <value…>"}),
             "add": lambda args: _run_on_main(
                 lambda: self._ensure_config_window().add()),
             "add-fetch": lambda args: _run_on_main(
@@ -2545,6 +2571,13 @@ class SusOpsMacTray(AbstractTrayApp):
         icon_path = _get_icon_path(state, logo_style)
         if icon_path:
             self._apply_icon_path(icon_path)
+        # Keep the Settings "Logo style" preview in sync with the run state.
+        cw = getattr(self, "_config_window", None)
+        if cw is not None and cw.is_open():
+            try:
+                cw.refresh_logo_segment_images()
+            except Exception:
+                pass
 
     def preview_logo_style(self, idx: int) -> None:
         """Live-preview a logo style by index WITHOUT persisting it. The config

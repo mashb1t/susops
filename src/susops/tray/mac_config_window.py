@@ -3106,7 +3106,47 @@ class ConfigWindow:
         doc.addSubview_(seg)
         self._settings_widgets[key] = seg
         self._settings_kinds[key] = "segmented"
+        # Seed the per-state cache so refresh_logo_segment_images only repaints
+        # when the run state actually changes (update_icon fires on every poll).
+        self._logo_seg_state = getattr(self.tray, "state", None)
+        self._logo_seg_paths = [img for _t, img in options]
         return seg_y
+
+    def refresh_logo_segment_images(self) -> None:
+        """Repaint the Logo-style segmented control's per-segment images to the
+        current run state's icon variant so the preview tracks running/stopped/
+        error while Settings is open. Touches only the images (never the
+        selected segment or any other widget), so staged settings edits and the
+        current selection survive. No-op unless Settings is showing, the control
+        exists, and the run state changed since the last paint."""
+        if self.category != "settings":
+            return
+        seg = self._settings_widgets.get("logo_style")
+        if seg is None:
+            return
+        state = getattr(self.tray, "state", None)
+        if state == getattr(self, "_logo_seg_state", None):
+            return
+        try:
+            fields, _ctx = self.tray.settings_field_specs()
+        except Exception:
+            return
+        options = next((f.get("options", [])
+                        for f in fields if f.get("key") == "logo_style"), [])
+        from AppKit import NSImage  # type: ignore[import]
+        from Cocoa import NSMakeRect  # type: ignore[import]
+        for i, (_title, img_path) in enumerate(options):
+            if not img_path:
+                continue
+            img = NSImage.alloc().initWithContentsOfFile_(img_path)
+            if img is not None:
+                img.setSize_(NSMakeRect(0, 0, 18, 18).size)
+                try:
+                    seg.setImage_forSegment_(img, i)
+                except Exception:
+                    pass
+        self._logo_seg_state = state
+        self._logo_seg_paths = [img for _t, img in options]
 
     def _render_server_rows(self, doc, fields, x, width, top) -> float:
         """RPC / SSE / PAC port text fields ("auto" placeholder) + per-field
@@ -3353,6 +3393,11 @@ class ConfigWindow:
             # Debug: add-button targets must survive col-3 handler trims
             # (NSButton does not retain its target).
             "addbar_handlers": len(self._addbar_handlers),
+            # Debug: logo-style segment image paths + the state they reflect, so
+            # tests can assert the preview tracks the run state.
+            "logo_seg_paths": getattr(self, "_logo_seg_paths", None),
+            "logo_seg_state": (getattr(self, "_logo_seg_state", None).value
+                               if getattr(self, "_logo_seg_state", None) else None),
         }
 
     def resize(self, w: float, h: float) -> dict:
