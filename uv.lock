@@ -1232,26 +1232,22 @@ sdist = { url = "https://files.pythonhosted.org/packages/b2/e2/2e6a47951290bd1a2
 
 [[package]]
 name = "susops"
-version = "3.0.0-rc6.dev2"
+version = "3.0.0rc6.dev2"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
+    { name = "cryptography" },
     { name = "psutil" },
     { name = "pydantic" },
     { name = "ruamel-yaml" },
 ]
 
 [package.optional-dependencies]
-crypto = [
-    { name = "cryptography" },
-]
 dev = [
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "textual-dev" },
-]
-share = [
-    { name = "aiohttp" },
-    { name = "cryptography" },
 ]
 tray-mac = [
     { name = "rumps" },
@@ -1263,9 +1259,9 @@ tui = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", marker = "extra == 'share'", specifier = ">=3.9" },
-    { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42" },
-    { name = "cryptography", marker = "extra == 'share'", specifier = ">=42" },
+    { name = "aiohttp", specifier = ">=3.9" },
+    { name = "cryptography", specifier = ">=42" },
+    { name = "packaging", marker = "extra == 'dev'" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = "==2.13.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
@@ -1276,7 +1272,7 @@ requires-dist = [
     { name = "textual-dev", marker = "extra == 'dev'" },
     { name = "textual-plotext", marker = "extra == 'tui'", specifier = ">=0.2" },
 ]
-provides-extras = ["tui", "tray-linux", "udp", "tray-mac", "share", "crypto", "dev"]
+provides-extras = ["tui", "tray-mac", "dev"]
 
 [[package]]
 name = "textual"

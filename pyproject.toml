@@ -37,6 +37,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov",
     "textual-dev",
+    "packaging",  # tools/gen_openapi.py: normalise the spec version string
 ]
 
 [project.scripts]

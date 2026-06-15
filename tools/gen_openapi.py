@@ -41,7 +41,16 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from susops import __version__ as SUSOPS_VERSION  # noqa: E402
+from packaging.version import Version  # noqa: E402
+
+from susops import __version__ as _RAW_VERSION  # noqa: E402
+
+# Normalise to the PEP 440 canonical form so the spec is byte-identical
+# regardless of how the package was installed when generated. version.py
+# returns the raw pyproject string from a source checkout but the normalised
+# wheel-metadata form when installed — without this the committed spec flaps
+# between "3.0.0-rc6.dev2" and "3.0.0rc6.dev2" depending on the environment.
+SUSOPS_VERSION = str(Version(_RAW_VERSION))  # noqa: E402
 from susops.core.rpc_server import _ALLOWED_METHODS  # noqa: E402
 from susops.facade import SusOpsManager  # noqa: E402
 
