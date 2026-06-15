@@ -3131,8 +3131,9 @@ class ConfigWindow:
     SETTINGS_SECTIONS = ("General", "Menu bar", "Servers", "Config file")
     _SETTINGS_LABEL_W = 100
     _SETTINGS_LABEL_GAP = 14
-    # Shared width for the server-port text fields and the "Open Config File…"
-    # button so they line up.
+    # Width of the "Open Config File…" button == the full RPC/SSE/PAC row span
+    # (sub-label + gap + text field), so the port fields' RIGHT edge lines up
+    # with the button's right edge below.
     _SETTINGS_FIELD_W = 150
 
     def _render_settings_pane(self) -> None:
@@ -3426,8 +3427,10 @@ class ConfigWindow:
             NSTextField,
         )
         labels = {"rpc_port": "RPC", "sse_port": "SSE", "pac_port": "PAC"}
-        field_w = self._SETTINGS_FIELD_W  # match the Open Config File… button
         sub_label_w = 46
+        # Field right edge aligns with the Open Config File… button: the button
+        # spans the whole row (sub-label + gap + field), so subtract them here.
+        field_w = self._SETTINGS_FIELD_W - (sub_label_w + 6)
         y = top
         for f in fields:
             key = f["key"]
