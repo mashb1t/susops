@@ -3333,12 +3333,13 @@ class ConfigWindow:
         doc.addSubview_(lbl)
 
         options = f.get("options", [])
-        # Wider per-segment width so the three logo icons have comfortable room
-        # and read as evenly spaced, not squeezed.
-        seg_w = 72
+        # Logo selector capped at 150 wide; the segments share that width evenly.
+        n = max(1, len(options))
+        seg_total = min(float(width), 150.0)
+        seg_w = (seg_total - 8) / n
         seg_y = lbl_y - 30
         seg = NSSegmentedControl.alloc().initWithFrame_(
-            NSMakeRect(x, seg_y, min(width, seg_w * max(1, len(options)) + 8), 26))
+            NSMakeRect(x, seg_y, seg_total, 26))
         try:
             seg.setSegmentCount_(len(options))
         except Exception:
