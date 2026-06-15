@@ -86,14 +86,45 @@ def _pending(status) -> bool:
     return bool(status is not None and getattr(status, "pending", False))
 
 
-def _conn_dot(conn, status) -> str:
+def _conn_state(conn, status) -> tuple[str, str]:
+    """Per-connection run state as (label, dot). Derived from running + pending:
+      running, socket up      -> "running"            green
+      running, socket pending -> "partially running"  amber  (master up, not usable yet)
+      down, reconnect-intended-> "error"              red    (dropped / reconnecting)
+      down                    -> "stopped"            gray
+      disabled                -> "stopped"            gray   (row rendered dimmed)
+    """
     if not getattr(conn, "enabled", True):
-        return "gray"
-    if _running(status):
-        return "green"
-    if _pending(status):
-        return "amber"
-    return "gray"
+        return "stopped", "gray"
+    running, pending = _running(status), _pending(status)
+    if running:
+        return ("running", "green") if not pending else ("partially running", "amber")
+    if pending:
+        return "error", "red"
+    return "stopped", "gray"
+
+
+def _conn_dot(conn, status) -> str:
+    return _conn_state(conn, status)[1]
+
+
+def _conn_status_text(conn, status) -> str:
+    """Detail-panel status line: the run state plus the actual reason it's in
+    that state, with the SSH master pid whenever there is a live process."""
+    label, _dot = _conn_state(conn, status)
+    pid = getattr(status, "pid", None) if status is not None else None
+    pid_suffix = f" · pid {pid}" if pid else ""
+    if label == "running":
+        return f"running{pid_suffix}"
+    if label == "partially running":
+        # master process is up (pid) but its ControlMaster/SOCKS socket isn't
+        # ready yet — almost always waiting for the SSH agent prompt.
+        return f"partially running · waiting for SSH agent{pid_suffix}"
+    if label == "error":
+        # not running, but the reconnect monitor still wants it up: a previous
+        # attempt failed (bad key, host down, ...) and we're between retries.
+        return "error · connection lost, reconnecting"
+    return "stopped"
 
 
 def _status_for(statuses, tag):
@@ -277,13 +308,8 @@ def filter_rows(rows, query) -> list[ListRow]:
 
 def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
     running = _running(status)
-    pid = getattr(status, "pid", None) if status is not None else None
-    if running:
-        status_text = "running" + (f" · pid {pid}" if pid else "")
-    elif _pending(status):
-        status_text = "pending"
-    else:
-        status_text = "stopped"
+    _label, dot = _conn_state(conn, status)
+    status_text = _conn_status_text(conn, status)
     fields = [
         FormField(key="tag", label="Tag", kind="text", value=conn.tag),
         FormField(key="ssh_host", label="SSH Host", kind="combo",
@@ -305,7 +331,7 @@ def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
     return DetailSpec(
         title=conn.tag,
         status_text=status_text,
-        status_dot=_conn_dot(conn, status),
+        status_dot=dot,
         toggle=("Enabled", bool(conn.enabled), "conn.toggle"),
         toggle_note="Disabled connections are skipped when the proxy starts.",
         fields=fields,

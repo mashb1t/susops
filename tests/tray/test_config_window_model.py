@@ -115,18 +115,25 @@ def test_connection_rows_dot_colors_and_identity():
     assert rows[2].dimmed is True         # disabled -> dimmed
 
 
-def test_connection_row_pending_is_amber():
+def test_connection_row_down_but_reconnecting_is_red():
+    # not running but reconnect monitor still intends it -> error (red)
     cfg = _cfg(_conn("work"))
     rows = build_connection_rows(cfg, [_status("work", running=False,
+                                               pending=True)])
+    assert rows[0].dot == "red"
+
+
+def test_connection_row_running_socket_pending_is_amber():
+    # master up but ControlMaster socket not ready yet -> partially running
+    cfg = _cfg(_conn("work"))
+    rows = build_connection_rows(cfg, [_status("work", running=True,
                                                pending=True)])
     assert rows[0].dot == "amber"
 
 
-def test_connection_row_pending_running_stays_green():
-    # running takes precedence; pending only matters when not running
+def test_connection_row_running_is_green():
     cfg = _cfg(_conn("work"))
-    rows = build_connection_rows(cfg, [_status("work", running=True,
-                                               pending=True)])
+    rows = build_connection_rows(cfg, [_status("work", running=True)])
     assert rows[0].dot == "green"
 
 
@@ -373,10 +380,21 @@ def test_connection_detail_stopped():
     assert by_id["conn.remove"].enabled is True
 
 
-def test_connection_detail_pending_amber():
+def test_connection_detail_down_reconnecting_is_red():
     spec = build_connection_detail(_conn("work"),
-                                   _status("work", running=False, pending=True))
+                                   _status("work", running=False, pending=True,
+                                           pid=None))
+    assert spec.status_dot == "red"
+    assert spec.status_text == "error · connection lost, reconnecting"
+
+
+def test_connection_detail_running_socket_pending_is_partial():
+    # partial shows the reason and the live master pid
+    spec = build_connection_detail(_conn("work"),
+                                   _status("work", running=True, pending=True,
+                                           pid=4711))
     assert spec.status_dot == "amber"
+    assert spec.status_text == "partially running · waiting for SSH agent · pid 4711"
 
 
 def test_connection_detail_socks_port_fallback():
