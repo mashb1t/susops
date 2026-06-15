@@ -114,6 +114,7 @@ def _get_bandwidth_view_cls():
             self._samples = []
             self._running = False
             self._hover_idx = None
+            self._hover_pt = None
             return self
 
         def isFlipped(self):
@@ -135,18 +136,17 @@ def _get_bandwidth_view_cls():
             n = len([s for s in (self._samples or []) if len(s) >= 2])
             if n < 2 or loc.x < left or loc.x > right:
                 if self._hover_idx is not None:
-                    self._hover_idx = None
+                    self._hover_idx, self._hover_pt = None, None
                     self.setNeedsDisplay_(True)
                 return
             idx = int(round((loc.x - left) / ((right - left) / (n - 1))))
-            idx = max(0, min(n - 1, idx))
-            if idx != self._hover_idx:
-                self._hover_idx = idx
-                self.setNeedsDisplay_(True)
+            self._hover_idx = max(0, min(n - 1, idx))
+            self._hover_pt = (float(loc.x), float(loc.y))
+            self.setNeedsDisplay_(True)  # follow the cursor as it moves
 
         def mouseExited_(self, _event):
             if self._hover_idx is not None:
-                self._hover_idx = None
+                self._hover_idx, self._hover_pt = None, None
                 self.setNeedsDisplay_(True)
 
         def _geom(self):
@@ -181,12 +181,13 @@ def _get_bandwidth_view_cls():
                 _draw(msg, NSMakePoint(left, mid - 6), dim)
                 return
 
-            peak = max(max(rx), max(tx), 1.0)
             n = len(rx)
-            span = top - mid  # symmetric (== mid - bottom)
+            peak_up = max(max(rx), 1.0)    # download scaled to its own max
+            peak_down = max(max(tx), 1.0)  # upload scaled to its own max
+            span = top - mid
             x = lambda i: left + i * ((right - left) / (n - 1))
-            y_up = lambda v: mid + (v / peak) * span      # download upward
-            y_down = lambda v: mid - (v / peak) * span    # upload downward
+            y_up = lambda v: mid + (v / peak_up) * span      # download upward
+            y_down = lambda v: mid - (v / peak_down) * span  # upload downward
 
             def _plot(series, color, yf):
                 area = NSBezierPath.bezierPath()
@@ -208,11 +209,11 @@ def _get_bandwidth_view_cls():
             _plot(rx, RX, y_up)
             _plot(tx, TX, y_down)
 
-            # Y axis (shared peak): download peak at top, 0 at the baseline,
-            # upload peak at the bottom — all in the clear left gutter.
-            _draw_right(_fmt_rate(peak), GUTTER - 6, top - 12, dim)
+            # Y axis: each direction scaled to its own max — download max at
+            # top, 0 at the baseline, upload max at the bottom.
+            _draw_right(_fmt_rate(peak_up), GUTTER - 6, top - 12, dim)
             _draw_right("0", GUTTER - 6, mid - 5, dim)
-            _draw_right(_fmt_rate(peak), GUTTER - 6, bottom, dim)
+            _draw_right(_fmt_rate(peak_down), GUTTER - 6, bottom, dim)
             # Time axis across the bottom strip.
             _draw(f"{n - 1}s ago", NSMakePoint(left, 0), dim)
             _draw_right("now", right, 0, dim)
@@ -245,7 +246,13 @@ def _get_bandwidth_view_cls():
                 _seg(f"   {n - 1 - hi}s ago", NSColor.tertiaryLabelColor())
                 pad, sz = 5.0, pill.size()
                 pw, ph = sz.width + 2 * pad, sz.height + 2 * pad
-                px, py = left + 6, top - ph
+                # Attach the pill to the cursor (offset up-right, flipping near
+                # an edge); fall back to the crosshair when there's no live
+                # cursor (e.g. the bw-hover debug path).
+                cx, cy = self._hover_pt if self._hover_pt else (hx, mid)
+                px = cx + 10 if cx + 10 + pw <= w - 2 else cx - pw - 10
+                py = cy + 10 if cy + 10 + ph <= h - 2 else cy - ph - 10
+                px, py = max(2.0, px), max(2.0, py)
                 _hex_color(PALETTE["window"], 0.92).set()
                 NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                     NSMakeRect(px, py, pw, ph), 4, 4).fill()
