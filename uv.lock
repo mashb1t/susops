@@ -1232,7 +1232,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/b2/e2/2e6a47951290bd1a2
 
 [[package]]
 name = "susops"
-version = "3.0.0rc6.dev2"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

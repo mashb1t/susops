@@ -49,7 +49,7 @@ from susops import __version__ as _RAW_VERSION  # noqa: E402
 # regardless of how the package was installed when generated. version.py
 # returns the raw pyproject string from a source checkout but the normalised
 # wheel-metadata form when installed — without this the committed spec flaps
-# between "3.0.0-rc6.dev2" and "3.0.0rc6.dev2" depending on the environment.
+# between "1.0.0-rc1.dev1" and "1.0.0rc1.dev1" depending on the environment.
 SUSOPS_VERSION = str(Version(_RAW_VERSION))  # noqa: E402
 from susops.core.rpc_server import _ALLOWED_METHODS  # noqa: E402
 from susops.facade import SusOpsManager  # noqa: E402
