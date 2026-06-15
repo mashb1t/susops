@@ -164,3 +164,37 @@ def test_multiple_fetches_accumulate_counts(tmp_path):
     assert server.access_count == 3
     assert server.failed_count == 1
     server.stop()
+
+
+def test_stop_keeps_runner_on_cleanup_timeout(monkeypatch):
+    """On a cleanup timeout, stop() must NOT claim the runner is gone:
+    is_running() stays truthful and start() stays blocked (port may still be
+    bound). Verified without a real 5s wait by injecting a hanging future."""
+    from susops.core import share as share_mod
+
+    class _FakeRunner:
+        async def cleanup(self):
+            return None
+
+    class _HangingFuture:
+        def done(self):
+            return False
+
+        def result(self, timeout=None):
+            raise TimeoutError("cleanup hung")
+
+    def _fake_rcts(coro, loop):
+        coro.close()  # avoid 'coroutine never awaited'
+        return _HangingFuture()
+
+    monkeypatch.setattr(share_mod, "_get_loop", lambda: None)
+    monkeypatch.setattr(share_mod.asyncio, "run_coroutine_threadsafe", _fake_rcts)
+
+    srv = ShareServer()
+    srv._runner = _FakeRunner()
+    srv._port = 12345
+
+    srv.stop()
+    assert srv.is_running() is True  # runner kept — not a false 'stopped'
+    with pytest.raises(RuntimeError, match="already running"):
+        srv.start(file_path=Path("/nonexistent"), password="x")

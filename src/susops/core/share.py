@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import logging
 import os
 import secrets
 import string
@@ -21,6 +22,8 @@ import threading
 from pathlib import Path
 
 from susops.core.types import ShareInfo
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["ShareServer", "fetch_file", "generate_password", "ShareInfo"]
 
@@ -137,6 +140,7 @@ class ShareServer:
 
     def __init__(self) -> None:
         self._runner = None
+        self._cleanup_future = None
         self._port: int = 0
         self._encrypted_data: bytes = b""
         self._encrypted_filename: str = ""
@@ -221,17 +225,31 @@ class ShareServer:
         return site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
 
     def stop(self) -> None:
-        """Stop the share server."""
-        if self._runner is not None:
-            loop = _get_loop()
-            future = asyncio.run_coroutine_threadsafe(
+        """Stop the share server.
+
+        Clears _runner only after cleanup actually completes. On a cleanup
+        timeout we keep _runner set so is_running() stays truthful and start()
+        stays blocked (the listener may still hold the port) — a later stop()
+        reuses the pending cleanup future rather than double-scheduling.
+        """
+        if self._runner is None:
+            self._port = 0
+            return
+        loop = _get_loop()
+        if self._cleanup_future is None or self._cleanup_future.done():
+            self._cleanup_future = asyncio.run_coroutine_threadsafe(
                 self._runner.cleanup(), loop
             )
-            try:
-                future.result(timeout=5)
-            except Exception:
-                pass
-            self._runner = None
+        try:
+            self._cleanup_future.result(timeout=5)
+        except Exception as exc:
+            logger.warning(
+                "share server cleanup did not complete (%s); port %d may still "
+                "be bound — will retry on next stop", exc, self._port
+            )
+            return
+        self._runner = None
+        self._cleanup_future = None
         self._port = 0
 
     def is_running(self) -> bool:

@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, Callable
 
 __all__ = ["StatusServer"]
+
+logger = logging.getLogger(__name__)
 
 
 class StatusServer:
@@ -28,6 +31,7 @@ class StatusServer:
 
     def __init__(self) -> None:
         self._runner = None
+        self._cleanup_future = None
         self._port: int = 0
         self._queues: list[asyncio.Queue[str | None]] = []
         self._queues_lock: asyncio.Lock | None = None
@@ -165,21 +169,32 @@ class StatusServer:
         return site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
 
     def stop(self) -> None:
-        """Stop the SSE server and disconnect all clients."""
+        """Stop the SSE server and disconnect all clients.
+
+        Clears _runner only after cleanup completes; on timeout keeps it set
+        so is_running() stays truthful and start() stays blocked, and reuses
+        the pending cleanup future rather than double-scheduling.
+        """
         if self._runner is None:
             return
 
         from susops.core.share import _get_loop
 
         loop = _get_loop()
-        future = asyncio.run_coroutine_threadsafe(
-            self._stop_async(), loop
-        )
+        if self._cleanup_future is None or self._cleanup_future.done():
+            self._cleanup_future = asyncio.run_coroutine_threadsafe(
+                self._stop_async(), loop
+            )
         try:
-            future.result(timeout=5)
-        except Exception:
-            pass
+            self._cleanup_future.result(timeout=5)
+        except Exception as exc:
+            logger.warning(
+                "status server cleanup did not complete (%s); port %d may still "
+                "be bound — will retry on next stop", exc, self._port
+            )
+            return
         self._runner = None
+        self._cleanup_future = None
         self._port = 0
 
     async def _stop_async(self) -> None:
