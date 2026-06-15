@@ -51,8 +51,8 @@ _padded_secure_cell_cls = None
 _padded_plain_pw_cell_cls = None
 _bandwidth_view_cls = None
 
-BW_DOWN_HEX = "4d9fff"  # receive (RX/download) sparkline + rate (blue)
-BW_UP_HEX = "5dcc7a"    # send (TX/upload) sparkline + rate (green)
+BW_DOWN_HEX = "5dcaa5"  # download sparkline + rate (teal)
+BW_UP_HEX = "ef9f27"    # upload sparkline + rate (amber)
 
 
 def _fmt_rate(bps: float) -> str:
