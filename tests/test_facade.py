@@ -1416,6 +1416,48 @@ def test_concurrent_add_forward_does_not_lose_updates(tmp_path):
     assert tags == [f"fw-{i}" for i in range(8)], f"lost updates: only {tags} persisted"
 
 
+def test_list_shares_concurrent_with_mutation(tmp_path):
+    """list_shares() must not raise 'dictionary changed size during iteration'
+    when another thread inserts/removes shares mid-poll."""
+    import threading
+    from susops.core.types import ShareInfo
+
+    class _FakeServer:
+        access_count = 0
+        failed_count = 0
+        def is_running(self):
+            return True
+
+    mgr = SusOpsManager(workspace=tmp_path)
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def mutator():
+        i = 0
+        while not stop.is_set():
+            port = 9000 + (i % 50)
+            info = ShareInfo(file_path="/tmp/x", port=port, password="p",
+                             url=f"http://localhost:{port}", running=True)
+            mgr._share_put(port, _FakeServer(), info)
+            mgr._share_pop(port)
+            i += 1
+
+    t = threading.Thread(target=mutator)
+    t.start()
+    try:
+        for _ in range(2000):
+            try:
+                mgr.list_shares()
+            except BaseException as exc:  # noqa: BLE001 — capture any crash
+                errors.append(exc)
+                break
+    finally:
+        stop.set()
+        t.join()
+
+    assert not errors, f"list_shares crashed under concurrent mutation: {errors!r}"
+
+
 def test_is_idle_fresh_workspace(tmp_path):
     """A brand-new workspace with no tracked processes is idle."""
     from susops.facade import SusOpsManager

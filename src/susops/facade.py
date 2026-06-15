@@ -584,6 +584,13 @@ class SusOpsManager:
         self._pac_server = PacServer()
         self._status_server = StatusServer()
         self._share_servers: dict[int, tuple[ShareServer, ShareInfo]] = {}
+        # Guards _share_servers. Held ONLY around dict snapshot/pop/insert,
+        # never across I/O (server.stop(), forwards) or _config_lock — see the
+        # _share_* helpers. The dict is touched from RPC executor threads, the
+        # auth watcher, and the reconnect monitor concurrently with frontend
+        # list_shares polls; an unguarded iteration there raised
+        # "dictionary changed size during iteration".
+        self._share_lock = threading.Lock()
         self._log_buffer: deque[str] = deque(maxlen=500)
         self._bw_sampler = _BandwidthSampler(
             self._process_mgr, workspace=workspace, on_sample=self._on_bandwidth
@@ -798,7 +805,7 @@ class SusOpsManager:
         for fs in conn.file_shares:
             if fs.stopped:
                 continue
-            if fs.port in self._share_servers:
+            if self._share_contains(fs.port):
                 continue
             fp = Path(fs.file_path)
             if not fp.exists():
@@ -812,7 +819,7 @@ class SusOpsManager:
                     file_path=str(fp), port=raw.port, password=fs.password,
                     url=f"http://localhost:{raw.port}", conn_tag=conn.tag, running=True,
                 )
-                self._share_servers[raw.port] = (srv, si)
+                self._share_put(raw.port, srv, si)
                 if raw.port != fs.port:
                     self._update_file_share_port(conn.tag, fs, raw.port)
                 self._log(f"[{conn.tag}] Started share '{fp.name}' on port {raw.port}")
@@ -822,7 +829,7 @@ class SusOpsManager:
             except Exception as exc:
                 self._error(f"[{conn.tag}] Failed to start share '{fs.file_path}': {exc}")
 
-        for share_port, (_server, share_info) in list(self._share_servers.items()):
+        for share_port, _server, share_info in self._share_snapshot():
             if share_info.conn_tag == conn.tag:
                 fw = PortForward(
                     src_port=share_port, dst_port=share_port,
@@ -1101,7 +1108,7 @@ class SusOpsManager:
                         conn_tag=conn.tag,
                         running=True,
                     )
-                    self._share_servers[actual_port] = (server, info)
+                    self._share_put(actual_port, server, info)
                     if actual_port != fs.port:
                         self._update_file_share_port(conn.tag, fs, actual_port)
                     self._log(f"[{conn.tag}] Restored share '{file_path.name}' on port {actual_port}")
@@ -1296,12 +1303,11 @@ class SusOpsManager:
         """
         self._reconnect_monitor.stop()
         self._process_mgr.kill_all()
-        for server, _ in list(self._share_servers.values()):
+        for _p, server, _info in self._share_pop_all():
             try:
                 server.stop()
             except Exception:
                 pass
-        self._share_servers.clear()
         if self._pac_server.is_running():
             try:
                 self._pac_server.stop()
@@ -1356,7 +1362,7 @@ class SusOpsManager:
             tracked = []
         if tracked:
             return False
-        if self._share_servers:
+        if self._share_any():
             return False
         if self._pac_server.is_running():
             return False
@@ -1538,7 +1544,7 @@ class SusOpsManager:
 
         self._register_forwards(conn, error_suffix="to re-register")
 
-        for share_port, (_server, share_info) in list(self._share_servers.items()):
+        for share_port, _server, share_info in self._share_snapshot():
             if share_info.conn_tag != tag:
                 continue
             fw = PortForward(
@@ -1594,7 +1600,7 @@ class SusOpsManager:
 
         # Stop share servers for the affected connections
         stopped_tags = {c.tag for c in connections}
-        for p, (server, info) in list(self._share_servers.items()):
+        for p, server, info in self._share_snapshot():
             if info.conn_tag in stopped_tags:
                 try:
                     server.stop()
@@ -1605,7 +1611,7 @@ class SusOpsManager:
                         "running": False,
                         "conn_tag": info.conn_tag,
                     })
-                    del self._share_servers[p]
+                    self._share_pop(p)
                 except Exception as exc:
                     errors.append(f"Share {p}: {exc}")
 
@@ -2107,7 +2113,7 @@ class SusOpsManager:
         )
         # Register in memory and config BEFORE checking tunnel state so that
         # self.start() (below) can pick up this share when iterating _share_servers.
-        self._share_servers[info.port] = (server, info)
+        self._share_put(info.port, server, info)
         self._log(f"Sharing '{file.name}' on port {info.port}")
         self._add_file_share_to_config(conn_tag, str(file), pw, info.port)
 
@@ -2139,6 +2145,38 @@ class SusOpsManager:
         })
         return info
 
+    # ---- _share_servers access — all guarded by _share_lock --------------- #
+    # These hold the lock only for the dict operation itself and never do I/O
+    # or touch _config_lock, so the lock stays a deadlock-free leaf.
+
+    def _share_contains(self, port: int) -> bool:
+        with self._share_lock:
+            return port in self._share_servers
+
+    def _share_any(self) -> bool:
+        with self._share_lock:
+            return bool(self._share_servers)
+
+    def _share_put(self, port: int, server: "ShareServer", info: ShareInfo) -> None:
+        with self._share_lock:
+            self._share_servers[port] = (server, info)
+
+    def _share_pop(self, port: int):
+        with self._share_lock:
+            return self._share_servers.pop(port, None)
+
+    def _share_snapshot(self) -> list[tuple[int, "ShareServer", ShareInfo]]:
+        """Consistent snapshot of (port, server, info) tuples."""
+        with self._share_lock:
+            return [(p, s, i) for p, (s, i) in self._share_servers.items()]
+
+    def _share_pop_all(self) -> list[tuple[int, "ShareServer", ShareInfo]]:
+        """Snapshot then clear atomically — for stop-everything paths."""
+        with self._share_lock:
+            items = [(p, s, i) for p, (s, i) in self._share_servers.items()]
+            self._share_servers.clear()
+            return items
+
     def stop_share(self, port: int | None = None) -> None:
         """Stop share server(s) without removing from config (entry shows as stopped).
 
@@ -2146,7 +2184,7 @@ class SusOpsManager:
         on the next start() or restore cycle.
         """
         if port is not None:
-            entry = self._share_servers.pop(port, None)
+            entry = self._share_pop(port)
             if entry:
                 entry[0].stop()
                 info = entry[1]
@@ -2167,7 +2205,8 @@ class SusOpsManager:
                 # Offline share (not in _share_servers): mark as manually stopped in config
                 self._set_file_share_stopped(port, True)
         else:
-            for p, (server, info) in list(self._share_servers.items()):
+            # Snapshot+clear under the lock, then do the stop()/cancel I/O.
+            for p, server, info in self._share_pop_all():
                 server.stop()
                 self._log(f"File share on port {p} stopped")
                 if info.conn_tag:
@@ -2181,7 +2220,6 @@ class SusOpsManager:
                     "running": False,
                     "conn_tag": info.conn_tag,
                 })
-            self._share_servers.clear()
 
     def delete_share(self, port: int) -> None:
         """Stop and permanently remove a share from config."""
@@ -2196,20 +2234,23 @@ class SusOpsManager:
 
     def list_shares(self) -> list[ShareInfo]:
         """Return info for all shares: running (in-memory) and stopped (config-only)."""
-        # Clean up dead in-memory servers
-        dead = [p for p, (s, _) in self._share_servers.items() if not s.is_running()]
-        for p in dead:
-            del self._share_servers[p]
-
-        # In-memory running shares — attach live access counters
-        running_ports = set(self._share_servers.keys())
+        # Snapshot under the lock; is_running()/counters are in-memory so we
+        # process the snapshot outside it, then pop any dead servers.
+        running_ports: set[int] = set()
         result: list[ShareInfo] = []
-        for server, info in self._share_servers.values():
+        dead: list[int] = []
+        for p, server, info in self._share_snapshot():
+            if not server.is_running():
+                dead.append(p)
+                continue
+            running_ports.add(p)
             result.append(dataclasses.replace(
                 info,
                 access_count=server.access_count,
                 failed_count=server.failed_count,
             ))
+        for p in dead:
+            self._share_pop(p)
 
         # Config-only stopped shares (persisted but server not running in this
         # process). Reload under the lock so a concurrent share/stop_share
@@ -2232,7 +2273,7 @@ class SusOpsManager:
         return result
 
     def share_is_running(self) -> bool:
-        return bool(self._share_servers)
+        return self._share_any()
 
     def fetch(
             self,
