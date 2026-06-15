@@ -132,3 +132,24 @@ VERDICT: APPROVED
 APPROVED. Folded in the two non-blocking residual notes: `_auth_deadline` must be accessed under the per-tag lifecycle lock (cross-thread: watcher + monitor + RPC); endpoint validation (1.7) must stay compatible with documented bind values (`0.0.0.0`, `172.17.0.1`, `localhost`) and host aliases — reject metacharacters, don't narrow accepted addresses.
 
 **Converged after 5 rounds.** Codex started at REVISE with 14 findings (round 1), then 8 (round 2), 5 (round 3), 5 (round 4), and APPROVED at round 5. Of ~33 distinct findings: ~31 accepted (many were genuine flaws in the *approach*, not just omissions — the non-child-PID verdict bug, the nested-shell quoting trap, the `_try_reconnect` auth pileup, the non-atomic port-file race, and a factual error in my plan about `_sweep_orphan_masters`); 1 rejected with logged reason (RPC bearer-token auth — deliberate documented single-user trust model, scope creep); 1 partially folded (direct `SusOpsManager` use, subsumed by the rewritten Decision A).
+
+## Implementation outcome
+
+All four phases implemented and committed (9 commits). Full suite: 418 passed,
+1 failed, 26 skipped — the single failure (tests/tui/test_shares_screen.py::
+test_shares_screen_stop_share) is PRE-EXISTING (red at the baseline commit
+524ccdc before any change, identical `assert 0 == 1`), a TUI-pilot timing issue
+unrelated to this work. Net +14 passing tests, zero regressions. OpenAPI spec
+fresh (RPC surface unchanged).
+
+- Phase 1 (correctness): zombie/identity in process.py, share-dict lock, async
+  cleanup-future, strict cross-platform master matcher, per-tag start lock,
+  config-boundary host validation, atomic 0600 pid/port files. DEFERRED: the
+  coupled socket-authoritative-reconnect + auth-deadline bundle (its
+  don't-kill-mid-2FA path can't be verified without real auth prompts) — split
+  to a tested follow-up; the primary zombie wedge is fixed.
+- Phase 2: ~110 LOC grep-verified dead code deleted.
+- Phase 3: browser launch consolidated into one base method; real path now tested.
+- Phase 4: BandwidthSampler extracted to core/bandwidth.py (nettop parser now
+  unit-tested); _http_probe_via_socks seam extracted; kill_all + cancel_forward
+  coverage added.
