@@ -8,7 +8,7 @@ SSH SOCKS5 proxy manager with PAC server, TCP/UDP port forwarding, Textual TUI, 
 
 ## Overview
 
-SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC (Proxy Auto-Config) file so browsers and other tools route traffic through your tunnels automatically. It replaces a 1600-line Bash CLI with a modern Python stack:
+SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC file, so browsers and other tools route traffic through your tunnels automatically. V3 replaces a 1600-line Bash CLI with a modern Python stack:
 
 - **Textual TUI** — interactive split-pane dashboard, live bandwidth charts, CRUD editor, integrated log viewer
 - **Non-interactive CLI** — scriptable `susops` command with semantic exit codes
@@ -20,62 +20,44 @@ SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC (Proxy Auto-Config) fil
 
 ### Architecture
 
-SusOps is split into a **services daemon** (`susops-services`) that owns the long-lived async functionality, and **thin frontends** (CLI, TUI, tray apps) that talk to it over a local JSON-over-HTTP RPC channel plus a Server-Sent Events stream. There is one daemon per workspace. If it isn't running when a frontend starts, the frontend auto-spawns it. When the last frontend disconnects and no SSH tunnels / shares / PAC are active, the daemon exits cleanly.
+SusOps is split into a services daemon (`susops-services`) and thin frontends (CLI, TUI, tray apps) that talk to it over a local JSON-over-HTTP RPC channel plus a Server-Sent Events stream.
 
-```
-susops/
-  src/susops/
-    core/                # Business logic (no UI)
-      services_daemon.py # Daemon main: PID claim, signal handlers, idle-shutdown
-      rpc_server.py      # aiohttp /rpc — JSON-over-HTTP, allowlist-gated dispatch
-      rpc_protocol.py    # InvocationRequest/Response, type-tagged JSON encoder
-      status.py          # SSE /events server — state · share · forward · bandwidth
-      config.py          # Pydantic v2 models + ruamel.yaml I/O (atomic save)
-      ssh.py             # SSH ControlMaster + live -O forward / -O cancel
-      socat.py           # UDP port forwarding via socat over SSH ControlMaster
-      pac.py             # PAC generation + aiohttp HTTP server (shared async loop)
-      share.py           # AES-256-CTR encrypted file sharing + client fetch
-      process.py         # ProcessManager: PID files, start/stop/status, zombie detection
-      ports.py           # Free port allocation, CIDR helpers
-      log_style.py       # Shared log-line styler (tag/ok/warn/err colours)
-      types.py           # Enums and result dataclasses
-    facade.py            # SusOpsManager — in-process API used INSIDE the daemon
-    client.py            # SusOpsClient — RPC proxy used by every frontend
-    tui/                 # Textual TUI + argparse CLI
-    tray/                # GTK3 (Linux) and rumps (macOS) tray apps
-```
+More details:
 
-#### Daemon ↔ Frontend protocol
+<details>
+<summary>Daemon ↔ Frontend protocol</summary>
 
 There are two channels between each frontend and the daemon, both bound to `127.0.0.1`:
 
-| Channel | Endpoint              | Direction        | Use                                                                                                       |
-|---------|-----------------------|------------------|-----------------------------------------------------------------------------------------------------------|
+| Channel | Endpoint              | Direction         | Use                                                                                                                                                           |
+|---------|-----------------------|-------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | RPC     | `POST /rpc`           | frontend → daemon | One method invocation per request. Allowlisted methods from `_ALLOWED_METHODS` in `rpc_server.py` — anything else is rejected. Synchronous, request/response. |
-| SSE     | `GET /events`         | daemon → frontend | Long-lived Server-Sent-Events stream. Pushes `state`, `share`, `forward`, and `bandwidth` events so frontends update instantly without polling. |
+| SSE     | `GET /events`         | daemon → frontend | Long-lived Server-Sent-Events stream. Pushes `state`, `share`, `forward`, and `bandwidth` events so frontends update instantly without polling.               |
 
-Ports are auto-allocated and written to `~/.susops/pids/susops-services.port` so frontends know where to dial. The PID file (`susops-services.pid`) is claimed atomically with `O_CREAT | O_EXCL` — two daemons racing each other can't both win, the loser exits with a clear "another daemon is running" message.
+Ports are auto-allocated and written to `~/.susops/pids/susops-services.port`. The PID file (`susops-services.pid`) is written atomically with `O_CREAT | O_EXCL`.
+The daemon exits as soon as (a) the last SSE client disconnects AND (b) it has nothing tracked: no SSH masters, no shares, PAC down, reconnect monitor watching nothing.
 
-The frontend's `SusOpsClient` exposes the same API surface as `SusOpsManager` via `__getattr__` magic, so frontend code reads `mgr.start(tag="work")` the same whether it's running in-process (inside the daemon) or remoting over HTTP (everywhere else). Connection refused mid-call triggers exactly one retry through `ensure_daemon_running`, which transparently respawns the daemon if it died.
+</details>
 
-**Idle shutdown.** The daemon exits as soon as (a) the last SSE client disconnects AND (b) it has nothing tracked: no SSH masters, no shares, PAC down, reconnect monitor watching nothing. A 5 s safety-net check catches the "CLI fired one RPC and exited" case where no SSE connection ever opened. Startup gets a 3 s grace so a freshly-spawned daemon doesn't exit before its first SSE listener lands.
+<details>
+<summary>OpenAPI schema</summary>
 
-#### OpenAPI schema
-
-The full RPC surface (every allowlisted method, its kwargs schema, its return type, plus the SSE event payloads) is documented as OpenAPI 3.1 at [`docs/openapi.yaml`](docs/openapi.yaml). The spec is auto-generated from `SusOpsManager` + `_ALLOWED_METHODS` via `tools/gen_openapi.py`:
+The full RPC interface is documented in OpenAPI 3.1 schema at [`docs/openapi.yaml`](docs/openapi.yaml). The spec is auto-generated from `SusOpsManager` + `_ALLOWED_METHODS` via `tools/gen_openapi.py`:
 
 ```bash
 python tools/gen_openapi.py             # regenerate docs/openapi.yaml
 python tools/gen_openapi.py --check     # CI: fail if stale
 ```
 
-A pytest case (`tests/test_openapi.py`) runs `--check` on every PR, so the committed spec can never drift from the source. Every tagged release also re-runs the generator and attaches the resulting `openapi.yaml` as a release asset, so the schema published alongside each version is always exact.
+The schema is prevented from drifting and always up to date using tests. When contributing, feel free to set up the pre-commit hook in `.githooks/pre-commit`.
+You can use this spec as basis for Swagger UI / Redoc / Stoplight for browsable docs, or feed it into a client generator (`openapi-generator`, `oapi-codegen`, etc.) to build alternative frontends.
 
-Plug the spec into Swagger UI / Redoc / Stoplight for browsable docs, or feed it into a client generator (`openapi-generator`, `oapi-codegen`, etc.) to build alternative frontends.
+</details>
 
-#### Access & authentication
+<details>
+<summary>Access & authentication</summary>
 
-The daemon is built for **single-user local-only access** — there is no authentication, no shared secret, and no per-method permission model. The protections in place are:
+The daemon is built for **single-user local-only access**. There is no authentication (yet), no shared secret (yet), and no per-method permission model. The protections in place are:
 
 | Layer            | Mechanism                                                                                                                                       | What it prevents                                                                                                                                                  |
 |------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -83,19 +65,9 @@ The daemon is built for **single-user local-only access** — there is no authen
 | Method allowlist | `_ALLOWED_METHODS` in `rpc_server.py` — any method not in the set returns `404 method not allowed`                                              | Private helpers (`mgr._whatever`) can't be invoked. Defence against *accidental* exposure, not malicious callers.                                                 |
 | Port discovery   | Port + PID are written to `~/.susops/pids/susops-services.{port,pid}`                                                                           | Filesystem perms (default `0644`) gate read access. A process running as a different local user that can't read your home directory can't find the port.         |
 
-**What this means in practice:**
+If you need stricter control, feel free to contribute or implement a **Per-daemon bearer token** (create random secret on startup, require it as an `Authorization: Bearer ...` header.
 
-- **Single-user laptop / desktop:** safe. Only your own processes can reach loopback and read the port file.
-- **Multi-user host / shared dev box:** any other local user **whose UID can read `~/.susops/pids/susops-services.port`** can call any allowlisted method on your daemon. That means starting/stopping tunnels, reading config, listing shares, fetching files. The kernel doesn't help here — you'd need filesystem ACLs.
-- **Untrusted local processes** (browser extensions with loopback access, sandboxed apps, etc.): same caveat. Loopback is treated as a security boundary, not a single trust zone.
-
-**Hardening options** if you need stricter control:
-
-- **Tighten the port file** — `chmod 600 ~/.susops/pids/susops-services.port` keeps it readable only by your UID. Not currently the default, but a one-line change to `services_daemon.py:_port_path` would make it permanent.
-- **Unix domain socket instead of TCP** — bind aiohttp to `~/.susops/pids/susops-services.sock` with `0600` and kernel-enforced perms become the access control. Cleaner, no token rotation needed.
-- **Per-daemon bearer token** — generate a random secret on startup, write it to `~/.susops/pids/susops-services.token` with `0600`, require it as an `Authorization: Bearer ...` header. `SusOpsClient` reads the file on each call.
-
-None of these are implemented today; the daemon assumes a single-user trust zone. If your threat model includes co-resident users or hostile loopback-reachable software, the cheapest fix is the port-file `chmod 600`.
+</details>
 
 #### Component relations
 
@@ -124,7 +96,7 @@ flowchart TD
         Facade["facade.py — SusOpsManager\nconfig I/O · PID mgmt · bandwidth sampling\nis_idle() drives daemon shutdown"]
         SSE["status.py — StatusServer\n/events (SSE)\nstate · share · forward · bandwidth"]
         Reconnect["_ReconnectMonitor\nwatches ControlMaster sockets\nre-registers forwards on reconnect"]
-        BW["_BandwidthSampler\nreads /proc/<pid>/io every 2s"]
+        BW["_BandwidthSampler\nreads /proc/<pid>/io (Linux) or nettop (macOS) every 1s"]
 
         SSH["ssh.py\nControlMaster + -O forward"]
         Socat["socat.py\nUDP forwards via socat"]
@@ -181,6 +153,14 @@ flowchart TD
 
 ## Installation
 
+### macOS (Homebrew)
+
+```bash
+brew tap mashb1t/susops
+brew install susops         # CLI + TUI
+brew install --cask susops  # SusOps App (tray)
+```
+
 ### pip
 
 ```bash
@@ -194,12 +174,11 @@ pip install "susops[tui]"
 pip install "susops[tui,tray-mac]"
 ```
 
-The Linux tray needs system packages (`python3-gi`, `gtk3`, `libayatana-appindicator`); see below. UDP port forwarding also needs a system package (`socat`).
+The Linux tray needs system packages (`python3-gi`, `gtk3`, `libayatana-appindicator`); see below.
+
+UDP port forwarding also needs a system package (`socat`).
 
 ```bash
-# macOS — socat for UDP forwarding
-brew install socat
-
 # Arch Linux — Linux tray + socat
 sudo pacman -S python-gobject gtk3 libayatana-appindicator socat
 
@@ -211,14 +190,8 @@ sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1 soca
 
 ```bash
 yay -S susops
-# Optional TUI: yay -S python-textual
-# Optional file sharing: yay -S python-cryptography
-```
-
-### macOS (Homebrew)
-
-```bash
-brew install mashb1t/susops/susops
+yay -S python-textual
+yay -S python-cryptography
 ```
 
 ### From source
@@ -226,7 +199,7 @@ brew install mashb1t/susops/susops
 ```bash
 git clone https://github.com/mashb1t/susops
 cd susops
-pip install -e ".[tui,share,dev]"
+pip install -e ".[tui,dev]"
 ```
 
 ---
@@ -235,7 +208,7 @@ pip install -e ".[tui,share,dev]"
 
 ```bash
 # Add your first SSH connection
-susops add-connection work user@bastion.example.com
+susops add-connection work user@example.com
 
 # Add hosts that should route through the proxy
 susops add *.internal.example.com
@@ -253,11 +226,9 @@ susops ps   # shows PAC port, e.g. http://localhost:51234/susops.pac
 
 ---
 
-## Services Daemon
+## Service Registration (optional)
 
-SusOps' background services (PAC HTTP server, status SSE endpoint, reconnect monitor, bandwidth sampler) run in a single long-lived process: `susops-services`. The CLI, TUI, and tray are thin clients that talk to it over **JSON-over-HTTP RPC** (`POST /rpc`) and consume live state updates from a **Server-Sent-Events stream** (`GET /events`). If the daemon isn't running when you invoke a frontend, it's auto-spawned; the PID + RPC port are recorded in `~/.susops/pids/susops-services.{pid,port}`.
-
-By default the daemon **exits when idle**, last SSE client disconnected AND no SSH tunnels / shares / PAC running / connections being watched. Respawning takes well under a second, so frontends don't notice. If you want it always running anyway (faster cold-start, immediate reconnect of dropped connections without any frontend open), install one of the supervisor units below.
+Feel free to register `susops-services` as a background service so it's always running and ready to manage your tunnels.
 
 ### macOS (launchd)
 
@@ -281,6 +252,62 @@ The unit uses `%h/.local/bin/susops-services`, adjust if your install path diffe
 
 ---
 
+## System Tray App
+
+### macOS
+
+Simply open the SusOps app in Applications or run the following command: 
+
+```bash
+susops-tray
+```
+
+Requires `rumps` (if installed via pip): `pip install "susops[tray-mac]"`
+
+> [!IMPORTANT]
+> **The macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described below is macOS-only for now. The Linux tray uses the older v2 submenu structure and might not 100% be compatible with v3, use with caution.
+
+The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
+
+<p align="center">
+    <img src="docs/tray/macos/tray-menu.png" alt="Menu" height="300" />
+</p>
+
+<p align="center">
+    <img src="docs/tray/macos/tray-connections.png" alt="Menu" height="500" />
+</p>
+
+<p align="center">
+    <img src="docs/tray/macos/tray-settings.png" alt="Menu" height="500" />
+</p>
+
+When activating the benu bar bandwidth option, the total bandwidth of all connections is outout next to the SusOps status indicator. 
+
+### Linux
+
+```bash
+susops-tray
+```
+
+Requires (system packages):
+- Arch: `sudo pacman -S python-gobject gtk3 libayatana-appindicator`
+- Ubuntu/Debian: `sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1`
+
+### Linux tray
+
+The Linux tray keeps the classic submenu menu structure:
+
+- **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
+- **Start / Stop / Restart All** — bulk lifecycle operations across all connections
+- **Test** — test SSH reachability for a specific connection, curl a domain through its SOCKS proxy, or check port liveness for a specific forward; "Test All PAC Hosts" bulk-tests every configured domain
+- **CRUD** — add/remove connections, PAC hosts, and port forwards (with bind address selection)
+- **Settings** — configure PAC port, stop-on-quit, and ephemeral ports
+- **Browser launch** — open Chrome or Firefox with the PAC URL pre-configured
+- **Quit**
+
+
+---
+
 ## TUI
 
 Run `susops` (or `so`) with no arguments in a terminal to launch the interactive TUI:
@@ -291,21 +318,27 @@ susops
 
 ### Screens
 
-**Dashboard** (default) — split-pane view. Left sidebar shows all connections (status dot — `●` green running, `◐` orange pending, `○` dim stopped — SOCKS port, live throughput), PAC server status, and active file shares. Right panel is tabbed:
-- **Stats** — CPU%, memory, active connections, PID for the selected connection
-- **Bandwidth** — live RX and TX line charts (PlotextPlot, 60-sample rolling window, auto-scaled units)
-- **Forwards** — DataTable of all port forwards (direction, local port, local bind, remote port, remote bind, label)
-- **Logs** — RichLog of all tunnel output, auto-refreshed every 3 seconds
+- **Dashboard** (default): shows stats (CPU%, memory, etc.), bandwidth charts (also per connection), forwards and logs.
 
-**Connection editor** — tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards. Press `a` to add, `d` to delete, `t` to toggle enabled/disabled, `e` to run a connectivity test for the selected item, `s`/`x`/`r` to start/stop/restart. All add dialogs are modal overlays (dimmed background). A detail preview panel at the bottom shows expanded info for the selected row.
+<p align="center">
+    <img src="docs/tui/tui-dashboard.png" alt="Menu" height="500" />
+</p>
 
-**Share screen** — split-pane: left list of shares with three-state indicators (green = running, dim = manually stopped, red = offline/connection down), right panel with file details, URL, password, access counts, and fetch commands. Press `a` to share a new file, `f` to fetch a remote share, `d` to stop a share, `s` to restart a stopped share, `x` to delete. Refreshes every 2 seconds via `set_interval` to reflect connection state changes.
+<p align="center">
+    <img src="docs/tui/tui-logs.png" alt="Menu" height="500" />
+</p>
 
-**Config editor** — read-only YAML view of `~/.susops/config.yaml`. Press `e` to open in `$EDITOR`.
+- **Connection editor**: tabbed CRUD editor for Connections, PAC Hosts, Local Forwards, and Remote Forwards.
+
+<p align="center">
+    <img src="docs/tui/tui-add-domain.png" alt="Menu" height="500" />
+</p>
+
+- **Share screen**: add file shares or fetch shared fiels
 
 ---
 
-## CLI Reference
+## CLI
 
 When a subcommand is given (or stdout is not a TTY), `susops` runs in non-interactive mode:
 
@@ -408,80 +441,23 @@ susops reset [--force]    # Kill all processes, wipe ~/.susops workspace
 
 ### Exit codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success / all running |
-| `1` | Error |
-| `2` | Partial (some services stopped, or any connection pending) |
-| `3` | All stopped |
+| Code | Meaning                                                    |
+|------|------------------------------------------------------------|
+| `0`  | Success / all running                                      |
+| `1`  | Error                                                      |
+| `2`  | Partial (some services stopped, or any connection pending) |
+| `3`  | All stopped                                                |
 
 A connection is **pending** when its SSH master is alive but the ControlMaster socket isn't up yet — typically while ssh-agent is waiting on a key unlock, or between reconnect attempts. `start` returns as soon as the master spawns; auth then completes asynchronously up to 60 s later. Slow agent prompts (Vaultwarden, 1Password, hardware keys) no longer freeze the UI.
 
----
-
-## System Tray
-
-### Linux
-
-```bash
-susops-tray
-```
-
-Requires (system packages):
-- Arch: `sudo pacman -S python-gobject gtk3 libayatana-appindicator`
-- Ubuntu/Debian: `sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatana-appindicator3-0.1`
-
-### macOS
-
-```bash
-susops-tray
-```
-
-Requires `rumps`: `pip install "susops[tray-mac]"`
-
-The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
-
-**Note: the macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described below is macOS-only for now; the Linux tray keeps the classic submenu structure.
-
-### macOS tray
-
-The macOS tray has a slim menu with a unified **config window** (open with Settings… ⌘, or from the tray menu):
-
-Slim menu items:
-- **Status line** — shows current connection state
-- **Settings… ⌘,** — opens the unified config window
-- **Start / Stop / Restart Proxy** — bulk lifecycle for all connections
-- **Show Status** — print current state to stdout
-- **Show Logs** — open the log directory
-- **Launch Browser ▸** — submenu: Chrome or Firefox with the PAC URL pre-configured
-- **Reset All** — kill all processes and wipe the workspace
-- **About SusOps**
-- **Quit ⌘Q**
-
-The **config window** is a 3-column Tailscale-style editor (nav / list / detail) with a dark skin and instant-apply settings:
-
-- **Column 1 — nav.** Categories with live counts: **Connections / Domains / Forwards / Shares**, plus **Settings** pinned at the bottom. Selecting a category drives the list.
-- **Column 2 — list.** A search field on top filters the rows for the selected category. Forwards split into **Local** and **Remote** sections (each with a one-line explainer); shares show download counts. Each row carries a colored run-state dot (green active, amber pending, gray stopped/inactive, red error/connection-down) and a connection badge; disabled rows render dimmed. A context-aware add button sits at the bottom (`+ Add Connection`, `+ Add Domain / IP / CIDR`, `+ Add Forward`, or `Share File…` / `Fetch…`).
-- **Column 3 — detail / editor.** A header with the title, a colored status line, and an **Enabled** toggle in the top-right (applies instantly). The body is a card holding the form: forwards, domains, and shares are **edited inline** (change a field and **Save**) — no remove-and-re-enter. The same `+` buttons open inline **create forms** in this column (file/folder pickers still use the native chooser). Shares expose a copyable `http://localhost:PORT` URL and password. Per-item actions live in the action row (**Delete…** on the left, **Test** / **Save** on the right).
-- **Settings** spans columns 2–3: grouped toggles (launch at login, stop on quit, random SSH ports, restore shares, show bandwidth, notifications, logo style) that **apply instantly**, the RPC / SSE / PAC server ports behind a single **Apply** button, and an **Open Config File…** button.
-
-### Linux tray
-
-The Linux tray keeps the classic submenu menu structure:
-
-- **Manage** — toggle connection/PAC host/forward enabled state; start, stop, or restart a specific connection
-- **Start / Stop / Restart All** — bulk lifecycle operations across all connections
-- **Test** — test SSH reachability for a specific connection, curl a domain through its SOCKS proxy, or check port liveness for a specific forward; "Test All PAC Hosts" bulk-tests every configured domain
-- **CRUD** — add/remove connections, PAC hosts, and port forwards (with bind address selection)
-- **Settings** — configure PAC port, stop-on-quit, and ephemeral ports
-- **Browser launch** — open Chrome or Firefox with the PAC URL pre-configured
-- **Quit**
 
 ---
 
 ## Configuration
 
 Config is stored at `~/.susops/config.yaml`. It is created automatically on first use.
+
+Example file with all currently added features:
 
 ```yaml
 pac_server_port: 51234
@@ -528,16 +504,23 @@ susops_app:
   logo_style: COLORED_GLASSES
 ```
 
-### Port forward bind addresses
+### Deep Dive
+
+<details>
+<summary>Port forward bind addresses</summary>
+
 
 | Field      | Description                                                                |
 |------------|----------------------------------------------------------------------------|
-| `src_addr` | Local bind address for local forwards; remote bind for remote forwards     |
-| `dst_addr` | Remote destination host for local forwards; local bind for remote forwards |
+| `src_addr` | Local bind address for local forwards, remote bind for remote forwards     |
+| `dst_addr` | Remote destination host for local forwards, local bind for remote forwards |
 
 Common values: `localhost` (default, loopback only), `0.0.0.0` (all interfaces), `172.17.0.1` (Docker bridge).
 
-### Port forward protocol flags
+</details>
+
+<details>
+<summary>Port forward protocol flags</summary>
 
 Each forward has two boolean flags that control which transport protocols are enabled:
 
@@ -546,9 +529,13 @@ Each forward has two boolean flags that control which transport protocols are en
 | `tcp` | `true`  | Enable TCP forwarding via SSH `-L`/`-R` slave       |
 | `udp` | `false` | Enable UDP forwarding via socat (requires `socat`)  |
 
-Both can be `true` simultaneously — susops will start an SSH slave for TCP and socat process(es) for UDP independently. Requires at least one of `tcp` or `udp` to be `true`.
+Both can be `true` simultaneously. SusOps will start an SSH process for TCP and socat process(es) for UDP independently. Requires at least one of `tcp` or `udp` to be `true`.
 
-### PAC host syntax
+
+</details>
+
+<details>
+<summary>PAC host syntax</summary>
 
 | Pattern            | Matches                      |
 |--------------------|------------------------------|
@@ -556,33 +543,45 @@ Both can be `true` simultaneously — susops will start an SSH slave for TCP and
 | `10.0.0.0/8`       | any IP in 10.0.0.0/8 CIDR    |
 | `host.example.com` | that exact hostname          |
 
-### Port assignment
+</details>
 
-Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config to pin it. Ports outside `1–65535` are rejected on `add`.
+<details>
+<summary>Port assignment</summary>
 
-### Tag format
+Ports default to `0` (auto-assign). SusOps picks a random free port from the ephemeral range (49152–65535) at start time and saves it back to `config.yaml`. Pass a specific port to `add-connection` or set it in the config.
+
+</details>
+
+<details>
+<summary>Tag format</summary>
 
 Connection tags must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (no slashes, no `..`, no leading punctuation). Tags appear in PID-file names, socket paths, log lines, and PAC keys, so the format is intentionally strict.
 
-### Workspace
+</details>
 
-All runtime data lives in `~/.susops/`:
+<details>
+<summary>Workspace</summary>
+
+All runtime data is stored in `~/.susops/`:
 
 ```
 ~/.susops/
-  config.yaml             # persistent config
-  susops.pac              # generated PAC file (regenerated on start/change)
-  pids/                   # PID files + socket files for each managed process
-    susops-ssh-<tag>.pid  # ControlMaster PID
+  config.yaml                  # persistent config
+  susops.pac                   # generated PAC file (regenerated on start/change)
+  pids/                        # PID files + socket files for each managed process
+    susops-ssh-<tag>.pid       # ControlMaster PID
     susops-fwd-<tag>-<fw>.pid  # forward slave PIDs
     susops-pac.pid
-    susops-<tag>.sock     # SSH ControlMaster Unix socket
-  logs/                   # per-process log files
-    susops-ssh-<tag>.log
-  firefox_profile/        # temporary Firefox profile for PAC launch
+    susops-<tag>.sock          # SSH ControlMaster Unix socket
+  logs/                        # per-process log files
+    susops-ssh-<tag>.log     
+  firefox_profile/             # temporary Firefox profile for PAC launch
 ```
 
-### SSH Server: Forward-Only Access
+</details>
+
+<details>
+<summary>SSH Server: Forward-Only Access</summary>
 
 To restrict the SSH user on the server to only perform port forwarding (no shell, no file transfer):
 
@@ -625,6 +624,8 @@ sudo systemctl reload sshd
 
 The connection stays alive for SOCKS proxying and port forwards but cannot execute commands or transfer files.
 
+</details>
+
 ---
 
 ## File Sharing
@@ -649,11 +650,6 @@ susops fetch 52100 Xk7mN2qR...
 **Protocol:** HTTP Basic auth (`:password`) + gzip compression + AES-256-CTR encryption (PBKDF2-HMAC-SHA256 key derivation, 600,000 iterations). The original filename is also encrypted and stored in `Content-Disposition`.
 
 **Fetch behaviour:** `fetch` auto-starts the SSH ControlMaster if the connection is not running, using a minimal start (no configured forwards, PAC server, or file shares are touched). The connection is stopped again after the download completes. If the connection was already running it is left untouched.
-
-**Share status** in the TUI uses three states:
-- `●` green — server running and accessible
-- `○` dim — manually stopped (will not auto-restart)
-- `○` red — offline because its connection went down (auto-resumes when connection restarts)
 
 Each share tracks successful and failed access counts in memory (shown in the detail panel; not persisted across restarts).
 
@@ -723,7 +719,8 @@ flowchart LR
 
 Process name: `susops-udp-<conn>-<fw>-lsocat`
 
-**Latency note:** each datagram opens one SSH channel (~25–40 ms overhead on a typical WAN link). This is suitable for request/response protocols (DNS, database ping, STUN) but not for high-frequency streaming (real-time audio/video).
+> [!NOTE]
+> **Latency:** each datagram opens one SSH channel (~25–40 ms overhead on a typical WAN link). This is suitable for request/response protocols (DNS, database ping, STUN) but not for high-frequency streaming (real-time audio/video).
 
 ### Architecture: remote UDP forward
 
@@ -779,6 +776,8 @@ The EXEC-based local UDP approach runs a command on the remote SSH host for each
 ---
 
 ## Python API
+
+Example implementation:
 
 ```python
 from susops.facade import SusOpsManager
@@ -856,7 +855,7 @@ mgr.stop()
 git clone https://github.com/mashb1t/susops
 cd susops
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[tui,share,dev]"
+pip install -e ".[tui,dev]"
 
 # Run tests
 pytest
@@ -872,8 +871,8 @@ susops ps
 susops ls
 
 # Build local pypi + brew artifacts (mirrors CI, no upload)
-scripts/build-local.sh pypi      # wheel + sdist
-scripts/build-local.sh brew      # SusOps.app + .dmg (macOS only)
+scripts/build-local.sh pypi           # wheel + sdist
+scripts/build-local.sh brew           # SusOps.app + .dmg (macOS only)
 scripts/build-local.sh install-pypi   # install wheel into a throwaway venv
 scripts/build-local.sh install-brew   # copy SusOps.app to /Applications
 ```
@@ -905,49 +904,7 @@ SUSOPS_RUN_GUI_TESTS=1 .venv/bin/pytest -m gui -v
 
 Seven smoke tests launch a real tray instance (using `SUSOPS_TRAY_WORKSPACE` + `SUSOPS_TRAY_DEBUG_PORT` internally), drive it through the debug server, and assert menu structure and window content. Skipped automatically on Linux and when `SUSOPS_RUN_GUI_TESTS` is unset.
 
-### Project layout
 
-```
-susops/
-  pyproject.toml
-  src/susops/
-    core/
-      config.py         # Pydantic v2 + ruamel.yaml
-      ssh.py            # SSH ControlMaster/slave management + socket helpers
-      socat.py          # UDP forwarding via socat EXEC + SSH ControlMaster
-      pac.py            # PAC generation + aiohttp HTTP server
-      share.py          # AES-256-CTR file sharing + shared async event loop
-      status.py         # aiohttp SSE StatusServer (/events endpoint)
-      process.py        # PID file-based process manager + zombie detection
-      ports.py          # Port utilities (validate_port, is_port_free, CIDR)
-      ssh_config.py     # ~/.ssh/config parser
-      types.py          # Enums + result dataclasses (ShareInfo three-state)
-    facade.py           # SusOpsManager public API
-    tui/
-      __main__.py       # Dual-mode entrypoint
-      cli.py            # argparse non-interactive CLI
-      app.py            # Textual App (SusOpsTuiApp)
-      app.tcss          # Global CSS theme
-      screens/
-        dashboard.py        # Split-pane dashboard (sidebar + tabbed detail)
-        connections.py      # CRUD editor with modal dialogs
-        share.py            # File share + fetch screen
-        config_editor.py    # Read-only YAML viewer
-    tray/
-      base.py           # AbstractTrayApp
-      linux.py          # GTK3 + AyatanaAppIndicator3
-      mac.py            # rumps + PyObjC
-  tests/
-    test_config.py
-    test_process.py
-    test_pac.py
-    test_share.py
-    test_facade.py
-  packaging/
-    aur/PKGBUILD
-    homebrew/Formula/susops.rb
-    homebrew/Casks/susops.rb
-```
 
 ### Building Packages
 
@@ -988,25 +945,21 @@ The formula at `packaging/homebrew/Formula/susops.rb` uses `virtualenv_install_w
 shasum -a 256 <downloaded-tarball>
 ```
 
-#### Version bumping
-
-Update the version in `src/susops/version.py`, then update `pkgver` in `packaging/aur/PKGBUILD` and the `url` version in `packaging/homebrew/Formula/susops.rb` to match.
-
 ---
 
 ## Migration from susops.sh
 
 If you used the previous Bash-based `susops.sh`:
 
-1. Your `~/.susops/config.yaml` is **fully compatible** — no migration needed.
+1. Your `~/.susops/config.yaml` is **fully compatible**, no migration needed.
 2. The `go-yq` / `yq` dependency is **removed** (replaced by Python + pydantic + ruamel.yaml).
-3. Process detection no longer uses `pgrep -f` / `exec -a` hacks — PID files in `~/.susops/pids/` are used instead.
+3. Process detection no longer uses `pgrep -f` / `exec -a` hacks. PID files in `~/.susops/pids/` are used instead.
 4. The PAC HTTP server is now a Python `http.server` daemon thread instead of a `nc` loop.
-5. `autossh` is no longer used — replaced by plain `ssh` with ControlMaster mode for stable PID tracking and multiplexed forwards.
+5. `autossh` is no longer used, but were replaced by plain `ssh` with ControlMaster mode for stable PID tracking and multiplexed forwards.
 6. All CLI commands have the same names and behavior.
 
 ---
 
 ## License
 
-[GNU General Public License v3.0](https://github.com/mashb1t/susops/blob/main/LICENSE)
+[AGPL v3.0](LICENSE)
