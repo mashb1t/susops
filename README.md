@@ -198,6 +198,18 @@ The tray icon reflects the current state (running / partial-or-pending / stopped
 </p>
 
 <p align="center">
+    <img src="docs/tray/macos/tray-domains.png" alt="Menu" height="500" />
+</p>
+
+<p align="center">
+    <img src="docs/tray/macos/tray-forwards.png" alt="Menu" height="500" />
+</p>
+
+<p align="center">
+    <img src="docs/tray/macos/tray-shares.png" alt="Menu" height="500" />
+</p>
+
+<p align="center">
     <img src="docs/tray/macos/tray-settings.png" alt="Menu" height="500" />
 </p>
 
