@@ -8,7 +8,7 @@ pkgrel=1
 pkgdesc="SSH SOCKS5 proxy manager — Python TUI + system tray"
 arch=('any')
 url="https://github.com/mashb1t/susops"
-license=('MIT')
+license=('AGPL-3.0-or-later')
 depends=(
     'python'
     'python-pydantic'

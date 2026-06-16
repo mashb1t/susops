@@ -5,7 +5,7 @@ class Susops < Formula
   homepage "https://github.com/mashb1t/susops"
   url "https://github.com/mashb1t/susops/archive/v3.0.0.tar.gz"
   sha256 "76c387b268234b796d208aa4eea829e3287c1738dd2f29b7e96d42abd8231644"
-  license "MIT"
+  license "AGPL-3.0-or-later"
 
   depends_on "socat"
   depends_on "python@3.14"
