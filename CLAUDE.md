@@ -74,6 +74,7 @@ src/susops/
     share.py         # AES-256-CTR HTTP file sharing + client fetch (shared async loop)
     status.py        # SSE StatusServer — aiohttp, broadcasts state/share/forward events
     process.py       # PID-file-based process manager (~/.susops/pids/) + zombie detection
+    bandwidth.py     # BandwidthSampler — per-connection rate sampling (/proc on Linux, nettop on macOS)
     ports.py         # validate_port(), is_port_free(), free port allocation, CIDR helpers
     types.py         # ProcessState enum, result dataclasses (StartResult, ShareInfo etc.)
   tui/
@@ -83,9 +84,8 @@ src/susops/
     app.tcss         # global CSS theme for all screens
     screens/
       dashboard.py         # split-pane: sidebar (ListView) + TabbedContent detail panel
-      connection_editor.py # CRUD editor with ModalScreen dialogs + detail preview
-      share.py             # file share + fetch with ModalScreen dialogs
-      config_editor.py     # read-only YAML viewer, press e to open $EDITOR
+      connections.py       # CRUD editor with ModalScreen dialogs + detail preview
+      shares.py            # file share + fetch with ModalScreen dialogs
   tray/
     base.py               # AbstractTrayApp — all shared business logic
     linux.py              # GTK3 implementation of abstract methods
@@ -210,7 +210,7 @@ Key implementation notes:
 - File shares belonging to that connection are also stopped
 - PAC server and other connections are left running
 
-**Bandwidth sampling.** `_BandwidthSampler` (inside `facade.py`) is a daemon thread that reads `read_chars`/`write_chars` from `/proc/pid/io` every second. These include socket I/O, unlike `read_bytes`/`write_bytes` which only count disk. `get_bandwidth(tag)` is a non-blocking dict lookup.
+**Bandwidth sampling.** `BandwidthSampler` (`core/bandwidth.py`) is a daemon thread that samples per-connection throughput every second. On **Linux** it reads `read_chars`/`write_chars` from `/proc/pid/io` (these include socket I/O, unlike `read_bytes`/`write_bytes` which only count disk) and weights the system delta by per-process char deltas. On **macOS** there is no `/proc`, so it shells out to `nettop -t external` and computes per-PID `bytes_in`/`bytes_out` deltas. The facade injects the sampler with a `ProcessManager` + an `on_sample` callback (it never depends on `SusOpsManager`), so it lives in its own module and the `nettop` line parser is unit-testable in isolation. `get_bandwidth(tag)` on the facade is a non-blocking lookup that delegates to `get_rate`.
 
 **Multi-share.** `_share_servers: dict[int, tuple[ShareServer, ShareInfo]]` in the facade is keyed by port, allowing concurrent shares on different ports. Each `ShareServer` tracks `access_count` and `failed_count` in memory (not persisted). `list_shares()` attaches live counts to the returned `ShareInfo` via `dataclasses.replace`.
 
