@@ -83,8 +83,8 @@ def test_shares_screen_stop_share(tui_workspace, tmp_path):
                 lv = app.screen.query_one("#share-list", ListView)
                 assert len(list(lv.children)) == 1
 
-                # Press 'd' to stop the share
-                await pilot.press("d")
+                # Press 'x' to stop the share
+                await pilot.press("x")
                 await pilot.pause(0.3)
 
                 # Share is still in the list but stopped
@@ -122,9 +122,9 @@ def test_shares_screen_delete_share(tui_workspace, tmp_path):
             assert len(list(lv.children)) == 1
 
             # Stop the share first (so it's safe to delete), then delete
-            await pilot.press("d")  # stop
+            await pilot.press("x")  # stop
             await pilot.pause(0.2)
-            await pilot.press("x")  # delete
+            await pilot.press("d")  # delete
             await pilot.pause(0.3)
 
             shares_after = client.list_shares()
