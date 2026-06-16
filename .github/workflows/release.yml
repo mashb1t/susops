@@ -103,6 +103,19 @@ jobs:
         # Rebuilding fresh in Phase 2 is faster than wiring up an
         # artifact handoff from Phase 1's run.
         run: uv run python tools/gen_openapi.py
+      # PyPI renders the README but can't resolve repo-relative image paths,
+      # so rewrite them to absolute, tag-pinned raw URLs in the build copy only
+      # (the repo README stays relative for GitHub). <img>/centering untouched.
+      - name: Absolutize README image URLs for PyPI
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          base = f"https://raw.githubusercontent.com/mashb1t/susops/{os.environ['VERSION']}/"
+          p = pathlib.Path("README.md")
+          p.write_text(re.sub(
+              r'src="(?!https?://|/|data:|#)([^"]+)"',
+              lambda m: f'src="{base}{m.group(1)}"', p.read_text()))
+          PY
       - run: uv build
       - run: uv publish
 
