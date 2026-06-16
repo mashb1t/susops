@@ -2150,6 +2150,31 @@ class ConfigWindow:
         self._dirty_identity = None
         self._render_selection_placeholder()
 
+    def focus_field(self, key: str) -> dict:
+        """Debug: make a col-3 form field first responder — simulates a user
+        clicking into / typing in a field before pressing a button."""
+        w = self._field_widgets.get(key)
+        if w is None or self.window is None:
+            return {"error": f"no field widget for '{key}'"}
+        self.window.makeFirstResponder_(w)
+        return {"ok": True, "focused": bool(self._detail_input_focused())}
+
+    def clear_detail_focus(self) -> None:
+        """Resign any col-3 first responder.
+
+        After committing a create, the create form's text field is still first
+        responder (clicking the Create NSButton doesn't resign it). The async
+        _apply_data that follows skips the col-3 re-render whenever
+        _detail_input_focused() is True, so the stale create form would persist
+        and never switch to the new item's edit/Save form. Dropping focus lets
+        that refresh re-render column 3.
+        """
+        if self.window is not None:
+            try:
+                self.window.makeFirstResponder_(None)
+            except Exception:
+                pass
+
     def _build_create_spec(self, kind: str, preselect: str):
         conn_tags = [c.tag for c in self._cfg.connections] if self._cfg else []
         if kind == "connection":

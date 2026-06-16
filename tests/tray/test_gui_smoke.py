@@ -254,6 +254,49 @@ def test_inline_edit_forward_round_trip(tray_proc):
     assert cfg.connections[0].forwards.local[0].dst_port == 5433
 
 
+def test_create_forward_switches_to_edit_form(tray_proc):
+    """Regression: after Create, col 3 must switch from the 'New Forward' create
+    form to the new forward's edit/Save form — even though a form field is still
+    first responder (as it is when a user clicks Create right after typing).
+
+    Previously _apply_data skipped the col-3 re-render whenever
+    _detail_input_focused() was True, so the create form stayed stuck forever.
+    """
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+
+    assert tray_proc.send("open-config forwards").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "forwards",
+    )
+
+    assert tray_proc.send("add").get("create_kind") == "forward"
+    tray_proc.send("set-field conn_tag work")
+    tray_proc.send("set-field src_port 5432")
+    tray_proc.send("set-field dst_port 5432")
+    # Leave a field focused, like a user clicking Create right after typing.
+    assert tray_proc.send("focus-field dst_port").get("focused") is True
+
+    assert tray_proc.send("action forward.create").get("ok")
+    dump = _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("create_kind") is None
+        and d.get("detail_title") != "New Forward"
+        and "forward.create" not in (d.get("detail_actions") or []),
+        timeout=6.0,
+    )
+    # The detail must have switched to the new forward's editor, not stayed on
+    # the create form.
+    assert dump["create_kind"] is None
+    assert dump["selected"] == ["forward", "work", "local", 5432]
+    assert "forward.create" not in dump["detail_actions"], \
+        f"still showing the create form: {dump['detail_title']!r}"
+    assert "forward.remove" in dump["detail_actions"]
+    assert c.list_config().connections[0].forwards.local[0].src_port == 5432
+
+
 def test_inline_edit_connection(tray_proc):
     """Edit a connection's ssh_host + socks_port inline; the change persists
     and the connection's children (forwards, domains) survive the edit."""

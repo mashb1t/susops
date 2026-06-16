@@ -1738,6 +1738,9 @@ class SusOpsMacTray(AbstractTrayApp):
                 lambda: self._ensure_config_window().set_field(
                     args[0], " ".join(args[1:])))
                 if args else {"error": "usage: set-field <key> <value…>"}),
+            "focus-field": lambda args: (_run_on_main(
+                lambda: self._ensure_config_window().focus_field(args[0]))
+                if args else {"error": "usage: focus-field <key>"}),
             "set-settings-field": lambda args: (_run_on_main(
                 lambda: self._ensure_config_window().set_settings_field(
                     args[0], " ".join(args[1:])))
@@ -2016,6 +2019,10 @@ class SusOpsMacTray(AbstractTrayApp):
         cw._dirty = False
         cw._dirty_identity = None
         cw.selected_identity = tuple(new_identity)
+        # The create form's field is still first responder; without dropping it
+        # the next _apply_data skips the col-3 re-render (_detail_input_focused)
+        # and the form stays stuck on "New …" instead of the new item's editor.
+        cw.clear_detail_focus()
         self._refresh_config_window()
 
     def _create_connection(self, values: dict) -> None:
