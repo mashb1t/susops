@@ -8,6 +8,8 @@ SSH SOCKS5 proxy manager with PAC server, TCP/UDP port forwarding, Textual TUI, 
 
 aka. **"VPN for single websites"**
 
+It unifies and supersedes the now archived projects [susops-mac](https://github.com/mashb1t/susops-mac), [susops-linux](https://github.com/mashb1t/susops-linux)  and [susops-cli](https://github.com/mashb1t/susops-cli).
+
 ## Overview
 
 SusOps manages SSH SOCKS5 proxy tunnels and serves a PAC file, so browsers and other tools route traffic through your tunnels automatically. V3 replaces a 1600-line Bash CLI with a modern Python stack.
