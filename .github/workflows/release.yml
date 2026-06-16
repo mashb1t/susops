@@ -16,12 +16,24 @@ on:
     tags: [ "v*" ]
   release:
     types: [ published ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)publish, e.g. v3.0.0. Runs Phase 2 manually."
+        required: true
 
 permissions:
   contents: write
 
+# Serialize all release work for a given version so a manual dispatch can't
+# race a release-event run (would double-publish to PyPI / double-commit the tap).
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 env:
-  VERSION: ${{ github.ref_name }}
+  # release event → github.ref_name is the tag; workflow_dispatch → the input.
+  VERSION: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   # ───────────────────────────────────────────────────────────────────
@@ -71,7 +83,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────
 
   publish-pypi:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Trusted-publisher OIDC: short-lived token minted per run, no secret.
     permissions:
@@ -79,6 +91,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
@@ -93,10 +107,12 @@ jobs:
       - run: uv publish
 
   build-dmg:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -121,12 +137,13 @@ jobs:
           retention-days: 1
 
   update-tap:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: [ publish-pypi, build-dmg ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
           path: main
       - uses: actions/checkout@v6
         with:
