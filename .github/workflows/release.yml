@@ -73,8 +73,11 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           draft: true
+          # Match only the build artifacts — NOT dist/* — because `uv build`
+          # also writes a dist/.gitignore, which dist/* would upload too.
           files: |
-            dist/*
+            dist/*.whl
+            dist/*.tar.gz
             docs/openapi.yaml
           generate_release_notes: true
 
