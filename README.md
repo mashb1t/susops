@@ -184,9 +184,6 @@ susops-tray
 
 Requires `rumps` (if installed via pip): `pip install "susops[tray-mac]"`
 
-> [!IMPORTANT]
-> **The macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described below is macOS-only for now. The Linux tray uses the older v2 submenu structure and might not 100% be compatible with v3, use with caution.
-
 The tray icon reflects the current state (running / partial-or-pending / stopped). State changes arrive over the daemon's SSE `/events` stream. If the stream drops, the listener reconnects within at most 5 seconds. When TUI + tray are both attached to the same daemon, quitting one keeps the other running — `stop_on_quit` is skipped if any other frontend is still connected.
 
 <p align="center">
@@ -216,6 +213,9 @@ The tray icon reflects the current state (running / partial-or-pending / stopped
 When activating the benu bar bandwidth option, the total bandwidth of all connections is outout next to the SusOps status indicator. 
 
 ### Linux
+
+> [!IMPORTANT]
+> **The macOS and Linux tray apps diverge in their UI structure.** The 3-column config window described above is macOS-only for now. The Linux tray uses the older v2 menu structure and might not 100% be compatible with v3. Use with caution.
 
 ```bash
 susops-tray
