@@ -172,6 +172,43 @@ def test_remove_local_forward(mgr):
     assert conn.forwards.local == []
 
 
+def test_remove_forward_ambiguous_port_requires_conn_tag(mgr):
+    # Same remote src_port on two connections must not be silently wiped from
+    # both when no conn_tag is given.
+    mgr.add_connection("a", "user@a.com")
+    mgr.add_connection("b", "user@b.com")
+    mgr.add_remote_forward("a", PortForward(src_port=8080, dst_port=8080))
+    mgr.add_remote_forward("b", PortForward(src_port=8080, dst_port=8080))
+    with pytest.raises(ValueError, match="multiple connections"):
+        mgr.remove_remote_forward(8080)
+    # Both still present.
+    cfg = mgr.list_config()
+    assert all(len(c.forwards.remote) == 1 for c in cfg.connections)
+    # Scoped removal only touches the named connection.
+    mgr.remove_remote_forward(8080, conn_tag="a")
+    by_tag = {c.tag: c for c in mgr.list_config().connections}
+    assert by_tag["a"].forwards.remote == []
+    assert len(by_tag["b"].forwards.remote) == 1
+
+
+def test_update_config_rejects_invalid_value(mgr):
+    with pytest.raises(Exception):
+        mgr.update_config(pac_server_port="not-a-port")
+    # Config file still loads (wasn't bricked).
+    assert mgr.list_config() is not None
+
+
+def test_update_connection_rename_while_running_does_not_raise(mgr):
+    # Regression: renaming persisted the new tag before stop(old) ran, so
+    # stop(old) raised "not found" and orphaned the master. Not running here,
+    # so restart is a no-op, but the reorder must not break the plain rename.
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    updated = mgr.update_connection("work", new_tag="prod")
+    assert updated.tag == "prod"
+    tags = [c.tag for c in mgr.list_config().connections]
+    assert tags == ["prod"]
+
+
 # ------------------------------------------------------------------ #
 # Status
 # ------------------------------------------------------------------ #

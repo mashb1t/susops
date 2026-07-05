@@ -1150,6 +1150,11 @@ components:
           properties:
             src_port:
               type: integer
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
           required:
           - src_port
           additionalProperties: false
@@ -1207,6 +1212,11 @@ components:
           properties:
             src_port:
               type: integer
+            conn_tag:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
           required:
           - src_port
           additionalProperties: false

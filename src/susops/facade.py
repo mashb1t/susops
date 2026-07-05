@@ -986,6 +986,17 @@ class SusOpsManager:
         connections are signaled before the Python process exits, regardless
         of how many connections are configured.
         """
+        # Mark every configured connection as intentionally stopped BEFORE
+        # killing processes: write the shared stopped-marker (so another
+        # process's monitor won't reconnect) and clear the reconnect monitor's
+        # intended set. Without this the daemon never reports idle (is_idle
+        # checks _intended) and a later start() would revive these tunnels.
+        try:
+            for conn in self.config.connections:
+                _write_stopped_marker(self.workspace, conn.tag)
+                self._reconnect_monitor.mark_stopped(conn.tag)
+        except Exception:
+            pass
         self._reconnect_monitor.stop()
         self._process_mgr.kill_all()
         for _p, server, _info in self._share_pop_all():
@@ -1506,6 +1517,16 @@ class SusOpsManager:
                 "ssh_host": new_host,
                 "socks_proxy_port": new_port,
             })
+
+        # Tear down under the OLD tag BEFORE persisting the rename — stop()
+        # reloads config and looks the connection up by tag, so if the new tag
+        # were already saved stop(tag=old) would raise "not found" and orphan
+        # the old master. stop/start acquire their own locks.
+        if was_running and restart:
+            self.stop(tag=tag)
+
+        with self._config_lock:
+            self._reload_config()
             self.config = self.config.model_copy(update={
                 "connections": [updated if c.tag == tag else c for c in self.config.connections]
             })
@@ -1513,10 +1534,6 @@ class SusOpsManager:
 
         self._update_pac()
         if was_running and restart:
-            # Tear down under the OLD tag (its PID/socket/shares/forwards), then
-            # bring it back up under the NEW config. Outside the config lock —
-            # stop/start acquire their own locks.
-            self.stop(tag=tag)
             self.start(tag=target_tag)
         self._log(f"[{tag}] Updated → tag={target_tag} host={new_host} socks={new_port}")
         self._emit_state(self._compute_state())
@@ -1669,12 +1686,29 @@ class SusOpsManager:
         self._add_forward(conn_tag, fw, "remote")
         self._maybe_start_forward_live(conn_tag, fw, "remote")
 
-    def _remove_forward(self, src_port: int, direction: str) -> None:
+    def _remove_forward(self, src_port: int, direction: str, conn_tag: str | None = None) -> None:
         with self._config_lock:
             self._reload_config()
+            # Guard against wiping the same src_port across unrelated
+            # connections: if no conn_tag is given and more than one connection
+            # binds this port, the caller must disambiguate.
+            if conn_tag is None:
+                owners = [
+                    c.tag for c in self.config.connections
+                    if any(f.src_port == src_port for f in (
+                        c.forwards.local if direction == "local" else c.forwards.remote))
+                ]
+                if len(owners) > 1:
+                    raise ValueError(
+                        f"{direction.capitalize()} forward on port {src_port} exists on "
+                        f"multiple connections {owners}; specify a connection"
+                    )
             found = False
             new_conns = []
             for conn in self.config.connections:
+                if conn_tag is not None and conn.tag != conn_tag:
+                    new_conns.append(conn)
+                    continue
                 fwds = conn.forwards.local if direction == "local" else conn.forwards.remote
                 updated_fwds = [f for f in fwds if f.src_port != src_port]
                 if len(updated_fwds) != len(fwds):
@@ -1699,11 +1733,11 @@ class SusOpsManager:
             self._save()
         self._log(f"Removed {direction} forward on port {src_port}")
 
-    def remove_local_forward(self, src_port: int) -> None:
-        self._remove_forward(src_port, "local")
+    def remove_local_forward(self, src_port: int, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_port, "local", conn_tag)
 
-    def remove_remote_forward(self, src_port: int) -> None:
-        self._remove_forward(src_port, "remote")
+    def remove_remote_forward(self, src_port: int, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_port, "remote", conn_tag)
 
     def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
         """Set the enabled flag on a forward and start/stop the live process accordingly.
@@ -1746,10 +1780,10 @@ class SusOpsManager:
                         cancel_forward(conn, fw, direction, self.workspace)
                     stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
-                    "conn_tag": conn_tag,
-                    "src_port": src_port,
+                    "tag": conn_tag,
+                    "fw_tag": fw_tag,
                     "direction": direction,
-                    "enabled": enabled,
+                    "running": enabled,
                 })
                 return
         raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
@@ -1916,6 +1950,9 @@ class SusOpsManager:
                     if conn:
                         fw = PortForward(src_port=p, dst_port=p, src_addr="localhost", dst_addr="localhost")
                         cancel_forward(conn, fw, "remote", self.workspace)
+                # Mark stopped so the share isn't auto-restarted on the next
+                # start()/restore cycle (matches the per-port branch above).
+                self._set_file_share_stopped(p, True)
                 self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
@@ -2144,7 +2181,20 @@ class SusOpsManager:
         self.stop()
         self.stop_share()
         import shutil
-        shutil.rmtree(self.workspace, ignore_errors=True)
+        # Preserve the running services daemon's own discovery files — reset()
+        # runs *inside* that daemon over RPC, so blindly rmtree'ing the whole
+        # workspace would delete susops-services.{pid,port} out from under the
+        # live process, and the next frontend would spawn a second daemon.
+        preserve = {"susops-services.pid", "susops-services.port"}
+        for child in self.workspace.iterdir():
+            if child.name == "pids" and child.is_dir():
+                for pid_file in child.iterdir():
+                    if pid_file.name not in preserve:
+                        pid_file.unlink(missing_ok=True)
+            elif child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.config = SusOpsConfig()
         self._save()
@@ -2258,9 +2308,12 @@ class SusOpsManager:
     def update_app_config(self, **kwargs) -> None:
         with self._config_lock:
             self._reload_config()
-            self.config = self.config.model_copy(
+            merged = self.config.model_copy(
                 update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
             )
+            # model_copy skips validation — re-validate so a bad RPC value is
+            # rejected here instead of bricking every subsequent config load.
+            self.config = SusOpsConfig.model_validate(merged.model_dump(mode="python"))
             self._save()
 
     def update_config(self, **kwargs) -> None:
@@ -2275,5 +2328,8 @@ class SusOpsManager:
         """
         with self._config_lock:
             self._reload_config()
-            self.config = self.config.model_copy(update=kwargs)
+            merged = self.config.model_copy(update=kwargs)
+            # model_copy skips validation — re-validate so a bad RPC value is
+            # rejected here instead of bricking every subsequent config load.
+            self.config = SusOpsConfig.model_validate(merged.model_dump(mode="python"))
             self._save()
