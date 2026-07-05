@@ -100,6 +100,15 @@ app = BUNDLE(
     bundle_identifier="net.odt.susops",
     info_plist={
         "CFBundleShortVersionString": SUSOPS_VERSION,
+        # Name/DisplayName so SSH agents (1Password, Bitwarden, Secretive)
+        # attribute the daemon's agent connection to "SusOps" with the app
+        # icon rather than the raw Mach-O name. The daemon runs as this same
+        # bundled binary (see entry_tray.py), so the agent approval prompt
+        # inherits this identity + icon. A real codesign identity (see
+        # codesign_identity above, currently None) is still required for
+        # 1Password to show the icon reliably and persist per-app approvals.
+        "CFBundleName": "SusOps",
+        "CFBundleDisplayName": "SusOps",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },
