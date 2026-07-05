@@ -45,6 +45,35 @@ def test_add_unix_socket_forward_via_dialog(tui_workspace):
     asyncio.run(_run())
 
 
+def test_bind_field_is_editable_with_suggestions(tui_workspace):
+    async def _run():
+        app = SusOpsTuiApp()
+        async with app.run_test(headless=True, size=(160, 55)) as pilot:
+            await pilot.pause(1.0)
+            from susops.core.config import PortForward
+            app.manager.add_connection("c", "user@host")
+            # A forward with a custom (non-preset) bind so it gets harvested.
+            app.manager.add_local_forward(
+                "c", PortForward(src_addr="172.120.0.1", src_port=9000,
+                                 dst_addr="localhost", dst_port=9000))
+            await pilot.press("c")
+            await pilot.pause(0.3)
+            binds = app.screen._existing_binds()
+            assert "172.120.0.1" in binds
+            dlg = _AddForwardDialog("local", ["c"], binds)
+            app.push_screen(dlg)
+            await pilot.pause(0.3)
+            s = app.screen
+            # Bind field is now a free-text Input that accepts a custom address…
+            addr = s.query_one("#src-addr", Input)
+            addr.value = "10.9.9.9"
+            assert s.query_one("#src-addr", Input).value == "10.9.9.9"
+            # …and its suggester knows the presets + the harvested custom bind.
+            assert "172.120.0.1" in dlg._bind_suggestions
+            assert "localhost" in dlg._bind_suggestions
+    asyncio.run(_run())
+
+
 def test_dialog_rejects_port_and_socket_on_same_side(tui_workspace):
     async def _run():
         app = SusOpsTuiApp()

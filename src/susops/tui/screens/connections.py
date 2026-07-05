@@ -6,6 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen, ModalScreen
+from textual.suggester import SuggestFromList
 from textual.widgets import (
     Button,
     Checkbox,
@@ -23,6 +24,9 @@ from susops.core.ports import is_port_free, validate_port
 from susops.core.ssh import build_fwd_spec
 from susops.core.ssh_config import get_ssh_hosts
 from susops.tui.screens import _CollapsingLabel, compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
+
+
+_BIND_PRESETS = ["localhost", "172.17.0.1", "0.0.0.0"]
 
 
 def _ep_cols(addr: str, port: int, sock: str) -> tuple[str, str]:
@@ -188,15 +192,23 @@ class _AddPacHostDialog(ModalScreen):
 class _AddForwardDialog(ModalScreen):
     """Modal for adding a local or remote port forward."""
 
-    def __init__(self, direction: str, connections: list[str], **kwargs) -> None:
+    def __init__(self, direction: str, connections: list[str],
+                 binds: list[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._direction = direction
         self._connections = connections
+        # Suggest the common presets first, then any bind address already used
+        # by another forward (so a custom bind typed once autocompletes later).
+        seen: dict[str, None] = dict.fromkeys(_BIND_PRESETS)
+        for b in (binds or []):
+            if b:
+                seen.setdefault(b, None)
+        self._bind_suggestions = list(seen)
 
     def compose(self) -> ComposeResult:
         d = self._direction
         conn_options = [(tag, tag) for tag in self._connections]
-        bind_options = [("localhost", "localhost"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "0.0.0.0")]
+        bind_suggester = SuggestFromList(self._bind_suggestions, case_sensitive=False)
         with Static(classes="modal-dialog"):
             yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
             with Horizontal(classes="modal-form-row"):
@@ -223,10 +235,10 @@ class _AddForwardDialog(ModalScreen):
             with Horizontal(classes="modal-form-row"):
                 with Static(classes="modal-field"):
                     yield Label("Local Bind:" if d == "local" else "Remote Bind:")
-                    yield Select(bind_options, allow_blank=False, id="src-addr")
+                    yield Input(value="localhost", id="src-addr", suggester=bind_suggester)
                 with Static(classes="modal-field"):
                     yield Label("Remote Bind:" if d == "local" else "Local Bind:")
-                    yield Select(bind_options, allow_blank=False, id="dst-addr")
+                    yield Input(value="localhost", id="dst-addr", suggester=bind_suggester)
             yield Label("Protocol:")
             with Horizontal(classes="modal-proto-row"):
                 yield Checkbox("TCP", value=True, id="proto-tcp")
@@ -241,8 +253,8 @@ class _AddForwardDialog(ModalScreen):
             self.dismiss(None)
             return
         conn = _select_str(self, "#conn")
-        src_addr = _select_str(self, "#src-addr", "localhost")
-        dst_addr = _select_str(self, "#dst-addr", "localhost")
+        src_addr = self.query_one("#src-addr", Input).value.strip() or "localhost"
+        dst_addr = self.query_one("#dst-addr", Input).value.strip() or "localhost"
         tag = self.query_one("#tag", Input).value.strip()
         tcp = self.query_one("#proto-tcp", Checkbox).value
         udp = self.query_one("#proto-udp", Checkbox).value
@@ -287,8 +299,13 @@ class _AddForwardDialog(ModalScreen):
             return
         src, src_sock = src_ep
         dst, dst_sock = dst_ep
-        # Only a locally-bound TCP port can be checked for availability.
-        if self._direction == "local" and not src_sock and not is_port_free(src, src_addr or "localhost"):
+        # Only a locally-bound TCP port on a known-local address can be
+        # reliably checked — a custom bind that isn't assigned to a local
+        # interface would make socket.bind fail with EADDRNOTAVAIL and read as
+        # a false "in use", so skip the check for non-preset addresses.
+        if (self._direction == "local" and not src_sock
+                and src_addr in _BIND_PRESETS
+                and not is_port_free(src, src_addr)):
             error_label.update(f"Local port {src} is already in use.")
             return
         self.dismiss({
@@ -477,6 +494,20 @@ class ConnectionsScreen(Screen):
 
     def _conn_tags(self) -> list[str]:
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
+
+    def _existing_binds(self) -> list[str]:
+        """Distinct bind addresses already used by any forward, so the add
+        dialog can autocomplete a custom bind typed once before."""
+        binds: dict[str, None] = {}
+        try:
+            for conn in self.app.manager.list_config().connections:  # type: ignore[attr-defined]
+                for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+                    for addr in (fw.src_addr, fw.dst_addr):
+                        if addr and not (addr in _BIND_PRESETS):
+                            binds.setdefault(addr, None)
+        except Exception:
+            pass
+        return list(binds)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         active = self.query_one("#editor-tabs", TabbedContent).active
@@ -927,7 +958,10 @@ class ConnectionsScreen(Screen):
             except ValueError as e:
                 self.app.notify(str(e), title="SusOps", severity="error")
 
-        self.app.push_screen(_AddForwardDialog(direction, self._conn_tags()), _on_result)
+        self.app.push_screen(
+            _AddForwardDialog(direction, self._conn_tags(), self._existing_binds()),
+            _on_result,
+        )
 
     def _do_rm_forward(self, direction: str) -> None:
         tbl_id = "#tbl-local" if direction == "local" else "#tbl-remote"
