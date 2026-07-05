@@ -104,6 +104,20 @@ def test_is_running_returns_false_for_zombie(mgr, tmp_path):
         pass
 
 
+def test_stop_of_child_completes_promptly(mgr):
+    """A child that exits on SIGTERM must be reaped during the wait loop so
+    stop() returns quickly, not after the full ~2s SIGTERM window (the zombie
+    would otherwise read as alive via os.kill(pid,0))."""
+    cmd = [sys.executable, "-c", "import time; time.sleep(30)"]
+    mgr.start("prompt", cmd)
+    start = time.monotonic()
+    assert mgr.stop("prompt") is True
+    elapsed = time.monotonic() - start
+    # Well under the 2s SIGTERM window + 2s SIGKILL window it would take if the
+    # zombie were never reaped inside _wait_for_exit.
+    assert elapsed < 1.0, f"stop took {elapsed:.2f}s — zombie not reaped in wait loop"
+
+
 def test_sigterm_ignored_escalates_to_sigkill(mgr):
     """stop(force=False) must escalate to SIGKILL when SIGTERM is ignored."""
     cmd = [sys.executable, "-c",
