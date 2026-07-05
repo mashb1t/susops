@@ -224,6 +224,34 @@ def test_remove_forward_ambiguous_port_requires_conn_tag(mgr):
     assert len(by_tag["b"].forwards.remote) == 1
 
 
+def test_add_and_remove_unix_socket_forward(mgr):
+    mgr.add_connection("c", "user@host")
+    # unix→unix (docker), tagged
+    mgr.add_local_forward("c", PortForward(
+        src_socket="/tmp/docker.sock", dst_socket="/var/run/docker.sock", tag="docker"))
+    # TCP→unix (postgres)
+    mgr.add_local_forward("c", PortForward(
+        src_port=5432, dst_socket="/var/run/pg.sock"))
+    local = mgr.list_config().connections[0].forwards.local
+    assert len(local) == 2
+    # dedup by source key (socket path)
+    with pytest.raises(ValueError, match="already exists"):
+        mgr.add_local_forward("c", PortForward(src_socket="/tmp/docker.sock", dst_socket="/x"))
+    # remove by socket path
+    mgr.remove_local_forward("/tmp/docker.sock", conn_tag="c")
+    # remove the TCP→unix one by its src port
+    mgr.remove_local_forward(5432, conn_tag="c")
+    assert mgr.list_config().connections[0].forwards.local == []
+
+
+def test_socket_forward_add_skips_port_validation(mgr):
+    # A socket side has src_port 0 — _add_forward must not reject it as an
+    # invalid port (the pre-socket code did `validate_port(0)` → error).
+    mgr.add_connection("c", "user@host")
+    mgr.add_local_forward("c", PortForward(src_socket="/tmp/x.sock", dst_addr="h", dst_port=80))
+    assert mgr.list_config().connections[0].forwards.local[0].src_socket == "/tmp/x.sock"
+
+
 def test_update_config_rejects_invalid_value(mgr):
     with pytest.raises(Exception):
         mgr.update_config(pac_server_port="not-a-port")
@@ -1092,7 +1120,7 @@ def test_test_forward_tcp_local_port_bound(tmp_path, monkeypatch):
     """test_forward returns tcp=True for a local TCP forward when src_port is bound."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": False)
 
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "user@host.com")
@@ -1107,7 +1135,7 @@ def test_test_forward_tcp_local_port_free(tmp_path, monkeypatch):
     """test_forward returns tcp=False for a local TCP forward when src_port is free."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: True)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": True)
 
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "user@host.com")
@@ -1154,7 +1182,7 @@ def test_test_forward_tcp_and_udp(tmp_path, monkeypatch):
     """test_forward returns both 'tcp' and 'udp' keys for a dual-protocol forward."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": False)
     monkeypatch.setattr(facade_mod, "_is_udp_forward_running",
                         lambda conn_tag, fw, direction, pm: True)
 
@@ -1422,15 +1450,23 @@ def test_stopped_marker_path_rejects_traversal(tmp_path):
 def test_add_forward_validates_ports(tmp_path):
     """Port validation: src/dst must be 1-65535."""
     import pytest
+    from pydantic import ValidationError
     from susops.facade import SusOpsManager
     from susops.core.config import PortForward
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "u@h")
-    for bad in [-1, 0, 65536, 99999]:
+    # Out-of-range but positive: passes the model's endpoint XOR (port > 0),
+    # caught by the facade's range check.
+    for bad in [65536, 99999]:
         with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
             mgr.add_local_forward("work", PortForward(src_port=bad, dst_port=80))
         with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
             mgr.add_local_forward("work", PortForward(src_port=8080, dst_port=bad))
+    # <= 0 with no socket: rejected by the model (each endpoint must be exactly
+    # one of a positive port or a socket path).
+    for bad in [-1, 0]:
+        with pytest.raises(ValidationError):
+            PortForward(src_port=bad, dst_port=80)
 
 
 def test_start_raises_on_unknown_tag(tmp_path):

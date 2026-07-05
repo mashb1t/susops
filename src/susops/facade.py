@@ -31,6 +31,7 @@ from susops.core.ports import get_random_free_port, is_port_free, validate_port
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.socat import (
+    source_key as _fw_source_key,
     UDP_PROCESS_PREFIX,
     fw_tag as _compute_fw_tag,
     start_udp_forward,
@@ -45,6 +46,7 @@ from susops.core.ssh import (
     find_master_pid,
     is_socket_alive,
     is_tunnel_running,
+    socket_forward_active as _socket_forward_active,
     socket_path,
     start_forward,
     start_master,
@@ -1707,30 +1709,28 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _add_forward(self, conn_tag: str, fw: PortForward, direction: str) -> None:
-        if not validate_port(fw.src_port):
+        # Validate each endpoint's port only when that side is TCP (a Unix
+        # socket has port 0 and is validated by the model's socket validator).
+        if not fw.src_socket and not validate_port(fw.src_port):
             raise ValueError(f"Invalid src_port {fw.src_port}: must be 1-65535")
-        if not validate_port(fw.dst_port):
+        if not fw.dst_socket and not validate_port(fw.dst_port):
             raise ValueError(f"Invalid dst_port {fw.dst_port}: must be 1-65535")
+        key = _fw_source_key(fw)
         with self._config_lock:
             self._reload_config()
             conn = get_connection(self.config, conn_tag)
             if conn is None:
                 raise ValueError(f"Connection '{conn_tag}' not found")
-            if direction == "local":
-                if any(f.src_port == fw.src_port for f in conn.forwards.local):
-                    raise ValueError(f"Local forward on port {fw.src_port} already exists")
-                new_fwds = conn.forwards.model_copy(
-                    update={"local": list(conn.forwards.local) + [fw]}
-                )
-            else:
-                if any(f.src_port == fw.src_port for f in conn.forwards.remote):
-                    raise ValueError(f"Remote forward on port {fw.src_port} already exists")
-                new_fwds = conn.forwards.model_copy(
-                    update={"remote": list(conn.forwards.remote) + [fw]}
-                )
+            existing = conn.forwards.local if direction == "local" else conn.forwards.remote
+            if any(_fw_source_key(f) == key for f in existing):
+                raise ValueError(f"{direction.capitalize()} forward '{key}' already exists")
+            new_fwds = conn.forwards.model_copy(
+                update={direction: list(existing) + [fw]}
+            )
             self._replace_connection(conn.model_copy(update={"forwards": new_fwds}))
             self._save()
-        self._log(f"[{conn_tag}] Added {direction} forward {fw.src_port}→{fw.dst_port}")
+        self._log(f"[{conn_tag}] Added {direction} forward {key}→"
+                  f"{fw.dst_socket or fw.dst_port}")
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "local")
@@ -1774,21 +1774,29 @@ class SusOpsManager:
         self._log(f"[{conn_tag}] Imported forwards from ssh config: {counts}")
         return counts
 
-    def _remove_forward(self, src_port: int, direction: str, conn_tag: str | None = None) -> None:
+    def _remove_forward(self, src_key: int | str, direction: str, conn_tag: str | None = None) -> None:
+        # src_key identifies a forward's source endpoint: a socket path
+        # ("/path.sock") or a port (int or its string). Matched via source_key
+        # so TCP and Unix-socket forwards are addressed uniformly.
+        wanted = str(src_key)
+
+        def _matches(f: PortForward) -> bool:
+            return _fw_source_key(f) == wanted
+
         with self._config_lock:
             self._reload_config()
-            # Guard against wiping the same src_port across unrelated
-            # connections: if no conn_tag is given and more than one connection
-            # binds this port, the caller must disambiguate.
+            # Guard against wiping the same source across unrelated connections:
+            # if no conn_tag is given and more than one connection has it, the
+            # caller must disambiguate.
             if conn_tag is None:
                 owners = [
                     c.tag for c in self.config.connections
-                    if any(f.src_port == src_port for f in (
+                    if any(_matches(f) for f in (
                         c.forwards.local if direction == "local" else c.forwards.remote))
                 ]
                 if len(owners) > 1:
                     raise ValueError(
-                        f"{direction.capitalize()} forward on port {src_port} exists on "
+                        f"{direction.capitalize()} forward '{wanted}' exists on "
                         f"multiple connections {owners}; specify a connection"
                     )
             found = False
@@ -1798,10 +1806,10 @@ class SusOpsManager:
                     new_conns.append(conn)
                     continue
                 fwds = conn.forwards.local if direction == "local" else conn.forwards.remote
-                updated_fwds = [f for f in fwds if f.src_port != src_port]
+                updated_fwds = [f for f in fwds if not _matches(f)]
                 if len(updated_fwds) != len(fwds):
                     found = True
-                    removed_fw = next(f for f in fwds if f.src_port == src_port)
+                    removed_fw = next(f for f in fwds if _matches(f))
                     key = "local" if direction == "local" else "remote"
                     new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
                     new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
@@ -1816,23 +1824,25 @@ class SusOpsManager:
                 else:
                     new_conns.append(conn)
             if not found:
-                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found")
+                raise ValueError(f"{direction.capitalize()} forward '{wanted}' not found")
             self.config = self.config.model_copy(update={"connections": new_conns})
             self._save()
-        self._log(f"Removed {direction} forward on port {src_port}")
+        self._log(f"Removed {direction} forward '{wanted}'")
 
-    def remove_local_forward(self, src_port: int, conn_tag: str | None = None) -> None:
-        self._remove_forward(src_port, "local", conn_tag)
+    def remove_local_forward(self, src_key: int | str, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_key, "local", conn_tag)
 
-    def remove_remote_forward(self, src_port: int, conn_tag: str | None = None) -> None:
-        self._remove_forward(src_port, "remote", conn_tag)
+    def remove_remote_forward(self, src_key: int | str, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_key, "remote", conn_tag)
 
-    def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
+    def set_forward_enabled(self, conn_tag: str, src_port: int | str, direction: str, enabled: bool) -> None:
         """Set the enabled flag on a forward and start/stop the live process accordingly.
 
+        src_port is the forward's source key: a port (int) or a socket path.
         If enabling and the connection is running, the forward slave is started immediately.
         If disabling, the forward slave is stopped (if running).
         """
+        wanted = str(src_port)
         with self._config_lock:
             self._reload_config()
             conn = get_connection(self.config, conn_tag)
@@ -1840,18 +1850,18 @@ class SusOpsManager:
                 raise ValueError(f"Connection {conn_tag!r} not found")
             forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
             for fw in forwards:
-                if fw.src_port == src_port:
+                if _fw_source_key(fw) == wanted:
                     fw.enabled = enabled
                     self._save()
                     break
             else:
-                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found in '{conn_tag}'")
+                raise ValueError(f"{direction.capitalize()} forward '{wanted}' not found in '{conn_tag}'")
         # Re-bind conn/fw for the live-start path below (they're now stale references to
         # objects under self.config which may have been replaced by reload).
         conn = get_connection(self.config, conn_tag)
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
-            if fw.src_port == src_port:
+            if _fw_source_key(fw) == wanted:
                 fw_tag = _compute_fw_tag(fw, direction)
                 self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
                 if enabled and (
@@ -1862,7 +1872,7 @@ class SusOpsManager:
                         if fw.udp:
                             start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
+                        self._error(f"[{conn_tag}] Forward {wanted} failed to start: {exc}")
                 elif not enabled:
                     if fw.tcp:
                         cancel_forward(conn, fw, direction, self.workspace)
@@ -1874,29 +1884,31 @@ class SusOpsManager:
                     "running": enabled,
                 })
                 return
-        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
 
-    def toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> bool:
+    def toggle_forward_enabled(self, conn_tag: str, src_port: int | str, direction: str) -> bool:
         """Toggle enabled on a forward. Returns the new enabled state."""
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection {conn_tag!r} not found")
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
-            if fw.src_port == src_port:
+            if _fw_source_key(fw) == wanted:
                 new_enabled = not fw.enabled
                 self.set_forward_enabled(conn_tag, src_port, direction, new_enabled)
                 return new_enabled
-        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
 
-    def is_udp_forward_running(self, conn_tag: str, src_port: int, direction: str) -> bool:
+    def is_udp_forward_running(self, conn_tag: str, src_port: int | str, direction: str) -> bool:
         """Return True if the UDP socat process for this forward is alive."""
         self._reload_config()
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             return False
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
-        fw = next((f for f in forwards if f.src_port == src_port), None)
+        fw = next((f for f in forwards if _fw_source_key(f) == wanted), None)
         if fw is None or not fw.udp:
             return False
         return _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
@@ -2228,26 +2240,33 @@ class SusOpsManager:
         success, message, latency = self._http_probe_via_socks(clean_host, conn.socks_proxy_port)
         return TestResult(target=host, success=success, message=message, latency_ms=latency)
 
-    def test_forward(self, conn_tag: str, src_port: int, direction: str) -> dict[str, bool]:
+    def test_forward(self, conn_tag: str, src_port: int | str, direction: str) -> dict[str, bool]:
         """Check if a port forward is active.
 
+        src_port is the forward's source key: a port (int) or a socket path.
         Returns a dict with keys "tcp" and/or "udp" mapped to True/False.
-        For local TCP: checks whether src_port is bound (not free).
-        For remote TCP: checks whether the ControlMaster socket is alive.
-        For UDP (either direction): checks whether the socat lsocat process is alive.
+        For a local TCP forward: checks whether the local port is bound.
+        For a local Unix-socket forward: checks the local socket file exists and
+        is a socket. For remote TCP: checks the ControlMaster socket is alive.
+        For UDP (either direction): checks the socat lsocat process is alive.
         """
         self._reload_config()
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection '{conn_tag}' not found")
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
-        fw = next((f for f in forwards if f.src_port == src_port), None)
+        fw = next((f for f in forwards if _fw_source_key(f) == wanted), None)
         if fw is None:
-            raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+            raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
         results: dict[str, bool] = {}
         if fw.tcp:
             if direction == "local":
-                results["tcp"] = not is_port_free(src_port)
+                local_sock = fw.src_socket
+                if local_sock:
+                    results["tcp"] = _socket_forward_active(local_sock)
+                else:
+                    results["tcp"] = not is_port_free(fw.src_port, fw.src_addr or "localhost")
             else:
                 results["tcp"] = is_socket_alive(conn_tag, self.workspace)
         if fw.udp:

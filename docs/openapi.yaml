@@ -185,6 +185,7 @@ components:
               title: Src Addr
               type: string
             src_port:
+              default: 0
               title: Src Port
               type: integer
             dst_addr:
@@ -192,8 +193,17 @@ components:
               title: Dst Addr
               type: string
             dst_port:
+              default: 0
               title: Dst Port
               type: integer
+            src_socket:
+              default: ''
+              title: Src Socket
+              type: string
+            dst_socket:
+              default: ''
+              title: Dst Socket
+              type: string
             tcp:
               default: true
               title: Tcp
@@ -206,9 +216,6 @@ components:
               default: true
               title: Enabled
               type: boolean
-          required:
-          - src_port
-          - dst_port
           title: PortForward
           type: object
       properties:
@@ -290,6 +297,7 @@ components:
                   title: Src Addr
                   type: string
                 src_port:
+                  default: 0
                   title: Src Port
                   type: integer
                 dst_addr:
@@ -297,8 +305,17 @@ components:
                   title: Dst Addr
                   type: string
                 dst_port:
+                  default: 0
                   title: Dst Port
                   type: integer
+                src_socket:
+                  default: ''
+                  title: Src Socket
+                  type: string
+                dst_socket:
+                  default: ''
+                  title: Dst Socket
+                  type: string
                 tcp:
                   default: true
                   title: Tcp
@@ -311,9 +328,6 @@ components:
                   default: true
                   title: Enabled
                   type: boolean
-              required:
-              - src_port
-              - dst_port
               title: PortForward
               type: object
           required:
@@ -385,6 +399,7 @@ components:
                   title: Src Addr
                   type: string
                 src_port:
+                  default: 0
                   title: Src Port
                   type: integer
                 dst_addr:
@@ -392,8 +407,17 @@ components:
                   title: Dst Addr
                   type: string
                 dst_port:
+                  default: 0
                   title: Dst Port
                   type: integer
+                src_socket:
+                  default: ''
+                  title: Src Socket
+                  type: string
+                dst_socket:
+                  default: ''
+                  title: Dst Socket
+                  type: string
                 tcp:
                   default: true
                   title: Tcp
@@ -406,9 +430,6 @@ components:
                   default: true
                   title: Enabled
                   type: boolean
-              required:
-              - src_port
-              - dst_port
               title: PortForward
               type: object
           required:
@@ -777,7 +798,9 @@ components:
             conn_tag:
               type: string
             src_port:
-              type: integer
+              anyOf:
+              - type: integer
+              - type: string
             direction:
               type: string
           required:
@@ -941,6 +964,7 @@ components:
               title: Src Addr
               type: string
             src_port:
+              default: 0
               title: Src Port
               type: integer
             dst_addr:
@@ -948,8 +972,17 @@ components:
               title: Dst Addr
               type: string
             dst_port:
+              default: 0
               title: Dst Port
               type: integer
+            src_socket:
+              default: ''
+              title: Src Socket
+              type: string
+            dst_socket:
+              default: ''
+              title: Dst Socket
+              type: string
             tcp:
               default: true
               title: Tcp
@@ -962,9 +995,6 @@ components:
               default: true
               title: Enabled
               type: boolean
-          required:
-          - src_port
-          - dst_port
           title: PortForward
           type: object
       properties:
@@ -1188,15 +1218,17 @@ components:
         kwargs:
           type: object
           properties:
-            src_port:
-              type: integer
+            src_key:
+              anyOf:
+              - type: integer
+              - type: string
             conn_tag:
               anyOf:
               - type: string
               - type: 'null'
               default:
           required:
-          - src_port
+          - src_key
           additionalProperties: false
     RemoveLocalForwardResult:
       type: 'null'
@@ -1250,15 +1282,17 @@ components:
         kwargs:
           type: object
           properties:
-            src_port:
-              type: integer
+            src_key:
+              anyOf:
+              - type: integer
+              - type: string
             conn_tag:
               anyOf:
               - type: string
               - type: 'null'
               default:
           required:
-          - src_port
+          - src_key
           additionalProperties: false
     RemoveRemoteForwardResult:
       type: 'null'
@@ -1418,7 +1452,9 @@ components:
             conn_tag:
               type: string
             src_port:
-              type: integer
+              anyOf:
+              - type: integer
+              - type: string
             direction:
               type: string
             enabled:
@@ -2081,7 +2117,9 @@ components:
             conn_tag:
               type: string
             src_port:
-              type: integer
+              anyOf:
+              - type: integer
+              - type: string
             direction:
               type: string
           required:
@@ -2141,7 +2179,9 @@ components:
             conn_tag:
               type: string
             src_port:
-              type: integer
+              anyOf:
+              - type: integer
+              - type: string
             direction:
               type: string
           required:
@@ -2295,6 +2335,7 @@ components:
               title: Src Addr
               type: string
             src_port:
+              default: 0
               title: Src Port
               type: integer
             dst_addr:
@@ -2302,8 +2343,17 @@ components:
               title: Dst Addr
               type: string
             dst_port:
+              default: 0
               title: Dst Port
               type: integer
+            src_socket:
+              default: ''
+              title: Src Socket
+              type: string
+            dst_socket:
+              default: ''
+              title: Dst Socket
+              type: string
             tcp:
               default: true
               title: Tcp
@@ -2316,9 +2366,6 @@ components:
               default: true
               title: Enabled
               type: boolean
-          required:
-          - src_port
-          - dst_port
           title: PortForward
           type: object
       properties:

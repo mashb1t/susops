@@ -47,6 +47,19 @@ def test_fw_tag_falls_back_to_direction_port():
     assert _fw_tag(fw, "remote") == "remote-53"
 
 
+def test_fw_tag_for_socket_forward_does_not_collapse():
+    from susops.core.socat import fw_tag, source_key
+    # Two distinct unix-socket forwards (src_port==0) must get distinct tags,
+    # not both "local-0".
+    a = PortForward(src_socket="/tmp/a.sock", dst_socket="/remote/a")
+    b = PortForward(src_socket="/tmp/b.sock", dst_socket="/remote/b")
+    assert fw_tag(a, "local") != fw_tag(b, "local")
+    assert fw_tag(a, "local") == "local-tmp-a.sock"
+    assert source_key(a) == "/tmp/a.sock"
+    # A TCP forward's source key is still the port string.
+    assert source_key(PortForward(src_port=5432, dst_port=5432)) == "5432"
+
+
 def test_udp_process_name():
     name = _udp_process_name("work", "local-53", "lsocat")
     assert name == "susops-udp-work-local-53-lsocat"

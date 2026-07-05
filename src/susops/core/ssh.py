@@ -23,6 +23,8 @@ __all__ = [
     "start_master",
     "start_forward",  # ssh -O forward — registers live forward via socket
     "cancel_forward",  # ssh -O cancel — releases master-held port
+    "build_fwd_spec",  # render an -L/-R forward specifier (TCP or unix socket)
+    "socket_forward_active",  # is a local forward socket currently bound
     "stop_tunnel",  # stops master (and all its forwards)
     "is_tunnel_running",
     "is_socket_alive",
@@ -67,6 +69,10 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-o", f"ControlPath={sock}",
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=3",
+        # Best-effort cleanup of a stale server-side socket for -R streamlocal
+        # forwards (unix-socket remote binds). Effective only if the server's
+        # sshd honours it; local -L sockets are unlinked by susops directly.
+        "-o", "StreamLocalBindUnlink=yes",
     ]
     if getattr(conn, "jump_host", ""):
         cmd += ["-J", conn.jump_host]
@@ -91,10 +97,10 @@ def build_ssh_cmd(conn: Connection) -> list[str]:
     ]
 
     for fw in conn.forwards.local:
-        cmd += ["-L", f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"]
+        cmd += ["-L", build_fwd_spec(fw, "local")]
 
     for fw in conn.forwards.remote:
-        cmd += ["-R", f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"]
+        cmd += ["-R", build_fwd_spec(fw, "remote")]
 
     cmd.append(conn.ssh_host)
     return cmd
@@ -139,17 +145,85 @@ def start_master(
     return pid
 
 
+def _endpoint_spec(addr: str, port: int, sock: str) -> str:
+    """Render one forward endpoint: a socket path, or 'addr:port' for TCP."""
+    return sock if sock else f"{addr}:{port}"
+
+
+def build_fwd_spec(fw: PortForward, direction: str) -> str:
+    """Build the ssh -L/-R forward specifier ``<listener>:<target>``.
+
+    Each side is a Unix socket path (when set) or ``addr:port`` (TCP). The
+    listener is always the source (src_*) and the target the destination
+    (dst_*), for both -L and -R — ssh's -L/-R spec is always listener-first.
+    Must be used for both ``-O forward`` and ``-O cancel`` so the cancel spec
+    byte-matches what was registered.
+    """
+    src = _endpoint_spec(fw.src_addr, fw.src_port, fw.src_socket)
+    dst = _endpoint_spec(fw.dst_addr, fw.dst_port, fw.dst_socket)
+    return f"{src}:{dst}"
+
+
+def local_socket_for(fw: PortForward, direction: str) -> str:
+    """Return the socket path bound on the LOCAL machine, or "".
+
+    For -L the local side is the source (listener); for -R it is the
+    destination (target). Only the local socket is on susops' filesystem and
+    thus cleanable by us — a -R remote-bound socket lives on the server.
+    """
+    return fw.src_socket if direction == "local" else fw.dst_socket
+
+
+def _prepare_local_socket(fw: PortForward, direction: str) -> None:
+    """Ensure a locally-bound forward socket's parent dir exists and no stale
+    file blocks the bind (ssh won't mkdir, and a leftover file fails the bind).
+    Mirrors the master's own stale-ControlPath unlink."""
+    path = local_socket_for(fw, direction)
+    if not path:
+        return
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _cleanup_local_socket(fw: PortForward, direction: str) -> None:
+    """Remove a locally-bound forward socket after cancel/stop (best-effort)."""
+    path = local_socket_for(fw, direction)
+    if not path:
+        return
+    try:
+        Path(path).unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def socket_forward_active(path: str) -> bool:
+    """True if a local forward socket is currently bound: the path exists AND
+    is a socket. A leftover regular file from a crash reads as not-active."""
+    import stat
+    try:
+        return stat.S_ISSOCK(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 def start_forward(
         conn: Connection,
         fw: PortForward,
         direction: str,
         workspace: Path,
 ) -> None:
-    """Register a TCP port forward with the running ControlMaster via ``ssh -O forward``.
+    """Register a port forward with the running ControlMaster via ``ssh -O forward``.
 
-    Sends the forward request through the Unix socket — no SSH handshake,
-    no new TCP connection. The master holds the port until ``cancel_forward``
-    is called or the master exits.
+    Handles both TCP (addr:port) and Unix-socket endpoints. Sends the forward
+    request through the Unix socket — no SSH handshake, no new TCP connection.
+    The master holds the forward until ``cancel_forward`` is called or the
+    master exits.
 
     Raises RuntimeError if the socket is not ready or the forward fails.
     """
@@ -162,8 +236,9 @@ def start_forward(
     else:
         raise RuntimeError(f"ControlMaster socket {sock} not ready after 10 s")
 
+    _prepare_local_socket(fw, direction)
     flag = "-L" if direction == "local" else "-R"
-    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
+    fwd_spec = build_fwd_spec(fw, direction)
     result = subprocess.run(
         ["ssh", "-O", "forward", "-o", f"ControlPath={sock}", flag, fwd_spec, conn.ssh_host],
         capture_output=True,
@@ -186,9 +261,11 @@ def cancel_forward(
     """
     sock = socket_path(conn.tag, workspace)
     if not sock.exists():
+        # Master already gone — still try to clean up any local socket file.
+        _cleanup_local_socket(fw, direction)
         return
     flag = "-L" if direction == "local" else "-R"
-    fwd_spec = f"{fw.src_addr}:{fw.src_port}:{fw.dst_addr}:{fw.dst_port}"
+    fwd_spec = build_fwd_spec(fw, direction)
     try:
         subprocess.run(
             ["ssh", "-O", "cancel", "-o", f"ControlPath={sock}", flag, fwd_spec, conn.ssh_host],
@@ -197,6 +274,8 @@ def cancel_forward(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
+    # Remove the local socket file regardless of whether ssh -O cancel did.
+    _cleanup_local_socket(fw, direction)
 
 
 def start_tunnel(

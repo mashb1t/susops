@@ -44,6 +44,7 @@ __all__ = [
     "get_default_connection",
     "validate_pac_host",
     "validate_jump_host",
+    "validate_socket_path",
     "WORKSPACE_DEFAULT",
     "CONFIG_FILENAME",
 ]
@@ -89,6 +90,33 @@ def validate_jump_host(value: str) -> str:
     return value
 
 
+def validate_socket_path(value: str) -> str:
+    """Validate a Unix-domain-socket path for an ssh -L/-R forward endpoint.
+
+    Empty is allowed (that endpoint is TCP instead). A non-empty path must be
+    absolute (ssh disambiguates a socket from host:port purely by a leading
+    '/'), must not contain ':' (the forward-spec delimiter), must not contain
+    the shell metacharacters _validate_host_token forbids (except '/'), and
+    must fit the platform sun_path limit (~104 bytes on macOS).
+    """
+    if not value:
+        return value
+    if not value.startswith("/"):
+        raise ValueError(f"socket path {value!r} must be absolute (start with '/')")
+    if ":" in value:
+        raise ValueError(f"socket path {value!r} must not contain ':'")
+    bad = sorted({c for c in value if (c in _FORBIDDEN_HOST_CHARS and c != "/") or ord(c) < 0x20})
+    if bad:
+        raise ValueError(
+            f"socket path {value!r} contains forbidden character(s) {bad!r}"
+        )
+    if len(value.encode()) >= 104:
+        raise ValueError(
+            f"socket path {value!r} is too long (>= 104 bytes; Unix sun_path limit)"
+        )
+    return value
+
+
 def validate_pac_host(value: str) -> str:
     if not value or not value.strip():
         raise ValueError("pac_hosts entries must not be empty")
@@ -106,9 +134,14 @@ class PortForward(BaseModel):
 
     tag: str = ""
     src_addr: str = "localhost"
-    src_port: int
+    src_port: int = 0
     dst_addr: str = "localhost"
-    dst_port: int
+    dst_port: int = 0
+    # Optional Unix-domain-socket path per endpoint. Empty = that side is TCP
+    # (uses addr:port). Non-empty = bind/forward a filesystem socket instead of
+    # a port (ssh -L/-R streamlocal), e.g. /var/run/docker.sock.
+    src_socket: str = ""
+    dst_socket: str = ""
     tcp: bool = True
     udp: bool = False
     enabled: bool = True
@@ -128,12 +161,37 @@ class PortForward(BaseModel):
     def _validate_addr(cls, v: str, info) -> str:
         return _validate_host_token(v, info.field_name)
 
+    @field_validator("src_socket", "dst_socket")
+    @classmethod
+    def _validate_socket(cls, v: str) -> str:
+        return validate_socket_path(v)
+
     @model_validator(mode="after")
     def require_at_least_one_protocol(self) -> "PortForward":
         # Runs after handle_legacy_schema has already normalised the dict,
         # so self.tcp and self.udp are already coerced to bool.
         if not self.tcp and not self.udp:
             raise ValueError("At least one of tcp/udp must be True")
+        return self
+
+    @model_validator(mode="after")
+    def validate_endpoints(self) -> "PortForward":
+        # Each endpoint is exactly one of TCP (port > 0) or a Unix socket.
+        for side, port, sock in (
+            ("source", self.src_port, self.src_socket),
+            ("destination", self.dst_port, self.dst_socket),
+        ):
+            has_port = port > 0
+            has_sock = bool(sock)
+            if has_port == has_sock:
+                raise ValueError(
+                    f"{side} must set exactly one of a port (>0) or a socket path"
+                )
+        # Unix sockets are stream-only, so a socket forward is TCP-only.
+        if (self.src_socket or self.dst_socket) and self.udp:
+            raise ValueError("UDP is not supported for Unix-socket forwards")
+        if (self.src_socket or self.dst_socket) and not self.tcp:
+            raise ValueError("Unix-socket forwards must have tcp=True")
         return self
 
 

@@ -61,6 +61,67 @@ def test_build_master_cmd_no_jump_by_default(conn, workspace):
     assert "-J" not in cmd
 
 
+def test_build_master_cmd_has_stream_local_bind_unlink(conn, workspace):
+    cmd = build_master_cmd(conn, socket_path(conn.tag, workspace))
+    assert "StreamLocalBindUnlink=yes" in " ".join(cmd)
+
+
+def test_build_fwd_spec_tcp_and_sockets():
+    from susops.core.ssh import build_fwd_spec
+    from susops.core.config import PortForward
+    # TCP↔TCP (unchanged): addr:port:addr:port
+    f = PortForward(src_addr="localhost", src_port=5432, dst_addr="db", dst_port=5432)
+    assert build_fwd_spec(f, "local") == "localhost:5432:db:5432"
+    assert build_fwd_spec(f, "remote") == "localhost:5432:db:5432"
+    # TCP → unix (postgres)
+    f = PortForward(src_port=5432, dst_socket="/var/run/pg.sock")
+    assert build_fwd_spec(f, "local") == "localhost:5432:/var/run/pg.sock"
+    # unix → TCP
+    f = PortForward(src_socket="/tmp/l.sock", dst_addr="localhost", dst_port=80)
+    assert build_fwd_spec(f, "local") == "/tmp/l.sock:localhost:80"
+    # unix → unix (docker)
+    f = PortForward(src_socket="/tmp/docker.sock", dst_socket="/var/run/docker.sock")
+    assert build_fwd_spec(f, "local") == "/tmp/docker.sock:/var/run/docker.sock"
+
+
+def test_local_socket_for_direction():
+    from susops.core.ssh import local_socket_for
+    from susops.core.config import PortForward
+    # -L: local side is the source
+    f = PortForward(src_socket="/tmp/l.sock", dst_addr="h", dst_port=80)
+    assert local_socket_for(f, "local") == "/tmp/l.sock"
+    assert local_socket_for(f, "remote") == ""
+    # -R: local side is the destination
+    f = PortForward(src_socket="/remote.sock", dst_addr="localhost", dst_port=80)
+    assert local_socket_for(f, "remote") == ""  # dst is TCP here
+    f = PortForward(src_addr="localhost", src_port=8080, dst_socket="/tmp/local.sock")
+    assert local_socket_for(f, "remote") == "/tmp/local.sock"
+
+
+def test_socket_forward_active(tmp_path):
+    import os
+    import socket as _socket
+    import tempfile
+    from susops.core.ssh import socket_forward_active
+    missing = tmp_path / "nope.sock"
+    assert socket_forward_active(str(missing)) is False
+    regular = tmp_path / "regular"
+    regular.write_text("x")
+    assert socket_forward_active(str(regular)) is False  # exists but not a socket
+    # Bind under a short dir — AF_UNIX paths must be < ~104 bytes and pytest's
+    # tmp_path is often longer than that.
+    d = tempfile.mkdtemp(prefix="sus")
+    real = os.path.join(d, "r.sock")
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.bind(real)
+    try:
+        assert socket_forward_active(real) is True
+    finally:
+        s.close()
+        os.unlink(real)
+        os.rmdir(d)
+
+
 def test_build_master_cmd_adds_jump_host(workspace):
     conn = Connection(tag="t", ssh_host="user@target", socks_proxy_port=1080,
                       jump_host="user@bastion")
