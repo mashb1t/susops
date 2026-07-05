@@ -466,13 +466,14 @@ class DashboardScreen(Screen):
         # and browser proxy config. (127.0.0.1 is what aiohttp binds to, but
         # the display is for humans.) Label column padded to 10 chars so
         # "Daemon RPC" / "Daemon SSE" / "PAC" / "Reconnect" all align.
-        try:
-            rpc_port = int((workspace / "pids" / "susops-services.port").read_text().strip())
+        from susops.client import read_daemon_port
+        rpc_port = read_daemon_port(workspace)
+        if rpc_port is not None:
             rpc_line = (
                 f"[green]●[/green] [bold]Daemon RPC[/bold] "
                 f"[link='http://localhost:{rpc_port}/rpc']localhost:{rpc_port}/rpc[/link]"
             )
-        except (OSError, ValueError):
+        else:
             rpc_line = "[dim]○ [bold]Daemon RPC[/bold] not running[/dim]"
 
         # SSE port is held by mgr._status_server, exposed via get_status_url().

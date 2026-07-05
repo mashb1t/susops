@@ -309,18 +309,15 @@ class AbstractTrayApp(ABC):
             lines.append("")
             lines.append("DAEMON")
             workspace = self.manager.workspace
-            try:
-                rpc_port = int((workspace / "pids" / "susops-services.port")
-                               .read_text().strip())
+            from susops.client import read_daemon_port, read_daemon_pid
+            rpc_port = read_daemon_port(workspace)
+            if rpc_port is not None:
                 lines.append(f"  ●  RPC      http://localhost:{rpc_port}/rpc")
-            except (OSError, ValueError):
+            else:
                 lines.append("  ○  RPC      (port file unavailable)")
-            try:
-                pid = int((workspace / "pids" / "susops-services.pid")
-                          .read_text().strip())
+            pid = read_daemon_pid(workspace)
+            if pid is not None:
                 lines.append(f"     PID      {pid}")
-            except (OSError, ValueError):
-                pass
             # Parse the SSE URL the facade exposes — same daemon process,
             # different port (status_server_port from config).
             try:

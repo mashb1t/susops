@@ -625,10 +625,18 @@ class SusOpsManager:
     def _ensure_socks_port(self, conn: Connection) -> Connection:
         if conn.socks_proxy_port != 0:
             return conn
-        port = get_random_free_port()
-        updated = conn.model_copy(update={"socks_proxy_port": port})
-        self._replace_connection(updated)
-        self._save()
+        # Hold the (reentrant) config lock across modify+save so a concurrent
+        # locked mutator (e.g. add_pac_host) can't have its write clobbered by
+        # this port assignment landing from a stale snapshot. _replace_connection
+        # merges into the *current* self.config, preserving the other change.
+        with self._config_lock:
+            existing = get_connection(self.config, conn.tag)
+            if existing is not None and existing.socks_proxy_port != 0:
+                return existing  # another thread already assigned one
+            port = get_random_free_port()
+            updated = conn.model_copy(update={"socks_proxy_port": port})
+            self._replace_connection(updated)
+            self._save()
         self._log(f"[{conn.tag}] Assigned SOCKS port {port}")
         return updated
 
@@ -674,9 +682,12 @@ class SusOpsManager:
     def _ensure_pac_port(self) -> int:
         if self.config.pac_server_port != 0:
             return self.config.pac_server_port
-        port = get_random_free_port()
-        self.config = self.config.model_copy(update={"pac_server_port": port})
-        self._save()
+        with self._config_lock:
+            if self.config.pac_server_port != 0:
+                return self.config.pac_server_port
+            port = get_random_free_port()
+            self.config = self.config.model_copy(update={"pac_server_port": port})
+            self._save()
         return port
 
     def _compute_state(

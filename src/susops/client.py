@@ -68,6 +68,23 @@ def _read_port(workspace: Path) -> int | None:
         return None
 
 
+def read_daemon_port(workspace: Path) -> int | None:
+    """Public: the services daemon's RPC port, or None if unavailable.
+
+    Single source of truth for the port-file location so frontends don't each
+    hard-code ``pids/susops-services.port`` (renaming it once would otherwise
+    silently break `susops ps`, the tray status dialog, and the TUI)."""
+    return _read_port(workspace)
+
+
+def read_daemon_pid(workspace: Path) -> int | None:
+    """Public: the services daemon's PID, or None if unavailable."""
+    try:
+        return int(_pid_path(workspace).read_text().strip())
+    except Exception:
+        return None
+
+
 def _pid_is_susops_daemon(pid: int) -> bool:
     """True only if PID belongs to a live process whose cmdline matches a
     services_daemon invocation. Defends against PID reuse: SIGKILLing the

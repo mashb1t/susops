@@ -128,18 +128,15 @@ def cmd_ps(args, m) -> int:
     print()
     print("SERVICES")
     workspace = m.workspace
-    try:
-        rpc_port = int((workspace / "pids" / "susops-services.port")
-                       .read_text().strip())
+    from susops.client import read_daemon_port, read_daemon_pid
+    rpc_port = read_daemon_port(workspace)
+    if rpc_port is not None:
         print(f"  ●  Daemon     RPC  http://localhost:{rpc_port}/rpc")
-    except (OSError, ValueError):
+    else:
         print("  ○  Daemon     RPC  (port file unavailable)")
-    try:
-        pid = int((workspace / "pids" / "susops-services.pid")
-                  .read_text().strip())
+    pid = read_daemon_pid(workspace)
+    if pid is not None:
         print(f"     Daemon     PID  {pid}")
-    except (OSError, ValueError):
-        pass
     try:
         sse_url = m.get_status_url() or ""
     except Exception:
