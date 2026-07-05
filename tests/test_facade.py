@@ -186,6 +186,25 @@ def test_remove_local_forward(mgr):
     assert conn.forwards.local == []
 
 
+def test_import_ssh_config_forwards(mgr, tmp_path, monkeypatch):
+    ssh_cfg = tmp_path / "ssh_config"
+    ssh_cfg.write_text(
+        "Host target\n"
+        "    LocalForward 5432 db:5432\n"
+        "    RemoteForward 8080 localhost:8080\n"
+        "    DynamicForward 1080\n"
+    )
+    import susops.core.ssh_config as sc
+    monkeypatch.setattr(sc, "_SSH_CONFIG", ssh_cfg)
+    mgr.add_connection("c", "target")  # ssh_host must match the Host token
+    counts = mgr.import_ssh_config_forwards("c")
+    assert counts == {"local": 1, "remote": 1, "dynamic": 1}
+    conn = mgr.list_config().connections[0]
+    assert conn.forwards.local[0].src_port == 5432
+    assert conn.forwards.remote[0].src_port == 8080
+    assert conn.socks_proxy_port == 1080
+
+
 def test_remove_forward_ambiguous_port_requires_conn_tag(mgr):
     # Same remote src_port on two connections must not be silently wiped from
     # both when no conn_tag is given.

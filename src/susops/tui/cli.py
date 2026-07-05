@@ -215,6 +215,18 @@ def cmd_rm_connection(args, m) -> int:
         return 1
 
 
+def cmd_import_forwards(args, m) -> int:
+    try:
+        counts = m.import_ssh_config_forwards(args.tag)
+        print(f"Imported into '{args.tag}': "
+              f"{counts['local']} local, {counts['remote']} remote, "
+              f"{counts['dynamic']} dynamic (SOCKS)")
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_add(args, m) -> int:
     try:
         if args.local or args.remote:
@@ -603,6 +615,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rm-connection", help="Remove an SSH connection")
     p.add_argument("tag", help="Connection tag to remove")
     p.set_defaults(func=cmd_rm_connection)
+
+    # import-forwards
+    p = sub.add_parser("import-forwards",
+                       help="Import forwards from ~/.ssh/config for a connection")
+    p.add_argument("tag", help="Connection tag to import into")
+    p.set_defaults(func=cmd_import_forwards)
 
     # add (PAC host or port forward)
     p = sub.add_parser("add", help="Add PAC host or port forward")

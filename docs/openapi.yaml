@@ -29,25 +29,27 @@ paths:
         - `get_bandwidth_history` — Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest).\n\
         - `get_bandwidth_totals` — Return cumulative (rx_bytes, tx_bytes) since last start. Resets on
         stop.\n- `get_logs`\n- `get_pac_url`\n- `get_process_info`\n- `get_status_url`\n- `get_uptime`
-        — Return seconds since connection started, or None if not recorded.\n- `is_udp_forward_running`
-        — Return True if the UDP socat process for this forward is alive.\n- `list_config`\n- `list_shares`
-        — Return info for all shares: running (in-memory) and stopped (config-only).\n- `log_message`
-        — Push an arbitrary line into the daemon's in-memory log buffer.\n- `process_info` — Return subprocess
-        info grouped by connection for ``susops ps`` display.\n- `reconnect_monitor_info` — Return display
-        info about the current reconnect monitor state.\n- `remove_connection`\n- `remove_local_forward`\n\
-        - `remove_pac_host`\n- `remove_remote_forward`\n- `reset`\n- `restart`\n- `set_connection_enabled`\n\
-        - `set_forward_enabled` — Set the enabled flag on a forward and start/stop the live process accordingly.\n\
-        - `set_pac_host_enabled`\n- `share` — Start serving an encrypted file share and persist it to
-        config.\n- `sse_client_count` — Live SSE subscriber count. Used by frontends to decide whether\n\
-        a stop-on-quit should actually stop, or skip because another\nfrontend is still attached to the
-        same daemon.\n- `start`\n- `status`\n- `stop`\n- `stop_quick` — Non-blocking stop for TUI quit:
-        signal all external processes immediately.\n- `stop_share` — Stop share server(s) without removing
-        from config (entry shows as stopped).\n- `test`\n- `test_all`\n- `test_connection` — Test SSH
-        reachability for a specific connection.\n- `test_domain` — Test domain reachability via the specified
-        connection's SOCKS proxy.\n- `test_forward` — Check if a port forward is active.\n- `test_ssh`\n\
-        - `toggle_forward_enabled` — Toggle enabled on a forward. Returns the new enabled state.\n- `update_app_config`\n\
-        - `update_config` — Update top-level SusOpsConfig fields (e.g. pac_server_port).\n- `update_connection`
-        — Edit a connection's tag / ssh_host / socks_proxy_port in place."
+        — Return seconds since connection started, or None if not recorded.\n- `import_ssh_config_forwards`
+        — Import LocalForward/RemoteForward/DynamicForward directives from\n~/.ssh/config for this connection's
+        ssh_host into its forward list.\n- `is_udp_forward_running` — Return True if the UDP socat process
+        for this forward is alive.\n- `list_config`\n- `list_shares` — Return info for all shares: running
+        (in-memory) and stopped (config-only).\n- `log_message` — Push an arbitrary line into the daemon's
+        in-memory log buffer.\n- `process_info` — Return subprocess info grouped by connection for ``susops
+        ps`` display.\n- `reconnect_monitor_info` — Return display info about the current reconnect monitor
+        state.\n- `remove_connection`\n- `remove_local_forward`\n- `remove_pac_host`\n- `remove_remote_forward`\n\
+        - `reset`\n- `restart`\n- `set_connection_enabled`\n- `set_forward_enabled` — Set the enabled
+        flag on a forward and start/stop the live process accordingly.\n- `set_pac_host_enabled`\n- `share`
+        — Start serving an encrypted file share and persist it to config.\n- `sse_client_count` — Live
+        SSE subscriber count. Used by frontends to decide whether\na stop-on-quit should actually stop,
+        or skip because another\nfrontend is still attached to the same daemon.\n- `start`\n- `status`\n\
+        - `stop`\n- `stop_quick` — Non-blocking stop for TUI quit: signal all external processes immediately.\n\
+        - `stop_share` — Stop share server(s) without removing from config (entry shows as stopped).\n\
+        - `test`\n- `test_all`\n- `test_connection` — Test SSH reachability for a specific connection.\n\
+        - `test_domain` — Test domain reachability via the specified connection's SOCKS proxy.\n- `test_forward`
+        — Check if a port forward is active.\n- `test_ssh`\n- `toggle_forward_enabled` — Toggle enabled
+        on a forward. Returns the new enabled state.\n- `update_app_config`\n- `update_config` — Update
+        top-level SusOpsConfig fields (e.g. pac_server_port).\n- `update_connection` — Edit a connection's
+        tag / ssh_host / socks_proxy_port in place."
       operationId: invoke
       requestBody:
         required: true
@@ -725,6 +727,34 @@ components:
       anyOf:
       - type: number
       - type: 'null'
+    InvokeImportSshConfigForwards:
+      type: object
+      description: "Import LocalForward/RemoteForward/DynamicForward directives from\n~/.ssh/config for
+        this connection's ssh_host into its forward list."
+      required:
+      - method
+      - args
+      - kwargs
+      properties:
+        method:
+          type: string
+          const: import_ssh_config_forwards
+        args:
+          type: array
+          description: Positional arguments. Mapped onto the method's named parameters in order. 
+            Typically empty — prefer `kwargs`.
+          items: {}
+        kwargs:
+          type: object
+          properties:
+            conn_tag:
+              type: string
+          required:
+          - conn_tag
+          additionalProperties: false
+    ImportSshConfigForwardsResult:
+      additionalProperties: true
+      type: object
     InvokeIsUdpForwardRunning:
       type: object
       description: Return True if the UDP socat process for this forward is alive.
@@ -2356,6 +2386,7 @@ components:
       - $ref: '#/components/schemas/InvokeGetProcessInfo'
       - $ref: '#/components/schemas/InvokeGetStatusUrl'
       - $ref: '#/components/schemas/InvokeGetUptime'
+      - $ref: '#/components/schemas/InvokeImportSshConfigForwards'
       - $ref: '#/components/schemas/InvokeIsUdpForwardRunning'
       - $ref: '#/components/schemas/InvokeListConfig'
       - $ref: '#/components/schemas/InvokeListShares'

@@ -1734,6 +1734,40 @@ class SusOpsManager:
         self._add_forward(conn_tag, fw, "remote")
         self._maybe_start_forward_live(conn_tag, fw, "remote")
 
+    def import_ssh_config_forwards(self, conn_tag: str) -> dict:
+        """Import LocalForward/RemoteForward/DynamicForward directives from
+        ~/.ssh/config for this connection's ssh_host into its forward list.
+
+        Returns {"local": n, "remote": n, "dynamic": n} counts of what was
+        added. Existing forwards on the same src_port are skipped (the per-
+        connection duplicate check in _add_forward). A DynamicForward becomes
+        the connection's socks_proxy_port if it doesn't already have one.
+        """
+        from susops.core.ssh_config import parse_ssh_forwards
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection '{conn_tag}' not found")
+        parsed = parse_ssh_forwards(conn.ssh_host)
+        counts = {"local": 0, "remote": 0, "dynamic": 0}
+        for spec in parsed["local"]:
+            try:
+                self.add_local_forward(conn_tag, PortForward(**spec))
+                counts["local"] += 1
+            except ValueError:
+                pass  # duplicate / invalid — skip
+        for spec in parsed["remote"]:
+            try:
+                self.add_remote_forward(conn_tag, PortForward(**spec))
+                counts["remote"] += 1
+            except ValueError:
+                pass
+        if parsed["dynamic"] and conn.socks_proxy_port == 0:
+            self.update_connection(conn_tag, socks_proxy_port=parsed["dynamic"][0],
+                                   restart=False)
+            counts["dynamic"] = 1
+        self._log(f"[{conn_tag}] Imported forwards from ssh config: {counts}")
+        return counts
+
     def _remove_forward(self, src_port: int, direction: str, conn_tag: str | None = None) -> None:
         with self._config_lock:
             self._reload_config()
