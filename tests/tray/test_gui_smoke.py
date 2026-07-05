@@ -290,7 +290,7 @@ def test_create_forward_switches_to_edit_form(tray_proc):
     # The detail must have switched to the new forward's editor, not stayed on
     # the create form.
     assert dump["create_kind"] is None
-    assert dump["selected"] == ["forward", "work", "local", 5432]
+    assert dump["selected"] == ["forward", "work", "local", "5432"]
     assert "forward.create" not in dump["detail_actions"], \
         f"still showing the create form: {dump['detail_title']!r}"
     assert "forward.remove" in dump["detail_actions"]

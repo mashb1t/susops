@@ -13,7 +13,13 @@ from typing import Callable
 from susops.core.config import PortForward
 from susops.core.ports import is_port_free, validate_port
 from susops.core.types import ProcessState
-from susops.tray.base import AbstractTrayApp, get_icon_path, get_ssh_hosts
+from susops.tray.base import (
+    AbstractTrayApp,
+    existing_forward_binds,
+    get_icon_path,
+    get_ssh_hosts,
+    resolve_forward_endpoint,
+)
 
 
 def _is_dark_theme() -> bool:
@@ -903,14 +909,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
         if tags:
             conn_combo.set_active(0)
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
-        src_port_entry = Gtk.Entry(placeholder_text="e.g. 8080", activates_default=True)
-        dst_port_entry = Gtk.Entry(placeholder_text="e.g. 80", activates_default=True)
+        src_port_entry = Gtk.Entry(placeholder_text="e.g. 8080 (or socket)", activates_default=True)
+        dst_port_entry = Gtk.Entry(placeholder_text="e.g. 80 (or socket)", activates_default=True)
+        src_socket_entry = Gtk.Entry(placeholder_text="/var/run/…sock (optional)", activates_default=True)
+        dst_socket_entry = Gtk.Entry(placeholder_text="/var/run/docker.sock (optional)", activates_default=True)
+        binds = existing_forward_binds(self.manager.list_config())
         src_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES:
+        for addr in BIND_ADDRESSES + binds:
             src_addr_combo.append_text(addr)
         src_addr_combo.get_child().set_text("localhost")
         dst_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES:
+        for addr in BIND_ADDRESSES + binds:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
         tcp_check = Gtk.CheckButton(label="TCP (SSH -L forward)")
@@ -921,8 +930,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
-            ("src", "Forward Local Port *:", src_port_entry),
-            ("dst", "To Remote Port *:", dst_port_entry),
+            ("src", "Forward Local Port:", src_port_entry),
+            ("dst", "To Remote Port:", dst_port_entry),
+            ("src_socket", "Local Socket (optional):", src_socket_entry),
+            ("dst_socket", "Remote Socket (optional):", dst_socket_entry),
             ("src_addr", "Local Bind (optional):", src_addr_combo),
             ("dst_addr", "Remote Bind (optional):", dst_addr_combo),
             ("tcp", "Protocol:", tcp_check),
@@ -938,8 +949,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 break
             conn_tag = conn_combo.get_active_text() or ""
             tag = tag_entry.get_text().strip()
-            src = src_port_entry.get_text().strip()
-            dst = dst_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
             tcp = tcp_check.get_active()
@@ -952,17 +961,31 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
                        Gtk.MessageType.ERROR)
                 continue
-            if not _is_valid_port(src):
-                _alert(Gtk, dlg, "Invalid Port", "Forward Local Port must be 1–65535.", Gtk.MessageType.ERROR)
+            src_ep, err = resolve_forward_endpoint(
+                src_port_entry.get_text(), src_socket_entry.get_text(), "Source")
+            if err:
+                _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            if not is_port_free(int(src)):
-                _alert(Gtk, dlg, "Port In Use", f"Local port {src} is already in use.", Gtk.MessageType.ERROR)
+            dst_ep, err = resolve_forward_endpoint(
+                dst_port_entry.get_text(), dst_socket_entry.get_text(), "Destination")
+            if err:
+                _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            if not _is_valid_port(dst):
-                _alert(Gtk, dlg, "Invalid Port", "To Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
+            src_port, src_socket = src_ep
+            dst_port, dst_socket = dst_ep
+            if (src_socket or dst_socket) and udp:
+                _alert(Gtk, dlg, "Invalid Forward", "UDP is not supported for socket forwards.",
+                       Gtk.MessageType.ERROR)
+                continue
+            # Only a known-local TCP bind can be reliably checked for a clash.
+            if (not src_socket and src_addr in BIND_ADDRESSES
+                    and not is_port_free(src_port, src_addr)):
+                _alert(Gtk, dlg, "Port In Use", f"Local port {src_port} is already in use.",
+                       Gtk.MessageType.ERROR)
                 continue
 
-            fw = PortForward(src_addr=src_addr, src_port=int(src), dst_addr=dst_addr, dst_port=int(dst),
+            fw = PortForward(src_addr=src_addr, src_port=src_port, src_socket=src_socket,
+                             dst_addr=dst_addr, dst_port=dst_port, dst_socket=dst_socket,
                              tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_local_forward(conn_tag, fw)
@@ -989,14 +1012,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
         if tags:
             conn_combo.set_active(0)
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
-        remote_port_entry = Gtk.Entry(placeholder_text="e.g. 8080", activates_default=True)
-        local_port_entry = Gtk.Entry(placeholder_text="e.g. 3000", activates_default=True)
+        remote_port_entry = Gtk.Entry(placeholder_text="e.g. 8080 (or socket)", activates_default=True)
+        local_port_entry = Gtk.Entry(placeholder_text="e.g. 3000 (or socket)", activates_default=True)
+        remote_socket_entry = Gtk.Entry(placeholder_text="/var/run/…sock (optional)", activates_default=True)
+        local_socket_entry = Gtk.Entry(placeholder_text="/var/run/docker.sock (optional)", activates_default=True)
+        binds = existing_forward_binds(self.manager.list_config())
         src_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES:
+        for addr in BIND_ADDRESSES + binds:
             src_addr_combo.append_text(addr)
         src_addr_combo.get_child().set_text("localhost")
         dst_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES:
+        for addr in BIND_ADDRESSES + binds:
             dst_addr_combo.append_text(addr)
         dst_addr_combo.get_child().set_text("localhost")
         tcp_check = Gtk.CheckButton(label="TCP (SSH -R forward)")
@@ -1007,8 +1033,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
-            ("rport", "Forward Remote Port *:", remote_port_entry),
-            ("lport", "To Local Port *:", local_port_entry),
+            ("rport", "Forward Remote Port:", remote_port_entry),
+            ("lport", "To Local Port:", local_port_entry),
+            ("rsock", "Remote Socket (optional):", remote_socket_entry),
+            ("lsock", "Local Socket (optional):", local_socket_entry),
             ("src_addr", "Remote Bind (optional):", src_addr_combo),
             ("dst_addr", "Local Bind (optional):", dst_addr_combo),
             ("tcp", "Protocol:", tcp_check),
@@ -1024,8 +1052,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 break
             conn_tag = conn_combo.get_active_text() or ""
             tag = tag_entry.get_text().strip()
-            rport = remote_port_entry.get_text().strip()
-            lport = local_port_entry.get_text().strip()
             src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
             dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
             tcp = tcp_check.get_active()
@@ -1038,13 +1064,25 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
                        Gtk.MessageType.ERROR)
                 continue
-            if not _is_valid_port(rport):
-                _alert(Gtk, dlg, "Invalid Port", "Forward Remote Port must be 1–65535.", Gtk.MessageType.ERROR)
+            # For -R the source (listener) is remote, the destination is local.
+            src_ep, err = resolve_forward_endpoint(
+                remote_port_entry.get_text(), remote_socket_entry.get_text(), "Remote")
+            if err:
+                _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            if not _is_valid_port(lport):
-                _alert(Gtk, dlg, "Invalid Port", "To Local Port must be 1–65535.", Gtk.MessageType.ERROR)
+            dst_ep, err = resolve_forward_endpoint(
+                local_port_entry.get_text(), local_socket_entry.get_text(), "Local")
+            if err:
+                _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            fw = PortForward(src_addr=src_addr, src_port=int(rport), dst_addr=dst_addr, dst_port=int(lport),
+            src_port, src_socket = src_ep
+            dst_port, dst_socket = dst_ep
+            if (src_socket or dst_socket) and udp:
+                _alert(Gtk, dlg, "Invalid Forward", "UDP is not supported for socket forwards.",
+                       Gtk.MessageType.ERROR)
+                continue
+            fw = PortForward(src_addr=src_addr, src_port=src_port, src_socket=src_socket,
+                             dst_addr=dst_addr, dst_port=dst_port, dst_socket=dst_socket,
                              tag=tag or None, tcp=tcp, udp=udp)
             dlg.destroy()
             self.do_add_remote_forward(conn_tag, fw)
@@ -1077,19 +1115,26 @@ class SusOpsLinuxTray(AbstractTrayApp):
     def _on_rm_local(self, _) -> None:
         self._GLib.idle_add(self._show_rm_local_dialog)
 
+    @staticmethod
+    def _fw_endpoints(fw):
+        """(source_key, 'src → dst' display) for a forward, socket-aware."""
+        src = fw.src_socket or str(fw.src_port)
+        dst = fw.dst_socket or f"{fw.dst_addr}:{fw.dst_port}"
+        return src, f"{src} → {dst}"
+
     def _show_rm_local_dialog(self) -> bool:
         config = self.manager.list_config()
-        items = []
+        items, lookup = [], {}
         for c in config.connections:
             for fw in c.forwards.local:
-                items.append(f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+                key, disp = self._fw_endpoints(fw)
+                label = f"[{c.tag}] {disp}"
+                items.append(label)
+                lookup[label] = (c.tag, key)
         selected = self._pick_from_list("Remove Local Forward", "Local Forward:", items)
-        if selected:
-            m = re.search(r":(\d+)→", selected)
-            tag_m = re.match(r"\[(.+?)\]", selected)
-            if m:
-                self.do_remove_local_forward(
-                    int(m.group(1)), tag_m.group(1) if tag_m else None)
+        if selected and selected in lookup:
+            tag, key = lookup[selected]
+            self.do_remove_local_forward(key, tag)
         return False
 
     def _on_rm_remote(self, _) -> None:
@@ -1097,17 +1142,17 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def _show_rm_remote_dialog(self) -> bool:
         config = self.manager.list_config()
-        items = []
+        items, lookup = [], {}
         for c in config.connections:
             for fw in c.forwards.remote:
-                items.append(f"[{c.tag}] {fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+                key, disp = self._fw_endpoints(fw)
+                label = f"[{c.tag}] {disp}"
+                items.append(label)
+                lookup[label] = (c.tag, key)
         selected = self._pick_from_list("Remove Remote Forward", "Remote Forward:", items)
-        if selected:
-            m = re.search(r":(\d+)→", selected)
-            tag_m = re.match(r"\[(.+?)\]", selected)
-            if m:
-                self.do_remove_remote_forward(
-                    int(m.group(1)), tag_m.group(1) if tag_m else None)
+        if selected and selected in lookup:
+            tag, key = lookup[selected]
+            self.do_remove_remote_forward(key, tag)
         return False
 
     def _on_toggle_connection(self, _) -> None:

@@ -2190,7 +2190,8 @@ class ConfigWindow:
         if kind == "domain":
             return build_domain_form(conn_tags, conn_tag=preselect)
         if kind == "forward":
-            return build_forward_form(conn_tags, conn_tag=preselect)
+            return build_forward_form(conn_tags, conn_tag=preselect,
+                                      binds=self._existing_binds())
         if kind == "share":
             return build_share_form(conn_tags, conn_tag=preselect)
         if kind == "fetch":
@@ -2243,6 +2244,20 @@ class ConfigWindow:
             return None
         return next((c for c in self._cfg.connections if c.tag == tag), None)
 
+    def _existing_binds(self):
+        """Distinct bind addresses already used by any forward, for the forward
+        form's bind autocomplete."""
+        from susops.tray.config_window_model import _BIND_PRESETS
+        binds: dict = {}
+        if self._cfg is None:
+            return []
+        for conn in self._cfg.connections:
+            for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+                for addr in (fw.src_addr, fw.dst_addr):
+                    if addr and addr not in _BIND_PRESETS:
+                        binds.setdefault(addr, None)
+        return list(binds)
+
     def _build_detail_spec(self, identity: tuple):
         """Route an identity tuple to its DetailSpec builder. Returns None when
         the referenced item has vanished from config."""
@@ -2274,17 +2289,19 @@ class ConfigWindow:
             return build_domain_form(conn_tags, conn_tag=conn_tag, host=host,
                                      status=st, conn=conn)
         if kind == "forward":
-            _, conn_tag, direction, src_port = identity
+            from susops.tray.config_window_model import _fw_src_key
+            _, conn_tag, direction, src_key = identity
             conn = self._conn_by_tag(conn_tag)
             if conn is None:
                 return None
             fws = conn.forwards.local if direction == "local" \
                 else conn.forwards.remote
-            fw = next((f for f in fws if f.src_port == src_port), None)
+            fw = next((f for f in fws if _fw_src_key(f) == str(src_key)), None)
             if fw is None:
                 return None
             return build_forward_form(conn_tags, fw=fw, direction=direction,
-                                      conn_tag=conn_tag, statuses=self._statuses)
+                                      conn_tag=conn_tag, statuses=self._statuses,
+                                      binds=self._existing_binds())
         if kind == "share":
             port = identity[1]
             info = next((s for s in self._shares if s.port == port), None)

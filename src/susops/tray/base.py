@@ -7,9 +7,51 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
+from susops.core.config import validate_socket_path
+from susops.core.ports import validate_port
 from susops.core.types import ProcessState
 
 _ASSETS_DIR = Path(__file__).parent.parent / "assets" / "icons"
+
+BIND_PRESETS = ["localhost", "172.17.0.1", "0.0.0.0"]
+
+
+def resolve_forward_endpoint(port_txt, socket_txt, label: str):
+    """Resolve a forward endpoint from form text to ((port:int, socket:str)).
+
+    Returns (endpoint, None) on success or (None, (title, message)) on error.
+    Exactly one of a port (>0) or a socket path must be given. Shared by the
+    macOS and Linux tray forward editors.
+    """
+    socket_txt = (socket_txt or "").strip()
+    port_txt = (port_txt or "").strip()
+    if socket_txt:
+        if port_txt:
+            return None, ("Invalid Forward",
+                          f"{label}: set a port OR a socket, not both.")
+        try:
+            return (0, validate_socket_path(socket_txt)), None
+        except ValueError as exc:
+            return None, ("Invalid Socket", str(exc))
+    if not port_txt:
+        return None, ("Invalid Forward",
+                      f"{label}: a port or a socket path is required.")
+    if not port_txt.isdigit() or not validate_port(int(port_txt)):
+        return None, (f"Invalid {label} Port",
+                      f"{label} port must be a number between 1 and 65535.")
+    return (int(port_txt), ""), None
+
+
+def existing_forward_binds(config) -> list[str]:
+    """Distinct non-preset bind addresses already used by any forward, for the
+    forward editors' bind autocomplete."""
+    binds: dict = {}
+    for conn in config.connections:
+        for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+            for addr in (fw.src_addr, fw.dst_addr):
+                if addr and addr not in BIND_PRESETS:
+                    binds.setdefault(addr, None)
+    return list(binds)
 
 _STATE_FILENAMES = {
     ProcessState.RUNNING: "running",
@@ -455,7 +497,7 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, _done)
 
-    def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
+    def do_toggle_forward_enabled(self, conn_tag: str, src_port: "int | str", direction: str) -> None:
         def _run():
             try:
                 self.manager.toggle_forward_enabled(conn_tag, src_port, direction)
@@ -488,7 +530,7 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {host}", msg))
 
-    def do_test_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
+    def do_test_forward(self, conn_tag: str, src_port: "int | str", direction: str) -> None:
         def _run():
             try:
                 results = self.manager.test_forward(conn_tag, src_port, direction)

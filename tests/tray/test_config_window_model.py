@@ -201,7 +201,7 @@ def test_forward_rows_sections_info_ordering():
     assert rows[2].title == "postgres"
     assert rows[2].subtitle == ":5432 → db.internal:5432"
     assert rows[2].badge == "work"
-    assert rows[2].identity == ("forward", "work", "local", 5432)
+    assert rows[2].identity == ("forward", "work", "local", "5432")
     # Remote section follows all local rows
     assert rows[3] == ListRow(kind="section", title="Remote")
     assert rows[4].kind == "info"
