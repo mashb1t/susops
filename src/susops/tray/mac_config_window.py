@@ -2716,11 +2716,16 @@ class ConfigWindow:
             if f.key in consumed:
                 continue
             if f.key == "src_addr" and "src_port" in by_key:
-                rows.append({"label": "Source",
+                # When a Port|Socket mode popup gates this endpoint, the popup
+                # row is labeled "Source"/"Destination"; the bind+port pair is
+                # just "Port".
+                label = "Port" if "src_mode" in by_key else "Source"
+                rows.append({"label": label,
                              "fields": [f, by_key["src_port"]]})
                 consumed.add("src_port")
             elif f.key == "dst_addr" and "dst_port" in by_key:
-                rows.append({"label": "Destination",
+                label = "Port" if "dst_mode" in by_key else "Destination"
+                rows.append({"label": label,
                              "fields": [f, by_key["dst_port"]]})
                 consumed.add("dst_port")
             else:
@@ -2798,7 +2803,36 @@ class ConfigWindow:
                 self._render_row_controls(card, row, value_x, ry, value_w)
             else:
                 self._render_row_static(card, row, value_x, ry, value_w)
+        # Apply initial enabled/disabled state for any gating popups now that
+        # all sibling widgets exist.
+        if spec.editable:
+            for f in spec.fields:
+                if getattr(f, "enables", None):
+                    self._apply_field_enables(f)
         return card
+
+    def _apply_field_enables(self, f) -> None:
+        """Enable the fields listed for the gating popup's current selection and
+        disable the rest of its `enables` union (Port|Socket toggle)."""
+        popup = self._field_widgets.get(f.key)
+        if popup is None:
+            return
+        try:
+            selected = str(popup.titleOfSelectedItem() or "")
+        except Exception:
+            return
+        all_keys: set = set()
+        for keys in f.enables.values():
+            all_keys.update(keys)
+        enabled = set(f.enables.get(selected, []))
+        for key in all_keys:
+            w = self._field_widgets.get(key)
+            if w is None:
+                continue
+            try:
+                w.setEnabled_(key in enabled)
+            except Exception:
+                pass
 
     def _row_has_tall_control(self, row) -> bool:
         """True when the row renders a bezeled control (text/secure/combo/popup/
@@ -2913,8 +2947,17 @@ class ConfigWindow:
                 popup.addItemWithTitle_(str(opt))
             if f.value:
                 popup.selectItemWithTitle_(str(f.value))
-            handler = _get_action_handler_cls().alloc().initWithCallback_(
-                lambda _s: self._mark_dirty())
+            enables = getattr(f, "enables", None)
+            if enables:
+                # A gating popup (e.g. Port|Socket): on change, re-apply which
+                # sibling fields are enabled, plus the usual dirty mark.
+                def _cb(_s, ff=f):
+                    self._mark_dirty()
+                    self._apply_field_enables(ff)
+                handler = _get_action_handler_cls().alloc().initWithCallback_(_cb)
+            else:
+                handler = _get_action_handler_cls().alloc().initWithCallback_(
+                    lambda _s: self._mark_dirty())
             self._handlers.append(handler)
             popup.setTarget_(handler)
             popup.setAction_("fire:")

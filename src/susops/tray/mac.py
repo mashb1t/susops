@@ -28,6 +28,23 @@ BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
 from susops.tray.base import resolve_forward_endpoint as _resolve_forward_endpoint  # noqa: E402
 
 
+def _forward_endpoint_from_values(values: dict, prefix: str, label: str):
+    """Read one forward endpoint from the config-window form, honoring its
+    Port|Socket mode popup (both the port and socket widgets exist; the mode
+    decides which one is authoritative). Returns ((port, socket, addr), None)
+    or (None, (title, message))."""
+    mode = (values.get(f"{prefix}_mode") or "Port").strip()
+    if mode == "Socket":
+        ep, err = _resolve_forward_endpoint("", values.get(f"{prefix}_socket"), label)
+    else:
+        ep, err = _resolve_forward_endpoint(values.get(f"{prefix}_port"), "", label)
+    if err:
+        return None, err
+    port, sock = ep
+    addr = "localhost" if sock else (values.get(f"{prefix}_addr") or "localhost").strip()
+    return (port, sock, addr), None
+
+
 # ---------------------------------------------------------------------------
 # Appearance + icon helpers
 # ---------------------------------------------------------------------------
@@ -2100,8 +2117,6 @@ class SusOpsMacTray(AbstractTrayApp):
         dir_label = values.get("direction") or ""
         direction = self._DIRECTION_FROM_LABEL.get(dir_label, "local")
         remote = direction == "remote"
-        src_addr = (values.get("src_addr") or "localhost").strip()
-        dst_addr = (values.get("dst_addr") or "localhost").strip()
         protocols = values.get("protocols") or (False, False)
         tcp, udp = bool(protocols[0]), bool(protocols[1])
         tag = (values.get("tag") or "").strip()
@@ -2113,18 +2128,16 @@ class SusOpsMacTray(AbstractTrayApp):
             _show_message("Protocol Required",
                           "Select at least one protocol (TCP or UDP).")
             return
-        src_ep, err = _resolve_forward_endpoint(
-            values.get("src_port"), values.get("src_socket"), "Source")
+        src, err = _forward_endpoint_from_values(values, "src", "Source")
         if err:
             _show_message(*err)
             return
-        dst_ep, err = _resolve_forward_endpoint(
-            values.get("dst_port"), values.get("dst_socket"), "Destination")
+        dst, err = _forward_endpoint_from_values(values, "dst", "Destination")
         if err:
             _show_message(*err)
             return
-        src_port, src_socket = src_ep
-        dst_port, dst_socket = dst_ep
+        src_port, src_socket, src_addr = src
+        dst_port, dst_socket, dst_addr = dst
         if (src_socket or dst_socket) and udp:
             _show_message("Invalid Forward", "UDP is not supported for socket forwards.")
             return
@@ -2295,8 +2308,6 @@ class SusOpsMacTray(AbstractTrayApp):
         new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
         dir_label = values.get("direction") or ""
         new_direction = self._DIRECTION_FROM_LABEL.get(dir_label, old_direction)
-        src_addr = (values.get("src_addr") or "localhost").strip()
-        dst_addr = (values.get("dst_addr") or "localhost").strip()
         protocols = values.get("protocols") or (False, False)
         tcp, udp = bool(protocols[0]), bool(protocols[1])
         tag = (values.get("tag") or "").strip()
@@ -2305,18 +2316,16 @@ class SusOpsMacTray(AbstractTrayApp):
             _show_message("No Protocol",
                           "Enable at least one protocol (TCP or UDP).")
             return
-        src_ep, err = _resolve_forward_endpoint(
-            values.get("src_port"), values.get("src_socket"), "Source")
+        src, err = _forward_endpoint_from_values(values, "src", "Source")
         if err:
             _show_message(*err)
             return
-        dst_ep, err = _resolve_forward_endpoint(
-            values.get("dst_port"), values.get("dst_socket"), "Destination")
+        dst, err = _forward_endpoint_from_values(values, "dst", "Destination")
         if err:
             _show_message(*err)
             return
-        new_src_port, new_src_socket = src_ep
-        new_dst_port, new_dst_socket = dst_ep
+        new_src_port, new_src_socket, src_addr = src
+        new_dst_port, new_dst_socket, dst_addr = dst
         if (new_src_socket or new_dst_socket) and udp:
             _show_message("Invalid Forward", "UDP is not supported for socket forwards.")
             return

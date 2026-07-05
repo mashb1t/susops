@@ -102,6 +102,50 @@ def _labeled_grid(Gtk, fields: list):
     return grid, widgets
 
 
+def _endpoint_editor(Gtk, binds, default_addr="localhost"):
+    """Build a per-endpoint Port|Socket editor: a StackSwitcher toggling a
+    Stack whose 'port' page holds a bind combo + port entry and whose 'socket'
+    page holds a single path entry. Returns a dict of the widgets to add to a
+    grid (switcher, stack) and to read (addr, port, socket)."""
+    addr_combo = Gtk.ComboBoxText(has_entry=True)
+    for addr in ["localhost", "172.17.0.1", "0.0.0.0"] + list(binds):
+        addr_combo.append_text(addr)
+    addr_combo.get_child().set_text(default_addr)
+    port_entry = Gtk.Entry(placeholder_text="port e.g. 8080", activates_default=True)
+    socket_entry = Gtk.Entry(placeholder_text="/var/run/docker.sock", activates_default=True)
+
+    port_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    port_box.pack_start(addr_combo, True, True, 0)
+    port_box.pack_start(port_entry, True, True, 0)
+    sock_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    sock_box.pack_start(socket_entry, True, True, 0)
+
+    stack = Gtk.Stack()
+    stack.add_titled(port_box, "port", "Port")
+    stack.add_titled(sock_box, "socket", "Socket")
+    switcher = Gtk.StackSwitcher()
+    switcher.set_stack(stack)
+    return {"switcher": switcher, "stack": stack, "addr": addr_combo,
+            "port": port_entry, "socket": socket_entry}
+
+
+def _read_endpoint(ep, label):
+    """Read the active page of an _endpoint_editor. Returns
+    ((port, socket, addr), None) or (None, (title, message))."""
+    if ep["stack"].get_visible_child_name() == "socket":
+        res, err = resolve_forward_endpoint("", ep["socket"].get_text(), label)
+        if err:
+            return None, err
+        port, sock = res
+        return (port, sock, "localhost"), None
+    res, err = resolve_forward_endpoint(ep["port"].get_text(), "", label)
+    if err:
+        return None, err
+    port, sock = res
+    addr = ep["addr"].get_child().get_text().strip() or "localhost"
+    return (port, sock, addr), None
+
+
 class SusOpsLinuxTray(AbstractTrayApp):
     """GTK3 system tray application."""
 
@@ -900,7 +944,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
         dlg = Gtk.Dialog(title="Add Local Forward", transient_for=self._root, modal=True)
         dlg.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Add", Gtk.ResponseType.OK)
         dlg.set_default_response(Gtk.ResponseType.OK)
-        dlg.set_default_size(420, -1)
+        dlg.set_default_size(460, -1)
 
         conn_combo = Gtk.ComboBoxText()
         tags = [c.tag for c in self.manager.list_config().connections]
@@ -909,19 +953,9 @@ class SusOpsLinuxTray(AbstractTrayApp):
         if tags:
             conn_combo.set_active(0)
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
-        src_port_entry = Gtk.Entry(placeholder_text="e.g. 8080 (or socket)", activates_default=True)
-        dst_port_entry = Gtk.Entry(placeholder_text="e.g. 80 (or socket)", activates_default=True)
-        src_socket_entry = Gtk.Entry(placeholder_text="/var/run/…sock (optional)", activates_default=True)
-        dst_socket_entry = Gtk.Entry(placeholder_text="/var/run/docker.sock (optional)", activates_default=True)
         binds = existing_forward_binds(self.manager.list_config())
-        src_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES + binds:
-            src_addr_combo.append_text(addr)
-        src_addr_combo.get_child().set_text("localhost")
-        dst_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES + binds:
-            dst_addr_combo.append_text(addr)
-        dst_addr_combo.get_child().set_text("localhost")
+        src_ep = _endpoint_editor(Gtk, binds)
+        dst_ep = _endpoint_editor(Gtk, binds)
         tcp_check = Gtk.CheckButton(label="TCP (SSH -L forward)")
         tcp_check.set_active(True)
         udp_check = Gtk.CheckButton(label="UDP (socat relay)")
@@ -930,12 +964,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
-            ("src", "Forward Local Port:", src_port_entry),
-            ("dst", "To Remote Port:", dst_port_entry),
-            ("src_socket", "Local Socket (optional):", src_socket_entry),
-            ("dst_socket", "Remote Socket (optional):", dst_socket_entry),
-            ("src_addr", "Local Bind (optional):", src_addr_combo),
-            ("dst_addr", "Remote Bind (optional):", dst_addr_combo),
+            ("src_mode", "Local (listen):", src_ep["switcher"]),
+            ("src_body", "", src_ep["stack"]),
+            ("dst_mode", "Remote (target):", dst_ep["switcher"]),
+            ("dst_body", "", dst_ep["stack"]),
             ("tcp", "Protocol:", tcp_check),
             ("udp", "", udp_check),
         ])
@@ -949,8 +981,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 break
             conn_tag = conn_combo.get_active_text() or ""
             tag = tag_entry.get_text().strip()
-            src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
-            dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
             tcp = tcp_check.get_active()
             udp = udp_check.get_active()
 
@@ -961,18 +991,16 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
                        Gtk.MessageType.ERROR)
                 continue
-            src_ep, err = resolve_forward_endpoint(
-                src_port_entry.get_text(), src_socket_entry.get_text(), "Source")
+            src, err = _read_endpoint(src_ep, "Source")
             if err:
                 _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            dst_ep, err = resolve_forward_endpoint(
-                dst_port_entry.get_text(), dst_socket_entry.get_text(), "Destination")
+            dst, err = _read_endpoint(dst_ep, "Destination")
             if err:
                 _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            src_port, src_socket = src_ep
-            dst_port, dst_socket = dst_ep
+            src_port, src_socket, src_addr = src
+            dst_port, dst_socket, dst_addr = dst
             if (src_socket or dst_socket) and udp:
                 _alert(Gtk, dlg, "Invalid Forward", "UDP is not supported for socket forwards.",
                        Gtk.MessageType.ERROR)
@@ -1004,7 +1032,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
         dlg.set_default_response(Gtk.ResponseType.OK)
         dlg.set_default_size(420, -1)
 
-        BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
         conn_combo = Gtk.ComboBoxText()
         tags = [c.tag for c in self.manager.list_config().connections]
         for t in tags:
@@ -1012,19 +1039,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         if tags:
             conn_combo.set_active(0)
         tag_entry = Gtk.Entry(placeholder_text="optional", activates_default=True)
-        remote_port_entry = Gtk.Entry(placeholder_text="e.g. 8080 (or socket)", activates_default=True)
-        local_port_entry = Gtk.Entry(placeholder_text="e.g. 3000 (or socket)", activates_default=True)
-        remote_socket_entry = Gtk.Entry(placeholder_text="/var/run/…sock (optional)", activates_default=True)
-        local_socket_entry = Gtk.Entry(placeholder_text="/var/run/docker.sock (optional)", activates_default=True)
         binds = existing_forward_binds(self.manager.list_config())
-        src_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES + binds:
-            src_addr_combo.append_text(addr)
-        src_addr_combo.get_child().set_text("localhost")
-        dst_addr_combo = Gtk.ComboBoxText(has_entry=True)
-        for addr in BIND_ADDRESSES + binds:
-            dst_addr_combo.append_text(addr)
-        dst_addr_combo.get_child().set_text("localhost")
+        # For -R the source (listener) is remote, the destination is local.
+        src_ep = _endpoint_editor(Gtk, binds)
+        dst_ep = _endpoint_editor(Gtk, binds)
         tcp_check = Gtk.CheckButton(label="TCP (SSH -R forward)")
         tcp_check.set_active(True)
         udp_check = Gtk.CheckButton(label="UDP (socat relay)")
@@ -1033,12 +1051,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         grid, _ = _labeled_grid(Gtk, [
             ("conn", "Connection *:", conn_combo),
             ("tag", "Tag (optional):", tag_entry),
-            ("rport", "Forward Remote Port:", remote_port_entry),
-            ("lport", "To Local Port:", local_port_entry),
-            ("rsock", "Remote Socket (optional):", remote_socket_entry),
-            ("lsock", "Local Socket (optional):", local_socket_entry),
-            ("src_addr", "Remote Bind (optional):", src_addr_combo),
-            ("dst_addr", "Local Bind (optional):", dst_addr_combo),
+            ("src_mode", "Remote (listen):", src_ep["switcher"]),
+            ("src_body", "", src_ep["stack"]),
+            ("dst_mode", "Local (target):", dst_ep["switcher"]),
+            ("dst_body", "", dst_ep["stack"]),
             ("tcp", "Protocol:", tcp_check),
             ("udp", "", udp_check),
         ])
@@ -1052,8 +1068,6 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 break
             conn_tag = conn_combo.get_active_text() or ""
             tag = tag_entry.get_text().strip()
-            src_addr = src_addr_combo.get_child().get_text().strip() or "localhost"
-            dst_addr = dst_addr_combo.get_child().get_text().strip() or "localhost"
             tcp = tcp_check.get_active()
             udp = udp_check.get_active()
 
@@ -1064,19 +1078,16 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 _alert(Gtk, dlg, "Protocol Required", "Select at least one protocol (TCP or UDP).",
                        Gtk.MessageType.ERROR)
                 continue
-            # For -R the source (listener) is remote, the destination is local.
-            src_ep, err = resolve_forward_endpoint(
-                remote_port_entry.get_text(), remote_socket_entry.get_text(), "Remote")
+            src, err = _read_endpoint(src_ep, "Remote")
             if err:
                 _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            dst_ep, err = resolve_forward_endpoint(
-                local_port_entry.get_text(), local_socket_entry.get_text(), "Local")
+            dst, err = _read_endpoint(dst_ep, "Local")
             if err:
                 _alert(Gtk, dlg, err[0], err[1], Gtk.MessageType.ERROR)
                 continue
-            src_port, src_socket = src_ep
-            dst_port, dst_socket = dst_ep
+            src_port, src_socket, src_addr = src
+            dst_port, dst_socket, dst_addr = dst
             if (src_socket or dst_socket) and udp:
                 _alert(Gtk, dlg, "Invalid Forward", "UDP is not supported for socket forwards.",
                        Gtk.MessageType.ERROR)
@@ -1188,20 +1199,19 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def _show_toggle_forward_dialog(self) -> bool:
         cfg = self.manager.list_config()
-        items = []
+        items, lookup = [], {}
         for c in cfg.connections:
-            for fw in c.forwards.local:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                state = "✓" if fw.enabled else "✗"
-                items.append(f"[{state}] [{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for direction, fws in (("local", c.forwards.local), ("remote", c.forwards.remote)):
+                for fw in fws:
+                    state = "✓" if fw.enabled else "✗"
+                    key, disp = self._fw_endpoints(fw)
+                    label = f"[{state}] [{c.tag}] {direction} {disp}"
+                    items.append(label)
+                    lookup[label] = (c.tag, key, direction)
         selected = self._pick_from_list("Toggle Forward Enabled", "Forward:", items, ok_label="Toggle")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                conn_tag, direction, src_port = m.group(1), m.group(2), int(m.group(3))
-                self.do_toggle_forward_enabled(conn_tag, src_port, direction)
+        if selected and selected in lookup:
+            conn_tag, key, direction = lookup[selected]
+            self.do_toggle_forward_enabled(conn_tag, key, direction)
         return False
 
     def _on_start_connection(self, _) -> None:
@@ -1265,17 +1275,18 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def _show_test_forward_dialog(self) -> bool:
         cfg = self.manager.list_config()
-        items = []
+        items, lookup = [], {}
         for c in cfg.connections:
-            for fw in c.forwards.local:
-                items.append(f"[{c.tag}] local :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
-            for fw in c.forwards.remote:
-                items.append(f"[{c.tag}] remote :{fw.src_port}→{fw.dst_addr}:{fw.dst_port}")
+            for direction, fws in (("local", c.forwards.local), ("remote", c.forwards.remote)):
+                for fw in fws:
+                    key, disp = self._fw_endpoints(fw)
+                    label = f"[{c.tag}] {direction} {disp}"
+                    items.append(label)
+                    lookup[label] = (c.tag, key, direction)
         selected = self._pick_from_list("Test Forward", "Forward:", items, ok_label="Test")
-        if selected:
-            m = re.search(r"\[([^\]]+)\] (local|remote) :(\d+)", selected)
-            if m:
-                self.do_test_forward(m.group(1), int(m.group(3)), m.group(2))
+        if selected and selected in lookup:
+            conn_tag, key, direction = lookup[selected]
+            self.do_test_forward(conn_tag, key, direction)
         return False
 
     def _pick_from_list(self, title: str, label: str, items: list[str], ok_label: str = "Remove") -> str | None:
