@@ -18,10 +18,24 @@ from textual.widgets import (
     TabPane,
 )
 
-from susops.core.config import PortForward
+from susops.core.config import PortForward, validate_socket_path
 from susops.core.ports import is_port_free, validate_port
+from susops.core.ssh import build_fwd_spec
 from susops.core.ssh_config import get_ssh_hosts
 from susops.tui.screens import _CollapsingLabel, compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
+
+
+def _ep_cols(addr: str, port: int, sock: str) -> tuple[str, str]:
+    """Return (port_col, bind_col) for a forward endpoint: the socket path in
+    the port column (bind blank) for a socket, else the port + bind address."""
+    if sock:
+        return sock, ""
+    return str(port), addr
+
+
+def _src_key(fw: PortForward) -> str:
+    """A forward's source key for row identity / removal: socket path or port."""
+    return fw.src_socket or str(fw.src_port)
 
 
 def _select_str(screen: ModalScreen, selector_id: str, default: str = "") -> str:
@@ -194,11 +208,18 @@ class _AddForwardDialog(ModalScreen):
                     yield Input(placeholder="", id="tag")
             with Horizontal(classes="modal-form-row"):
                 with Static(classes="modal-field"):
-                    yield Label("Forward Local Port *:" if d == "local" else "Forward Remote Port *:")
-                    yield Input(placeholder="8080", id="src-port")
+                    yield Label("Forward Local Port:" if d == "local" else "Forward Remote Port:")
+                    yield Input(placeholder="8080 (or socket below)", id="src-port")
                 with Static(classes="modal-field"):
-                    yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
-                    yield Input(placeholder="8080", id="dst-port")
+                    yield Label("To Remote Port:" if d == "local" else "To Local Port:")
+                    yield Input(placeholder="8080 (or socket below)", id="dst-port")
+            with Horizontal(classes="modal-form-row"):
+                with Static(classes="modal-field"):
+                    yield Label("Local Socket (optional):" if d == "local" else "Remote Socket (optional):")
+                    yield Input(placeholder="/var/run/docker.sock", id="src-socket")
+                with Static(classes="modal-field"):
+                    yield Label("Remote Socket (optional):" if d == "local" else "Local Socket (optional):")
+                    yield Input(placeholder="/var/run/docker.sock", id="dst-socket")
             with Horizontal(classes="modal-form-row"):
                 with Static(classes="modal-field"):
                     yield Label("Local Bind:" if d == "local" else "Remote Bind:")
@@ -225,24 +246,54 @@ class _AddForwardDialog(ModalScreen):
         tag = self.query_one("#tag", Input).value.strip()
         tcp = self.query_one("#proto-tcp", Checkbox).value
         udp = self.query_one("#proto-udp", Checkbox).value
+        src_socket = self.query_one("#src-socket", Input).value.strip()
+        dst_socket = self.query_one("#dst-socket", Input).value.strip()
         error_label = self.query_one(".modal-error", Label)
         if not tcp and not udp:
             error_label.update("Select at least one protocol (TCP or UDP).")
             return
-        try:
-            src = int(self.query_one("#src-port", Input).value.strip())
-            dst = int(self.query_one("#dst-port", Input).value.strip())
-        except ValueError:
-            error_label.update("Ports must be valid numbers.")
+        if (src_socket or dst_socket) and udp:
+            error_label.update("UDP is not supported for socket forwards.")
             return
-        if not validate_port(src) or not validate_port(dst):
-            error_label.update("Ports must be between 1 and 65535.")
+
+        # Resolve each endpoint to exactly one of a port or a socket path.
+        def _endpoint(port_id: str, sock: str, label: str):
+            port_txt = self.query_one(port_id, Input).value.strip()
+            if sock:
+                if port_txt:
+                    return None, f"{label}: set a port OR a socket, not both."
+                try:
+                    sock_val = validate_socket_path(sock)
+                except ValueError as e:
+                    return None, str(e)
+                return (0, sock_val), None
+            if not port_txt:
+                return None, f"{label}: a port or a socket path is required."
+            try:
+                p = int(port_txt)
+            except ValueError:
+                return None, f"{label}: port must be a number."
+            if not validate_port(p):
+                return None, f"{label}: port must be between 1 and 65535."
+            return (p, ""), None
+
+        src_ep, err = _endpoint("#src-port", src_socket, "Source")
+        if err:
+            error_label.update(err)
             return
-        if self._direction == "local" and not is_port_free(src, src_addr or "localhost"):
+        dst_ep, err = _endpoint("#dst-port", dst_socket, "Destination")
+        if err:
+            error_label.update(err)
+            return
+        src, src_sock = src_ep
+        dst, dst_sock = dst_ep
+        # Only a locally-bound TCP port can be checked for availability.
+        if self._direction == "local" and not src_sock and not is_port_free(src, src_addr or "localhost"):
             error_label.update(f"Local port {src} is already in use.")
             return
         self.dismiss({
             "conn": conn, "src": src, "dst": dst,
+            "src_socket": src_sock, "dst_socket": dst_sock,
             "src_addr": src_addr, "dst_addr": dst_addr,
             "tag": tag, "dir": self._direction,
             "tcp": tcp, "udp": udp,
@@ -401,10 +452,12 @@ class ConnectionsScreen(Screen):
             conn_running = _running(conn.tag)
             for fw in conn.forwards.local:
                 dot = _fw_dot(mgr, fw, conn.tag, "local", conn_running)
+                s_port, s_bind = _ep_cols(fw.src_addr, fw.src_port, fw.src_socket)
+                d_port, d_bind = _ep_cols(fw.dst_addr, fw.dst_port, fw.dst_socket)
                 local_rows.append((
-                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
-                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
-                    f"{conn.tag}:L:{fw.src_port}",
+                    (dot, conn.tag, s_port, s_bind,
+                     d_port, d_bind, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:L:{_src_key(fw)}",
                 ))
         self._reload_table(self.query_one("#tbl-local", DataTable), local_rows)
 
@@ -413,10 +466,12 @@ class ConnectionsScreen(Screen):
             conn_running = _running(conn.tag)
             for fw in conn.forwards.remote:
                 dot = _fw_dot(mgr, fw, conn.tag, "remote", conn_running)
+                s_port, s_bind = _ep_cols(fw.src_addr, fw.src_port, fw.src_socket)
+                d_port, d_bind = _ep_cols(fw.dst_addr, fw.dst_port, fw.dst_socket)
                 remote_rows.append((
-                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
-                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
-                    f"{conn.tag}:R:{fw.src_port}",
+                    (dot, conn.tag, s_port, s_bind,
+                     d_port, d_bind, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:R:{_src_key(fw)}",
                 ))
         self._reload_table(self.query_one("#tbl-remote", DataTable), remote_rows)
 
@@ -500,31 +555,34 @@ class ConnectionsScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                # row: Status, Connection, src_port, src_addr, dst_port, dst_addr, Protocol, Label
+                # row: Status, Connection, src(port|socket), src_bind, dst(port|socket), dst_bind, Protocol, Label
                 conn_tag = str(row[1])
-                src_port, src_addr = int(str(row[2])), str(row[3])
-                dst_port, dst_addr = int(str(row[4])), str(row[5])
+                src_key = str(row[2])
                 proto = str(row[6])
                 label = str(row[7])
                 conn = conn_map.get(conn_tag)
 
-                enabled_fwds = (conn.forwards.local if direction == "local" else conn.forwards.remote) if conn else []
-                fw = next((f for f in enabled_fwds if f.src_port == src_port), None)
-                enabled = fw.enabled if fw else False
+                fwds = (conn.forwards.local if direction == "local" else conn.forwards.remote) if conn else []
+                fw = next((f for f in fwds if _src_key(f) == src_key), None)
+                if fw is None:
+                    preview.update("")
+                    return
+                enabled = fw.enabled
                 state = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
 
-                port_free = is_port_free(src_port)
-                port_status = "[green]✓ free[/green]" if port_free else "[red]✗ in use[/red]"
-
-                fwd_spec = f"{src_addr}:{src_port}:{dst_addr}:{dst_port}"
+                src_disp = fw.src_socket or f"{fw.src_addr}:{fw.src_port}"
+                dst_disp = fw.dst_socket or f"{fw.dst_addr}:{fw.dst_port}"
                 flag = "-L" if direction == "local" else "-R"
-
                 lines = [
                     f"[bold]{label or conn_tag}[/bold]   {state}   {proto}   via {conn_tag}",
-                    f"Bind     {src_addr}:{src_port}  →  {dst_addr}:{dst_port}",
-                    f"Port {src_port}  {port_status}",
-                    f"Forward  ssh -O forward {flag} {fwd_spec}",
+                    f"Bind     {src_disp}  →  {dst_disp}",
                 ]
+                # Only a locally-bound TCP source port has a meaningful free/in-use check.
+                if direction == "local" and not fw.src_socket:
+                    port_free = is_port_free(fw.src_port, fw.src_addr or "localhost")
+                    status = "[green]✓ free[/green]" if port_free else "[red]✗ in use[/red]"
+                    lines.append(f"Port {fw.src_port}  {status}")
+                lines.append(f"Forward  ssh -O forward {flag} {build_fwd_spec(fw, direction)}")
                 preview.update("\n".join(lines))
             except Exception:
                 preview.update("")
@@ -852,8 +910,10 @@ class ConnectionsScreen(Screen):
             fw = PortForward(
                 src_addr=data["src_addr"],
                 src_port=data["src"],
+                src_socket=data.get("src_socket", ""),
                 dst_addr=data["dst_addr"],
                 dst_port=data["dst"],
+                dst_socket=data.get("dst_socket", ""),
                 tag=data["tag"],
                 tcp=data["tcp"],
                 udp=data["udp"],
@@ -876,12 +936,14 @@ class ConnectionsScreen(Screen):
             return
         row = tbl.get_row_at(tbl.cursor_row)
         conn_tag = str(row[1])
-        port = int(str(row[2]))
+        # Column 2 is the source endpoint: a socket path or a port number.
+        raw = str(row[2])
+        key: int | str = raw if raw.startswith("/") else int(raw)
         try:
             if direction == "local":
-                self.app.manager.remove_local_forward(port, conn_tag=conn_tag)  # type: ignore[attr-defined]
+                self.app.manager.remove_local_forward(key, conn_tag=conn_tag)  # type: ignore[attr-defined]
             else:
-                self.app.manager.remove_remote_forward(port, conn_tag=conn_tag)  # type: ignore[attr-defined]
+                self.app.manager.remove_remote_forward(key, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), title="SusOps", severity="error")
