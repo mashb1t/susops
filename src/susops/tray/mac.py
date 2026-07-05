@@ -2121,7 +2121,7 @@ class SusOpsMacTray(AbstractTrayApp):
             return
         src_port = int(src_txt)
         dst_port = int(dst_txt)
-        if not remote and not is_port_free(src_port):
+        if not remote and not is_port_free(src_port, src_addr):
             _show_message("Port In Use",
                           f"Local port {src_port} is already in use.")
             return
@@ -2310,7 +2310,7 @@ class SusOpsMacTray(AbstractTrayApp):
         # direction changed to local) to avoid colliding with another listener.
         port_changed = (new_src_port != old_src_port
                         or new_direction != old_direction)
-        if new_direction == "local" and port_changed and not is_port_free(new_src_port):
+        if new_direction == "local" and port_changed and not is_port_free(new_src_port, src_addr):
             _show_message("Port In Use",
                           f"Local port {new_src_port} is already in use.")
             return

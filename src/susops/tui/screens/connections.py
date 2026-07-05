@@ -235,7 +235,7 @@ class _AddForwardDialog(ModalScreen):
         if not validate_port(src) or not validate_port(dst):
             error_label.update("Ports must be between 1 and 65535.")
             return
-        if self._direction == "local" and not is_port_free(src):
+        if self._direction == "local" and not is_port_free(src, src_addr or "localhost"):
             error_label.update(f"Local port {src} is already in use.")
             return
         self.dismiss({

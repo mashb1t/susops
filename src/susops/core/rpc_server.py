@@ -37,7 +37,7 @@ _ALLOWED_METHODS: set[str] = {
     "is_udp_forward_running",
     # File sharing
     "share", "stop_share", "delete_share", "list_shares",
-    "share_is_running", "fetch",
+    "fetch",
     # Testing
     "test", "test_all", "test_connection", "test_domain", "test_forward",
     "test_ssh",

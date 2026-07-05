@@ -415,6 +415,12 @@ class SusOpsManager:
     def _emit_state(self, state: ProcessState) -> None:
         if self.on_state_change:
             self.on_state_change(state)
+        # Also push over SSE so config CRUD (add/remove connection, PAC host
+        # changes) that only calls _emit_state still reaches cross-process
+        # frontends instantly instead of waiting for their next poll. An extra
+        # aggregate "state" event on paths that already emit one just triggers
+        # a harmless idempotent refresh.
+        self._emit("state", {"aggregate": state.value})
 
     def _reload_config(self) -> None:
         with self._config_lock:
@@ -2014,9 +2020,6 @@ class SusOpsManager:
                         ))
 
         return result
-
-    def share_is_running(self) -> bool:
-        return self._share_any()
 
     def fetch(
             self,
