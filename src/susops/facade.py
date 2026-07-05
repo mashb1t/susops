@@ -22,6 +22,7 @@ from susops.core.config import (
     get_default_connection,
     load_config,
     save_config,
+    validate_pac_host,
 )
 from susops.core.bandwidth import BandwidthSampler
 from susops.core.pac import PacServer, write_pac_file
@@ -1558,6 +1559,7 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_pac_host(self, host: str, conn_tag: str | None = None) -> None:
+        host = validate_pac_host(host)
         with self._config_lock:
             self._reload_config()
             default = get_default_connection(self.config)

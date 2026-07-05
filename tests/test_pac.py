@@ -56,6 +56,26 @@ def test_generate_pac_empty_config():
     assert "DIRECT" in pac
 
 
+def test_out_of_range_cidr_does_not_crash_pac():
+    # A bad prefix like /99 must not abort PAC generation for every host.
+    cfg = SusOpsConfig(connections=[Connection(
+        tag="c", ssh_host="h", socks_proxy_port=1080, pac_hosts=["10.0.0.0/99"],
+    )])
+    pac = generate_pac(cfg)  # would raise ValueError before the fix
+    # Treated as a plain host, not a CIDR, and does not appear as isInNet.
+    assert "isInNet" not in pac
+
+
+def test_pac_host_rejects_js_metachars():
+    from susops.core.config import validate_pac_host
+    for bad in ["o'brien.com", "x') return 'x'; //", "a\\b", "has space"]:
+        with pytest.raises(ValueError):
+            validate_pac_host(bad)
+    # Wildcards and CIDR are allowed.
+    assert validate_pac_host("*.internal.example.com")
+    assert validate_pac_host("10.0.0.0/8")
+
+
 def test_write_pac_file(tmp_path, config_with_hosts):
     path = write_pac_file(config_with_hosts, tmp_path)
     assert path.exists()

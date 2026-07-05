@@ -42,6 +42,7 @@ __all__ = [
     "save_config",
     "get_connection",
     "get_default_connection",
+    "validate_pac_host",
     "WORKSPACE_DEFAULT",
     "CONFIG_FILENAME",
 ]
@@ -65,6 +66,26 @@ def _validate_host_token(value: str, field: str) -> str:
         raise ValueError(
             f"{field} contains forbidden character(s) {bad!r}: whitespace and "
             f"shell metacharacters are not allowed"
+        )
+    return value
+
+
+# PAC hosts are interpolated into the generated FindProxyForURL JavaScript
+# (single-quoted string literals), so they must not carry quotes, backslashes,
+# whitespace or control chars that could break or inject into the PAC. Unlike
+# ssh_host they legitimately contain '*' and '?' (shExpMatch wildcards) and '/'
+# (CIDR), so those are allowed here.
+_FORBIDDEN_PAC_HOST_CHARS = frozenset(" \t\r\n;|&$`'\"<>()\\!#")
+
+
+def validate_pac_host(value: str) -> str:
+    if not value or not value.strip():
+        raise ValueError("pac_hosts entries must not be empty")
+    bad = sorted({c for c in value if c in _FORBIDDEN_PAC_HOST_CHARS or ord(c) < 0x20})
+    if bad:
+        raise ValueError(
+            f"PAC host {value!r} contains forbidden character(s) {bad!r}: "
+            f"whitespace and shell/JS metacharacters are not allowed"
         )
     return value
 
@@ -133,6 +154,11 @@ class Connection(BaseModel):
     @classmethod
     def _validate_ssh_host(cls, v: str) -> str:
         return _validate_host_token(v, "ssh_host")
+
+    @field_validator("pac_hosts", "pac_hosts_disabled")
+    @classmethod
+    def _validate_pac_hosts(cls, v: list[str]) -> list[str]:
+        return [validate_pac_host(h) for h in v]
 
 
 class AppConfig(BaseModel):
