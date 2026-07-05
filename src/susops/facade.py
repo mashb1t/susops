@@ -1322,12 +1322,18 @@ class SusOpsManager:
                 # this, _intended still contains the tag and the monitor
                 # keeps reviving the connection after stop.
                 self._reconnect_monitor.mark_stopped(conn.tag)
-                if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
-                    self._log(f"[{conn.tag}] Stopped")
-                    self._bw_sampler.reset_totals(conn.tag)
-                    self._start_times.pop(conn.tag, None)
-                    self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
-                stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
+                try:
+                    if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
+                        self._log(f"[{conn.tag}] Stopped")
+                        self._bw_sampler.reset_totals(conn.tag)
+                        self._start_times.pop(conn.tag, None)
+                        self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                finally:
+                    # Always clean up UDP socat processes even if stop_tunnel
+                    # raised (e.g. os.kill hit PermissionError on a recycled
+                    # PID) — socat can outlive a crashed master and would
+                    # otherwise leak its bound UDP ports.
+                    stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     self._replace_connection(conn.model_copy(update={"socks_proxy_port": 0}))
             except Exception as exc:
