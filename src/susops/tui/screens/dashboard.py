@@ -319,6 +319,7 @@ class DashboardScreen(Screen):
             shares = mgr.list_shares()
             config = mgr.list_config()
             reconnect = mgr.reconnect_monitor_info()
+            logs = mgr.get_logs(500)
         except Exception as exc:
             # Any RPC failure / YAML parse error / unexpected exception
             # raised here becomes a Textual WorkerFailed that crashes the
@@ -333,7 +334,7 @@ class DashboardScreen(Screen):
             return
         self.app.call_from_thread(
             self._apply_status, result, extras, bw, bw_totals, uptimes, shares,
-            config, reconnect, bw_history_seed,
+            config, reconnect, bw_history_seed, logs,
         )
 
     def _apply_status(
@@ -347,10 +348,13 @@ class DashboardScreen(Screen):
             config,
             reconnect: dict,
             bw_history_seed: dict | None = None,
+            logs: list | None = None,
     ) -> None:
         bw_history_seed = bw_history_seed or {}
         self._last_config = config
         self._last_shares = shares
+        if logs is not None:
+            self._logs = logs
 
         # Build conn_data with forwards from config
         conn_map = {c.tag: c for c in config.connections}
@@ -584,14 +588,18 @@ class DashboardScreen(Screen):
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
-        # Logs are global (not per-connection) — populate before any
-        # per-tag branch returns. Previously this lived in the per-tag
-        # block so the Logs tab was empty on the default "All" view.
+        # Logs are global (not per-connection). They're fetched off the UI
+        # thread by refresh_status and cached in self._logs — never fetched
+        # here (this runs on the UI thread, and get_logs is a blocking RPC).
+        # Only re-render when the log content actually changed, instead of
+        # clearing and rewriting 500 lines on every tick.
+        logs = getattr(self, "_logs", [])
         log_widget = self.query_one("#detail-logs", RichLog)
-        log_widget.clear()
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        for line in mgr.get_logs(500):
-            log_widget.write(_format_log_line(line))
+        if logs != getattr(self, "_rendered_logs", None):
+            log_widget.clear()
+            for line in logs:
+                log_widget.write(_format_log_line(line))
+            self._rendered_logs = list(logs)
 
         # All view — aggregate stats + combined bandwidth charts
         if tag is None:
