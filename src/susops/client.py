@@ -45,6 +45,14 @@ class DaemonUnavailableError(RuntimeError):
     """Raised when the daemon can't be reached or won't start."""
 
 
+def _abs_path(value: Any) -> Any:
+    """Make a relative Path absolute against the client's CWD; pass anything
+    else through unchanged."""
+    if isinstance(value, Path) and not value.is_absolute():
+        return Path(os.path.abspath(value))
+    return value
+
+
 def _port_path(workspace: Path) -> Path:
     return workspace / "pids" / "susops-services.port"
 
@@ -259,6 +267,12 @@ class SusOpsClient:
         (which respawns if needed), and retry exactly once. Tray + TUI
         otherwise crash on the first menu click after a daemon restart.
         """
+        # Resolve relative Path arguments against the CLIENT's CWD before they
+        # cross to the daemon — otherwise the daemon resolves them against its
+        # own CWD (wherever the first frontend spawned it), so `susops share
+        # ./file` checks/writes the wrong directory.
+        args = [_abs_path(a) for a in args]
+        kwargs = {k: _abs_path(v) for k, v in kwargs.items()}
         req = InvocationRequest(method=method, args=args, kwargs=kwargs)
         last_exc: Exception | None = None
 
@@ -286,6 +300,12 @@ class SusOpsClient:
                 except Exception:
                     raise DaemonUnavailableError(f"Daemon HTTP error: {exc}") from exc
             except urllib.error.URLError as exc:
+                # A read timeout means the daemon is alive but slow — it may
+                # still be running the call, so retrying would re-execute a
+                # non-idempotent method (a second fetch racing the same
+                # outfile, a duplicate start). Do NOT retry timeouts.
+                if isinstance(getattr(exc, "reason", None), TimeoutError):
+                    raise DaemonUnavailableError(f"Daemon timed out: {exc}") from exc
                 # Connection refused / unreachable. The daemon died, was
                 # killed, or hasn't come back up yet. Drop the cached port
                 # so the next iteration ensures+respawns.
@@ -294,6 +314,11 @@ class SusOpsClient:
                 if attempt == 1:
                     continue
                 raise DaemonUnavailableError(f"Daemon unreachable: {exc}") from exc
+            except TimeoutError as exc:
+                # Bare read timeout (not wrapped in URLError). Same reasoning:
+                # the daemon likely executed or is executing the call, so a
+                # retry is unsafe for non-idempotent methods.
+                raise DaemonUnavailableError(f"Daemon timed out: {exc}") from exc
             except Exception as exc:
                 # Unknown transport error. Reset and retry once.
                 last_exc = exc

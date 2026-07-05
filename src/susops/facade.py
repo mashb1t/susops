@@ -331,6 +331,10 @@ class SusOpsManager:
                 self.on_error(msg)
             except Exception:
                 pass
+        # Also push over SSE: frontends run through the RPC daemon, where the
+        # in-process on_error callback is never set, so the error toast would
+        # otherwise never reach them.
+        self._emit("error", {"message": msg})
 
     def _debug(self, msg: str) -> None:
         """Log a debug message. Only active when verbose=True.
@@ -2224,12 +2228,16 @@ class SusOpsManager:
         """Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest)."""
         return self._bw_sampler.get_history(tag)
 
-    def sse_client_count(self) -> int:
+    def sse_client_count(self, exclude_pid: int | None = None) -> int:
         """Live SSE subscriber count. Used by frontends to decide whether
         a stop-on-quit should actually stop, or skip because another
-        frontend is still attached to the same daemon."""
+        frontend is still attached to the same daemon.
+
+        Pass exclude_pid=<own pid> to count only *other* frontends — robust
+        against the caller's own SSE connection being mid-reconnect (in which
+        case a plain count-minus-one would subtract a different client)."""
         try:
-            return int(self._status_server.client_count())
+            return int(self._status_server.client_count(exclude_pid=exclude_pid))
         except Exception:
             return 0
 

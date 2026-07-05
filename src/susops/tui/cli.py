@@ -263,13 +263,13 @@ def cmd_rm(args, m) -> int:
             except (TypeError, ValueError):
                 port = args.port
             if args.local:
-                m.remove_local_forward(port)
+                m.remove_local_forward(port, conn_tag=args.connection)
                 print(f"Removed local forward on port {port}")
             else:
-                m.remove_remote_forward(port)
+                m.remove_remote_forward(port, conn_tag=args.connection)
                 print(f"Removed remote forward on port {port}")
         else:
-            m.remove_pac_host(args.host)
+            m.remove_pac_host(args.host, conn_tag=args.connection)
             print(f"Removed PAC host '{args.host}'")
         return 0
     except ValueError as e:

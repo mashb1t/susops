@@ -42,8 +42,17 @@ class StatusServer:
         # disconnect events in the in-memory log buffer.
         self.on_log: Callable[[str], None] | None = None
 
-    def client_count(self) -> int:
-        return len(self._queues)
+    def client_count(self, exclude_pid: int | None = None) -> int:
+        if exclude_pid is None:
+            return len(self._queues)
+        # Count connected clients whose reported pid differs from exclude_pid.
+        # Used by quit-on-last-client so a frontend never mistakes itself for
+        # "another client" (or, during its own SSE reconnect backoff, fails to
+        # subtract itself and over-counts).
+        return sum(
+            1 for q in self._queues
+            if getattr(q, "_susops_pid", None) != exclude_pid
+        )
 
     def start(self, port: int = 0) -> int:
         """Start the SSE server. Returns the bound port."""
@@ -104,6 +113,10 @@ class StatusServer:
 
             queue: asyncio.Queue[str | None] = asyncio.Queue()
             queue._susops_events = event_filter  # type: ignore[attr-defined]
+            try:
+                queue._susops_pid = int(client_pid)  # type: ignore[attr-defined]
+            except (TypeError, ValueError):
+                queue._susops_pid = None  # type: ignore[attr-defined]
             async with self._queues_lock:
                 self._queues.append(queue)
                 count = len(self._queues)

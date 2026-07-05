@@ -1552,7 +1552,12 @@ components:
           items: {}
         kwargs:
           type: object
-          properties: {}
+          properties:
+            exclude_pid:
+              anyOf:
+              - type: integer
+              - type: 'null'
+              default:
           additionalProperties: false
     SseClientCountResult:
       type: integer

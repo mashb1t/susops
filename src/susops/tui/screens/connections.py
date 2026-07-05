@@ -870,12 +870,13 @@ class ConnectionsScreen(Screen):
         if tbl.row_count == 0:
             return
         row = tbl.get_row_at(tbl.cursor_row)
+        conn_tag = str(row[1])
         port = int(str(row[2]))
         try:
             if direction == "local":
-                self.app.manager.remove_local_forward(port)  # type: ignore[attr-defined]
+                self.app.manager.remove_local_forward(port, conn_tag=conn_tag)  # type: ignore[attr-defined]
             else:
-                self.app.manager.remove_remote_forward(port)  # type: ignore[attr-defined]
+                self.app.manager.remove_remote_forward(port, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), title="SusOps", severity="error")

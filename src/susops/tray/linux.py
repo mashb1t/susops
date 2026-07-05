@@ -298,7 +298,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
     def run_in_background(self, fn: Callable, callback: Callable | None = None) -> None:
         def _worker():
-            result = fn()
+            try:
+                result = fn()
+            except Exception as exc:
+                # Without this the worker thread dies silently on an RPC/
+                # transport error (e.g. DaemonUnavailableError) and the menu
+                # click looks like it did nothing.
+                self._GLib.idle_add(self.show_alert, "SusOps error", str(exc))
+                return
             if callback is not None:
                 self._GLib.idle_add(callback, result)
 
@@ -1075,8 +1082,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         selected = self._pick_from_list("Remove Local Forward", "Local Forward:", items)
         if selected:
             m = re.search(r":(\d+)→", selected)
+            tag_m = re.match(r"\[(.+?)\]", selected)
             if m:
-                self.do_remove_local_forward(int(m.group(1)))
+                self.do_remove_local_forward(
+                    int(m.group(1)), tag_m.group(1) if tag_m else None)
         return False
 
     def _on_rm_remote(self, _) -> None:
@@ -1091,8 +1100,10 @@ class SusOpsLinuxTray(AbstractTrayApp):
         selected = self._pick_from_list("Remove Remote Forward", "Remote Forward:", items)
         if selected:
             m = re.search(r":(\d+)→", selected)
+            tag_m = re.match(r"\[(.+?)\]", selected)
             if m:
-                self.do_remove_remote_forward(int(m.group(1)))
+                self.do_remove_remote_forward(
+                    int(m.group(1)), tag_m.group(1) if tag_m else None)
         return False
 
     def _on_toggle_connection(self, _) -> None:

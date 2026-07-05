@@ -223,11 +223,11 @@ class DashboardScreen(Screen):
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        self._prev_on_log = mgr.on_log
-        mgr.on_log = self._on_new_log
-        self._prev_on_error = mgr.on_error
-        mgr.on_error = self._on_new_error
+        # Errors and logs come from the daemon over RPC/SSE, not via the
+        # facade's in-process on_log/on_error callbacks (those never fire on a
+        # SusOpsClient proxy). Log lines arrive by polling get_logs in the
+        # refresh worker; error toasts arrive as SSE "error" events handled in
+        # the listener below.
         self.set_interval(1.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
@@ -243,9 +243,6 @@ class DashboardScreen(Screen):
 
     def on_unmount(self) -> None:
         self._sse_active = False
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        mgr.on_log = self._prev_on_log
-        mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
         """Adaptive refresh: every 1s when connections are active, every 10s when idle."""
@@ -281,6 +278,19 @@ class DashboardScreen(Screen):
             )
         except Exception:
             pass
+
+    def _notify_sse_error(self, buf: str) -> None:
+        """Extract the message from an SSE 'error' event block and toast it."""
+        import json
+        for ln in buf.splitlines():
+            if ln.startswith("data:"):
+                try:
+                    msg = json.loads(ln[len("data:"):].strip()).get("message")
+                except Exception:
+                    msg = None
+                if msg:
+                    self._on_new_error(msg)
+                return
 
     @work(thread=True)
     def refresh_status(self) -> None:
@@ -825,6 +835,8 @@ class DashboardScreen(Screen):
                         if buf.endswith("\n\n"):
                             if any(e in buf for e in ("event: state", "event: share", "event: forward")):
                                 self.app.call_from_thread(self.refresh_status)
+                            elif "event: error" in buf:
+                                self._notify_sse_error(buf)
                             buf = ""
             except Exception:
                 for _ in range(max(1, int(backoff * 10))):

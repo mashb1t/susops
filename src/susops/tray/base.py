@@ -389,9 +389,9 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_pac_host(self, host: str) -> None:
+    def do_remove_pac_host(self, host: str, conn_tag: str | None = None) -> None:
         try:
-            self.manager.remove_pac_host(host)
+            self.manager.remove_pac_host(host, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
@@ -451,13 +451,15 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, _done)
 
-    def do_toggle_pac_host_enabled(self, host: str) -> None:
+    def do_toggle_pac_host_enabled(self, host: str, conn_tag: str | None = None) -> None:
         def _run():
             try:
                 cfg = self.manager.list_config()
-                all_disabled = [h for c in cfg.connections for h in c.pac_hosts_disabled]
+                conns = cfg.connections if conn_tag is None else [
+                    c for c in cfg.connections if c.tag == conn_tag]
+                all_disabled = [h for c in conns for h in c.pac_hosts_disabled]
                 currently_disabled = host in all_disabled
-                self.manager.set_pac_host_enabled(host, currently_disabled)  # flip
+                self.manager.set_pac_host_enabled(host, currently_disabled, conn_tag=conn_tag)  # flip
                 return None, True
             except Exception as e:
                 return f"Error: {e}", False
@@ -535,16 +537,16 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_local_forward(self, port: int) -> None:
+    def do_remove_local_forward(self, port: int, conn_tag: str | None = None) -> None:
         try:
             # Facade kills the slave immediately — no restart needed.
-            self.manager.remove_local_forward(port)
+            self.manager.remove_local_forward(port, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_remote_forward(self, port: int) -> None:
+    def do_remove_remote_forward(self, port: int, conn_tag: str | None = None) -> None:
         try:
-            self.manager.remove_remote_forward(port)
+            self.manager.remove_remote_forward(port, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
@@ -699,7 +701,8 @@ class AbstractTrayApp(ABC):
             # is still attached, otherwise it ends up with its SSH
             # masters / PAC / reconnect torn out from under it.
             try:
-                other_clients = int(self.manager.sse_client_count()) - 1
+                import os
+                other_clients = int(self.manager.sse_client_count(exclude_pid=os.getpid()))
             except Exception:
                 other_clients = 0
             if other_clients <= 0:

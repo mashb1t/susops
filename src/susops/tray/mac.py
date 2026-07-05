@@ -1864,10 +1864,10 @@ class SusOpsMacTray(AbstractTrayApp):
             if action_id == "domain.test":
                 self.do_test_domain(host, conn_tag)
             elif action_id == "domain.toggle":
-                self.do_toggle_pac_host_enabled(host)
+                self.do_toggle_pac_host_enabled(host, conn_tag)
             elif action_id == "domain.remove":
                 if _show_confirm("Delete Domain", f"Delete '{host}'?", ok="Delete"):
-                    self.do_remove_pac_host(host)
+                    self.do_remove_pac_host(host, conn_tag)
         elif kind == "forward":
             _, conn_tag, direction, src_port = identity
             if action_id == "forward.test":
@@ -1878,9 +1878,9 @@ class SusOpsMacTray(AbstractTrayApp):
                 if _show_confirm("Delete Forward",
                                  f"Delete :{src_port} ({direction})?", ok="Delete"):
                     if direction == "local":
-                        self.do_remove_local_forward(src_port)
+                        self.do_remove_local_forward(src_port, conn_tag)
                     else:
-                        self.do_remove_remote_forward(src_port)
+                        self.do_remove_remote_forward(src_port, conn_tag)
         elif kind == "share":
             port = identity[1]
             info = next((s for s in self.manager.list_shares()
@@ -2330,7 +2330,7 @@ class SusOpsMacTray(AbstractTrayApp):
                                  dst_port=new_dst_port, tcp=tcp, udp=udp,
                                  enabled=bool(old_fw.enabled))
             try:
-                self._remove_forward_rpc(old_direction, old_src_port)
+                self._remove_forward_rpc(old_direction, old_src_port, old_conn_tag)
             except Exception as exc:
                 return {"error": f"Could not remove old forward: {exc}"}
             try:
@@ -2468,11 +2468,12 @@ class SusOpsMacTray(AbstractTrayApp):
 
     # ---- save helpers (RPC + config lookups) ----
 
-    def _remove_forward_rpc(self, direction: str, src_port: int) -> None:
+    def _remove_forward_rpc(self, direction: str, src_port: int,
+                            conn_tag: str | None = None) -> None:
         if direction == "local":
-            self.manager.remove_local_forward(src_port)
+            self.manager.remove_local_forward(src_port, conn_tag=conn_tag)
         else:
-            self.manager.remove_remote_forward(src_port)
+            self.manager.remove_remote_forward(src_port, conn_tag=conn_tag)
 
     def _add_forward_rpc(self, conn_tag: str, fw: PortForward,
                          direction: str) -> None:
@@ -2667,7 +2668,14 @@ class SusOpsMacTray(AbstractTrayApp):
         """
 
         def _worker():
-            result = fn()
+            try:
+                result = fn()
+            except Exception as exc:
+                # Without this the worker thread dies silently on an RPC/
+                # transport error (e.g. DaemonUnavailableError) and the menu
+                # click looks like it did nothing.
+                _on_main(lambda e=exc: self.show_alert("SusOps error", str(e)))
+                return
             if callback is not None:
                 _on_main(lambda: callback(result))
 
