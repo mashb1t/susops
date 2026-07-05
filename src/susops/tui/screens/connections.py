@@ -4,7 +4,7 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen, ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import (
@@ -13,6 +13,8 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    RadioButton,
+    RadioSet,
     Select,
     Static,
     TabbedContent,
@@ -205,10 +207,29 @@ class _AddForwardDialog(ModalScreen):
                 seen.setdefault(b, None)
         self._bind_suggestions = list(seen)
 
+    def _endpoint_column(self, prefix: str, header: str, bind_suggester):
+        """One endpoint editor: a Port|Socket toggle that swaps a (bind + port)
+        group for a single socket-path field."""
+        with Vertical(classes="modal-field"):
+            yield Label(header)
+            with RadioSet(id=f"{prefix}-mode"):
+                yield RadioButton("Port", value=True, id=f"{prefix}-mode-port")
+                yield RadioButton("Socket", id=f"{prefix}-mode-socket")
+            with Vertical(id=f"{prefix}-port-group"):
+                yield Label("Bind:")
+                yield Input(value="localhost", id=f"{prefix}-addr", suggester=bind_suggester)
+                yield Label("Port:")
+                yield Input(placeholder="8080", id=f"{prefix}-port")
+            with Vertical(id=f"{prefix}-socket-group"):
+                yield Label("Socket path:")
+                yield Input(placeholder="/var/run/docker.sock", id=f"{prefix}-socket")
+
     def compose(self) -> ComposeResult:
         d = self._direction
         conn_options = [(tag, tag) for tag in self._connections]
         bind_suggester = SuggestFromList(self._bind_suggestions, case_sensitive=False)
+        src_hdr = "Source (local listen):" if d == "local" else "Source (remote listen):"
+        dst_hdr = "Destination (remote):" if d == "local" else "Destination (local):"
         with Static(classes="modal-dialog"):
             yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
             with Horizontal(classes="modal-form-row"):
@@ -219,26 +240,8 @@ class _AddForwardDialog(ModalScreen):
                     yield Label("Label (optional):")
                     yield Input(placeholder="", id="tag")
             with Horizontal(classes="modal-form-row"):
-                with Static(classes="modal-field"):
-                    yield Label("Forward Local Port:" if d == "local" else "Forward Remote Port:")
-                    yield Input(placeholder="8080 (or socket below)", id="src-port")
-                with Static(classes="modal-field"):
-                    yield Label("To Remote Port:" if d == "local" else "To Local Port:")
-                    yield Input(placeholder="8080 (or socket below)", id="dst-port")
-            with Horizontal(classes="modal-form-row"):
-                with Static(classes="modal-field"):
-                    yield Label("Local Socket (optional):" if d == "local" else "Remote Socket (optional):")
-                    yield Input(placeholder="/var/run/docker.sock", id="src-socket")
-                with Static(classes="modal-field"):
-                    yield Label("Remote Socket (optional):" if d == "local" else "Local Socket (optional):")
-                    yield Input(placeholder="/var/run/docker.sock", id="dst-socket")
-            with Horizontal(classes="modal-form-row"):
-                with Static(classes="modal-field"):
-                    yield Label("Local Bind:" if d == "local" else "Remote Bind:")
-                    yield Input(value="localhost", id="src-addr", suggester=bind_suggester)
-                with Static(classes="modal-field"):
-                    yield Label("Remote Bind:" if d == "local" else "Local Bind:")
-                    yield Input(value="localhost", id="dst-addr", suggester=bind_suggester)
+                yield from self._endpoint_column("src", src_hdr, bind_suggester)
+                yield from self._endpoint_column("dst", dst_hdr, bind_suggester)
             yield Label("Protocol:")
             with Horizontal(classes="modal-proto-row"):
                 yield Checkbox("TCP", value=True, id="proto-tcp")
@@ -248,61 +251,64 @@ class _AddForwardDialog(ModalScreen):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
+    def on_mount(self) -> None:
+        # Start each endpoint in Port mode: hide the socket sub-field.
+        for prefix in ("src", "dst"):
+            self.query_one(f"#{prefix}-socket-group").display = False
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        prefix = "src" if event.radio_set.id == "src-mode" else "dst"
+        is_port = event.radio_set.pressed_index == 0
+        self.query_one(f"#{prefix}-port-group").display = is_port
+        self.query_one(f"#{prefix}-socket-group").display = not is_port
+
+    def _resolve_endpoint(self, prefix: str, label: str):
+        """Read the active (Port or Socket) sub-field for one endpoint.
+        Returns ((port, socket, addr), None) or (None, error_message)."""
+        socket_mode = self.query_one(f"#{prefix}-mode", RadioSet).pressed_index == 1
+        if socket_mode:
+            path = self.query_one(f"#{prefix}-socket", Input).value.strip()
+            if not path:
+                return None, f"{label}: a socket path is required."
+            try:
+                return (0, validate_socket_path(path), "localhost"), None
+            except ValueError as e:
+                return None, str(e)
+        addr = self.query_one(f"#{prefix}-addr", Input).value.strip() or "localhost"
+        port_txt = self.query_one(f"#{prefix}-port", Input).value.strip()
+        if not port_txt or not port_txt.isdigit() or not validate_port(int(port_txt)):
+            return None, f"{label}: port must be a number between 1 and 65535."
+        return (int(port_txt), "", addr), None
+
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
         conn = _select_str(self, "#conn")
-        src_addr = self.query_one("#src-addr", Input).value.strip() or "localhost"
-        dst_addr = self.query_one("#dst-addr", Input).value.strip() or "localhost"
         tag = self.query_one("#tag", Input).value.strip()
         tcp = self.query_one("#proto-tcp", Checkbox).value
         udp = self.query_one("#proto-udp", Checkbox).value
-        src_socket = self.query_one("#src-socket", Input).value.strip()
-        dst_socket = self.query_one("#dst-socket", Input).value.strip()
         error_label = self.query_one(".modal-error", Label)
         if not tcp and not udp:
             error_label.update("Select at least one protocol (TCP or UDP).")
             return
-        if (src_socket or dst_socket) and udp:
+
+        src_ep, err = self._resolve_endpoint("src", "Source")
+        if err:
+            error_label.update(err)
+            return
+        dst_ep, err = self._resolve_endpoint("dst", "Destination")
+        if err:
+            error_label.update(err)
+            return
+        src, src_sock, src_addr = src_ep
+        dst, dst_sock, dst_addr = dst_ep
+        if (src_sock or dst_sock) and udp:
             error_label.update("UDP is not supported for socket forwards.")
             return
-
-        # Resolve each endpoint to exactly one of a port or a socket path.
-        def _endpoint(port_id: str, sock: str, label: str):
-            port_txt = self.query_one(port_id, Input).value.strip()
-            if sock:
-                if port_txt:
-                    return None, f"{label}: set a port OR a socket, not both."
-                try:
-                    sock_val = validate_socket_path(sock)
-                except ValueError as e:
-                    return None, str(e)
-                return (0, sock_val), None
-            if not port_txt:
-                return None, f"{label}: a port or a socket path is required."
-            try:
-                p = int(port_txt)
-            except ValueError:
-                return None, f"{label}: port must be a number."
-            if not validate_port(p):
-                return None, f"{label}: port must be between 1 and 65535."
-            return (p, ""), None
-
-        src_ep, err = _endpoint("#src-port", src_socket, "Source")
-        if err:
-            error_label.update(err)
-            return
-        dst_ep, err = _endpoint("#dst-port", dst_socket, "Destination")
-        if err:
-            error_label.update(err)
-            return
-        src, src_sock = src_ep
-        dst, dst_sock = dst_ep
         # Only a locally-bound TCP port on a known-local address can be
-        # reliably checked — a custom bind that isn't assigned to a local
-        # interface would make socket.bind fail with EADDRNOTAVAIL and read as
-        # a false "in use", so skip the check for non-preset addresses.
+        # reliably checked (a custom/non-local bind makes socket.bind fail with
+        # EADDRNOTAVAIL, which would read as a false "in use").
         if (self._direction == "local" and not src_sock
                 and src_addr in _BIND_PRESETS
                 and not is_port_free(src, src_addr)):
