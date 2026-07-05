@@ -348,9 +348,10 @@ class AbstractTrayApp(ABC):
 
         self.show_live_logs(_get_text, title="Logs")
 
-    def do_add_connection(self, tag: str, host: str, port: int = 0) -> None:
+    def do_add_connection(self, tag: str, host: str, port: int = 0,
+                          jump_host: str = "") -> None:
         try:
-            conn = self.manager.add_connection(tag, host, port)
+            conn = self.manager.add_connection(tag, host, port, jump_host=jump_host)
         except ValueError as e:
             self.show_alert("Error", str(e))
             return

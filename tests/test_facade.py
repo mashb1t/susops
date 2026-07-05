@@ -29,6 +29,20 @@ def test_add_connection(mgr):
     assert len(cfg.connections) == 1
 
 
+def test_add_connection_with_jump_host(mgr):
+    conn = mgr.add_connection("work", "user@target", jump_host="user@bastion")
+    assert conn.jump_host == "user@bastion"
+    assert mgr.list_config().connections[0].jump_host == "user@bastion"
+
+
+def test_update_connection_sets_and_clears_jump_host(mgr):
+    mgr.add_connection("work", "user@target")
+    mgr.update_connection("work", jump_host="user@bastion", restart=False)
+    assert mgr.list_config().connections[0].jump_host == "user@bastion"
+    mgr.update_connection("work", jump_host="", restart=False)
+    assert mgr.list_config().connections[0].jump_host == ""
+
+
 def test_add_duplicate_connection_raises(mgr):
     mgr.add_connection("work", "user@work.example.com")
     with pytest.raises(ValueError, match="already exists"):

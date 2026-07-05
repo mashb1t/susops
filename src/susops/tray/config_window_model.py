@@ -315,6 +315,9 @@ def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
         FormField(key="ssh_host", label="SSH Host", kind="combo",
                   value=conn.ssh_host, options=list(ssh_hosts),
                   placeholder="hostname, IP, or ssh alias"),
+        FormField(key="jump_host", label="Jump Host", kind="text",
+                  value=getattr(conn, "jump_host", "") or "",
+                  placeholder="user@bastion (ssh -J, optional)"),
         FormField(key="socks_port", label="SOCKS Port", kind="text",
                   value=str(_socks_port(conn) or ""), placeholder="auto"),
     ]
@@ -350,6 +353,8 @@ def build_connection_form(ssh_hosts) -> DetailSpec:
         FormField(key="ssh_host", label="SSH Host", kind="combo", value="",
                   options=list(ssh_hosts),
                   placeholder="hostname, IP, or ssh alias"),
+        FormField(key="jump_host", label="Jump Host", kind="text", value="",
+                  placeholder="user@bastion (ssh -J, optional)"),
         FormField(key="socks_port", label="SOCKS Port", kind="text", value="",
                   placeholder="auto", note="leave empty for auto"),
     ]

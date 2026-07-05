@@ -68,6 +68,8 @@ class _AddConnectionDialog(ModalScreen):
             else:
                 yield Label("SSH host (user@host):")
             yield Input(placeholder="user@hostname", id="ssh-host")
+            yield Label("Jump host (ssh -J, optional):")
+            yield Input(placeholder="user@bastion (comma-separated chain)", id="jump-host")
             yield _CollapsingLabel("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
@@ -102,7 +104,8 @@ class _AddConnectionDialog(ModalScreen):
         if port != 0 and not is_port_free(port):
             error_label.update(f"Port {port} is already in use.")
             return
-        self.dismiss({"tag": tag, "host": host, "port": port})
+        jump = self.query_one("#jump-host", Input).value.strip()
+        self.dismiss({"tag": tag, "host": host, "port": port, "jump_host": jump})
 
 
 class _AddPacHostDialog(ModalScreen):
@@ -790,7 +793,9 @@ class ConnectionsScreen(Screen):
             if not data:
                 return
             try:
-                self.app.manager.add_connection(data["tag"], data["host"], data["port"])  # type: ignore[attr-defined]
+                self.app.manager.add_connection(  # type: ignore[attr-defined]
+                    data["tag"], data["host"], data["port"],
+                    jump_host=data.get("jump_host", ""))
                 self._bg_reload()
             except ValueError as e:
                 self.app.notify(str(e), title="SusOps", severity="error")

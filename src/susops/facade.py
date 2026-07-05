@@ -23,6 +23,7 @@ from susops.core.config import (
     load_config,
     save_config,
     validate_pac_host,
+    validate_jump_host,
 )
 from susops.core.bandwidth import BandwidthSampler
 from susops.core.pac import PacServer, write_pac_file
@@ -31,6 +32,7 @@ from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.socat import (
     UDP_PROCESS_PREFIX,
+    fw_tag as _compute_fw_tag,
     start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
@@ -570,7 +572,7 @@ class SusOpsManager:
                 start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
             self._emit("forward", {
                 "tag": conn_tag,
-                "fw_tag": fw.tag or f"{direction}-{fw.src_port}",
+                "fw_tag": _compute_fw_tag(fw, direction),
                 "direction": direction,
                 "running": True,
             })
@@ -1401,7 +1403,8 @@ class SusOpsManager:
     # Connection CRUD
     # ------------------------------------------------------------------ #
 
-    def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0) -> Connection:
+    def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0,
+                       jump_host: str = "") -> Connection:
         _validate_tag(tag)
         if not (isinstance(ssh_host, str) and ssh_host.strip()):
             raise ValueError("ssh_host must be a non-empty string")
@@ -1411,7 +1414,8 @@ class SusOpsManager:
             self._reload_config()
             if get_connection(self.config, tag) is not None:
                 raise ValueError(f"Connection '{tag}' already exists")
-            conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port)
+            conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port,
+                              jump_host=(jump_host or ""))
             self.config = self.config.model_copy(
                 update={"connections": list(self.config.connections) + [conn]}
             )
@@ -1481,6 +1485,7 @@ class SusOpsManager:
             new_tag: str | None = None,
             ssh_host: str | None = None,
             socks_proxy_port: int | None = None,
+            jump_host: str | None = None,
             restart: bool = True,
     ) -> Connection:
         """Edit a connection's tag / ssh_host / socks_proxy_port in place.
@@ -1522,10 +1527,12 @@ class SusOpsManager:
                     or is_socket_alive(tag, self.workspace)
             )
 
+            new_jump = conn.jump_host if jump_host is None else validate_jump_host(jump_host.strip())
             updated = conn.model_copy(update={
                 "tag": target_tag,
                 "ssh_host": new_host,
                 "socks_proxy_port": new_port,
+                "jump_host": new_jump,
             })
 
         # Tear down under the OLD tag BEFORE persisting the rename — stop()
@@ -1727,7 +1734,7 @@ class SusOpsManager:
                     key = "local" if direction == "local" else "remote"
                     new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
                     new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
-                    fw_tag = removed_fw.tag or f"{direction}-{src_port}"
+                    fw_tag = _compute_fw_tag(removed_fw, direction)
                     if removed_fw.tcp:
                         cancel_forward(conn, removed_fw, direction, self.workspace)
                     stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
@@ -1774,7 +1781,7 @@ class SusOpsManager:
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
             if fw.src_port == src_port:
-                fw_tag = fw.tag or f"{direction}-{src_port}"
+                fw_tag = _compute_fw_tag(fw, direction)
                 self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
                 if enabled and (
                         is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):

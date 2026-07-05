@@ -43,6 +43,7 @@ __all__ = [
     "get_connection",
     "get_default_connection",
     "validate_pac_host",
+    "validate_jump_host",
     "WORKSPACE_DEFAULT",
     "CONFIG_FILENAME",
 ]
@@ -76,6 +77,16 @@ def _validate_host_token(value: str, field: str) -> str:
 # ssh_host they legitimately contain '*' and '?' (shExpMatch wildcards) and '/'
 # (CIDR), so those are allowed here.
 _FORBIDDEN_PAC_HOST_CHARS = frozenset(" \t\r\n;|&$`'\"<>()\\!#")
+
+
+def validate_jump_host(value: str) -> str:
+    """Validate an ssh -J ProxyJump chain (empty = direct). Each comma-separated
+    hop is validated as a host token."""
+    if not value:
+        return value
+    for hop in value.split(","):
+        _validate_host_token(hop, "jump_host")
+    return value
 
 
 def validate_pac_host(value: str) -> str:
@@ -145,6 +156,9 @@ class Connection(BaseModel):
     ssh_host: str
     socks_proxy_port: int = 0
     enabled: bool = True
+    # ssh -J jump host(s). Empty = direct. May be a comma-separated chain
+    # (e.g. "user@bastion1,user@bastion2") per ssh ProxyJump syntax.
+    jump_host: str = ""
     forwards: Forwards = Forwards()
     pac_hosts: list[str] = []
     pac_hosts_disabled: list[str] = []
@@ -154,6 +168,11 @@ class Connection(BaseModel):
     @classmethod
     def _validate_ssh_host(cls, v: str) -> str:
         return _validate_host_token(v, "ssh_host")
+
+    @field_validator("jump_host")
+    @classmethod
+    def _validate_jump_host(cls, v: str) -> str:
+        return validate_jump_host(v)
 
     @field_validator("pac_hosts", "pac_hosts_disabled")
     @classmethod

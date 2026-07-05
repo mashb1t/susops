@@ -796,11 +796,14 @@ class SusOpsLinuxTray(AbstractTrayApp):
             host_combo.append_text(h)
         host_combo.get_child().set_placeholder_text("hostname, IP, or SSH alias")
         host_combo.get_child().set_activates_default(True)
+        jump_entry = Gtk.Entry(placeholder_text="user@bastion (ssh -J, optional)",
+                               activates_default=True)
         port_entry = Gtk.Entry(placeholder_text="auto if blank", activates_default=True)
 
         grid, _ = _labeled_grid(Gtk, [
             ("tag", "Connection Tag *:", tag_entry),
             ("host", "SSH Host *:", host_combo),
+            ("jump", "Jump Host (optional):", jump_entry),
             ("port", "SOCKS Proxy Port (optional):", port_entry),
         ])
         dlg.get_content_area().add(grid)
@@ -813,6 +816,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
                 break
             tag = tag_entry.get_text().strip()
             host = (host_combo.get_active_text() or "").strip()
+            jump = jump_entry.get_text().strip()
             port = port_entry.get_text().strip()
 
             if not tag:
@@ -830,7 +834,7 @@ class SusOpsLinuxTray(AbstractTrayApp):
 
             dlg.destroy()
             port_int = int(port) if port else 0
-            self.do_add_connection(tag, host, port_int)
+            self.do_add_connection(tag, host, port_int, jump_host=jump)
             return False
 
         dlg.destroy()

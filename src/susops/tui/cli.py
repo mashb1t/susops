@@ -167,6 +167,8 @@ def cmd_ls(args, m) -> int:
     for conn in config.connections:
         print(f"\nconnection: {conn.tag}")
         print(f"  ssh_host: {conn.ssh_host}")
+        if conn.jump_host:
+            print(f"  jump_host: {conn.jump_host}")
         print(f"  socks_port: {conn.socks_proxy_port}")
         if conn.pac_hosts:
             print(f"  pac_hosts:")
@@ -194,8 +196,12 @@ def cmd_ls(args, m) -> int:
 
 def cmd_add_connection(args, m) -> int:
     try:
-        conn = m.add_connection(args.tag, args.ssh_host, socks_port=args.socks_port or 0)
-        print(f"Added connection '{conn.tag}' → {conn.ssh_host}")
+        conn = m.add_connection(args.tag, args.ssh_host, socks_port=args.socks_port or 0,
+                                jump_host=getattr(args, "jump_host", "") or "")
+        msg = f"Added connection '{conn.tag}' → {conn.ssh_host}"
+        if conn.jump_host:
+            msg += f" via {conn.jump_host}"
+        print(msg)
         return 0
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -592,6 +598,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ssh_host", metavar="SSH_HOST", help="SSH host string (user@host)")
     p.add_argument("socks_port", metavar="SOCKS_PORT", type=int, nargs="?", default=0,
                    help="SOCKS port (0 = auto-assign)")
+    p.add_argument("-J", "--jump", dest="jump_host", default="",
+                   help="ssh ProxyJump host(s), e.g. user@bastion (comma-separated chain)")
     p.set_defaults(func=cmd_add_connection)
 
     # rm-connection

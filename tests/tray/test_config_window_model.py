@@ -439,7 +439,8 @@ def test_connection_form_create_mode():
     assert spec.status_dot == ""
     assert spec.toggle is None
     by_key = {f.key: f for f in spec.fields}
-    assert set(by_key) == {"tag", "ssh_host", "socks_port"}
+    assert set(by_key) == {"tag", "ssh_host", "jump_host", "socks_port"}
+    assert by_key["jump_host"].kind == "text"
     assert by_key["tag"].kind == "text"
     assert by_key["tag"].value == ""
     assert by_key["ssh_host"].kind == "combo"

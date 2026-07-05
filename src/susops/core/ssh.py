@@ -59,7 +59,7 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
     foreground with a stable, trackable PID. Reconnection is handled by the
     Python-side _ReconnectMonitor which restarts the master on dropout.
     """
-    return [
+    cmd = [
         "ssh",
         "-N", "-T",
         "-D", str(conn.socks_proxy_port),
@@ -67,8 +67,11 @@ def build_master_cmd(conn: Connection, sock: Path) -> list[str]:
         "-o", f"ControlPath={sock}",
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=3",
-        conn.ssh_host,
     ]
+    if getattr(conn, "jump_host", ""):
+        cmd += ["-J", conn.jump_host]
+    cmd.append(conn.ssh_host)
+    return cmd
 
 
 # Legacy alias — keeps existing callers (CLI, old tests) working.

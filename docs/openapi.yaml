@@ -125,6 +125,9 @@ components:
             socks_port:
               type: integer
               default: 0
+            jump_host:
+              type: string
+              default: ''
           required:
           - tag
           - ssh_host
@@ -221,6 +224,10 @@ components:
           default: true
           title: Enabled
           type: boolean
+        jump_host:
+          default: ''
+          title: Jump Host
+          type: string
         forwards:
           $ref: '#/components/schemas/Forwards'
           default:
@@ -815,6 +822,10 @@ components:
               default: true
               title: Enabled
               type: boolean
+            jump_host:
+              default: ''
+              title: Jump Host
+              type: string
             forwards:
               $ref: '#/components/schemas/Forwards'
               default:
@@ -2192,6 +2203,11 @@ components:
               - type: integer
               - type: 'null'
               default:
+            jump_host:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default:
             restart:
               type: boolean
               default: true
@@ -2290,6 +2306,10 @@ components:
           default: true
           title: Enabled
           type: boolean
+        jump_host:
+          default: ''
+          title: Jump Host
+          type: string
         forwards:
           $ref: '#/components/schemas/Forwards'
           default:

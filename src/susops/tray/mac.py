@@ -2028,6 +2028,7 @@ class SusOpsMacTray(AbstractTrayApp):
     def _create_connection(self, values: dict) -> None:
         tag = (values.get("tag") or "").strip()
         ssh_host = (values.get("ssh_host") or "").strip()
+        jump_host = (values.get("jump_host") or "").strip()
         port_text = str(values.get("socks_port") or "").strip()
         if not tag:
             _show_message("Missing Field", "Connection Tag must not be empty.")
@@ -2054,7 +2055,7 @@ class SusOpsMacTray(AbstractTrayApp):
 
         def _work():
             try:
-                self.manager.add_connection(tag, ssh_host, port_int)
+                self.manager.add_connection(tag, ssh_host, port_int, jump_host=jump_host)
             except Exception as exc:
                 return {"error": str(exc)}
             if autostart:
@@ -2239,6 +2240,7 @@ class SusOpsMacTray(AbstractTrayApp):
         old_tag = identity[1]
         tag = (values.get("tag") or "").strip()
         ssh_host = (values.get("ssh_host") or "").strip()
+        jump_host = (values.get("jump_host") or "").strip()
         port_text = str(values.get("socks_port") or "").strip()
         # Pure-input validation on the main thread (no RPC).
         if not tag:
@@ -2264,7 +2266,7 @@ class SusOpsMacTray(AbstractTrayApp):
             try:
                 self.manager.update_connection(
                     old_tag, new_tag=tag, ssh_host=ssh_host,
-                    socks_proxy_port=port_int, restart=True)
+                    socks_proxy_port=port_int, jump_host=jump_host, restart=True)
                 return {"ok": True}
             except Exception as exc:
                 return {"error": str(exc)}

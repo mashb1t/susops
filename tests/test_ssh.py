@@ -56,6 +56,21 @@ def test_build_master_cmd_includes_ssh_host(conn, workspace):
     assert conn.ssh_host in cmd
 
 
+def test_build_master_cmd_no_jump_by_default(conn, workspace):
+    cmd = build_master_cmd(conn, socket_path(conn.tag, workspace))
+    assert "-J" not in cmd
+
+
+def test_build_master_cmd_adds_jump_host(workspace):
+    conn = Connection(tag="t", ssh_host="user@target", socks_proxy_port=1080,
+                      jump_host="user@bastion")
+    cmd = build_master_cmd(conn, socket_path(conn.tag, workspace))
+    assert "-J" in cmd
+    assert cmd[cmd.index("-J") + 1] == "user@bastion"
+    # jump flag precedes the destination host
+    assert cmd.index("-J") < cmd.index(conn.ssh_host)
+
+
 def test_build_master_cmd_no_forwards_regardless_of_config(workspace):
     """Master cmd never contains -L/-R regardless of configured forwards."""
     from susops.core.config import Forwards
