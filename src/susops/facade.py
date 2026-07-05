@@ -1390,8 +1390,28 @@ class SusOpsManager:
 
     def restart(self, tag: str | None = None) -> StartResult:
         self.stop(keep_ports=True, tag=tag)
-        time.sleep(0.5)
+        self._wait_for_teardown(tag, deadline=3.0)
         return self.start(tag)
+
+    def _wait_for_teardown(self, tag: str | None, deadline: float) -> None:
+        """Wait (bounded) for stopped masters to release their socket + SOCKS
+        port before start() rebinds — replaces a blind sleep that was both too
+        long on fast machines and too short when many forwards slow teardown.
+        Uses cheap filesystem/bind checks (no ssh -O check subprocess spam)."""
+        conns = ([get_connection(self.config, tag)] if tag
+                 else list(self.config.connections))
+        conns = [c for c in conns if c is not None]
+        if not conns:
+            return
+        end = time.monotonic() + deadline
+        while time.monotonic() < end:
+            if all(
+                not socket_path(c.tag, self.workspace).exists()
+                and (c.socks_proxy_port == 0 or is_port_free(c.socks_proxy_port))
+                for c in conns
+            ):
+                return
+            time.sleep(0.05)
 
     def status(self) -> StatusResult:
         self._reload_config()

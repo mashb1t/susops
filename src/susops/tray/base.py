@@ -44,23 +44,9 @@ def get_icon_path(
     return None
 
 
-def get_ssh_hosts() -> list[str]:
-    """Return non-wildcard Host entries from ~/.ssh/config."""
-    cfg = Path.home() / ".ssh" / "config"
-    if not cfg.exists():
-        return []
-    hosts = []
-    pattern = re.compile(r"^\s*Host\s+(.*)$", re.IGNORECASE)
-    for line in cfg.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = pattern.match(line)
-        if m:
-            for h in m.group(1).split():
-                if "*" not in h and "?" not in h:
-                    hosts.append(h)
-    return hosts
+# Re-exported from core so the tray, the mac config window, and the TUI all
+# parse ~/.ssh/config the same (sorted, de-duplicated) way.
+from susops.core.ssh_config import get_ssh_hosts  # noqa: E402,F401
 
 
 from susops.client import SusOpsClient
