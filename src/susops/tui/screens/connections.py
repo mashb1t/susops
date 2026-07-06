@@ -212,15 +212,15 @@ class _AddForwardDialog(ModalScreen):
         group for a single socket-path field."""
         with Vertical(classes="modal-field"):
             yield Label(header)
-            with RadioSet(id=f"{prefix}-mode"):
+            with RadioSet(id=f"{prefix}-mode", classes="endpoint-mode"):
                 yield RadioButton("Port", value=True, id=f"{prefix}-mode-port")
                 yield RadioButton("Socket", id=f"{prefix}-mode-socket")
-            with Vertical(id=f"{prefix}-port-group"):
+            with Vertical(id=f"{prefix}-port-group", classes="endpoint-group"):
                 yield Label("Bind:")
                 yield Input(value="localhost", id=f"{prefix}-addr", suggester=bind_suggester)
                 yield Label("Port:")
                 yield Input(placeholder="8080", id=f"{prefix}-port")
-            with Vertical(id=f"{prefix}-socket-group"):
+            with Vertical(id=f"{prefix}-socket-group", classes="endpoint-group"):
                 yield Label("Socket path:")
                 yield Input(placeholder="/var/run/docker.sock", id=f"{prefix}-socket")
 
