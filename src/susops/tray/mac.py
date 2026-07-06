@@ -23,6 +23,27 @@ from susops.tray.mac_config_window import _hex_color, PALETTE
 
 BIND_ADDRESSES = ["localhost", "172.17.0.1", "0.0.0.0"]
 
+# Shared forward-endpoint resolver (port vs socket) lives in base.py so the
+# Linux tray uses the exact same validation.
+from susops.tray.base import resolve_forward_endpoint as _resolve_forward_endpoint  # noqa: E402
+
+
+def _forward_endpoint_from_values(values: dict, prefix: str, label: str):
+    """Read one forward endpoint from the config-window form, honoring its
+    Port|Socket mode popup (both the port and socket widgets exist; the mode
+    decides which one is authoritative). Returns ((port, socket, addr), None)
+    or (None, (title, message))."""
+    mode = (values.get(f"{prefix}_mode") or "Port").strip()
+    if mode == "Socket":
+        ep, err = _resolve_forward_endpoint("", values.get(f"{prefix}_socket"), label)
+    else:
+        ep, err = _resolve_forward_endpoint(values.get(f"{prefix}_port"), "", label)
+    if err:
+        return None, err
+    port, sock = ep
+    addr = "localhost" if sock else (values.get(f"{prefix}_addr") or "localhost").strip()
+    return (port, sock, addr), None
+
 
 # ---------------------------------------------------------------------------
 # Appearance + icon helpers
@@ -1864,10 +1885,10 @@ class SusOpsMacTray(AbstractTrayApp):
             if action_id == "domain.test":
                 self.do_test_domain(host, conn_tag)
             elif action_id == "domain.toggle":
-                self.do_toggle_pac_host_enabled(host)
+                self.do_toggle_pac_host_enabled(host, conn_tag)
             elif action_id == "domain.remove":
                 if _show_confirm("Delete Domain", f"Delete '{host}'?", ok="Delete"):
-                    self.do_remove_pac_host(host)
+                    self.do_remove_pac_host(host, conn_tag)
         elif kind == "forward":
             _, conn_tag, direction, src_port = identity
             if action_id == "forward.test":
@@ -1878,9 +1899,9 @@ class SusOpsMacTray(AbstractTrayApp):
                 if _show_confirm("Delete Forward",
                                  f"Delete :{src_port} ({direction})?", ok="Delete"):
                     if direction == "local":
-                        self.do_remove_local_forward(src_port)
+                        self.do_remove_local_forward(src_port, conn_tag)
                     else:
-                        self.do_remove_remote_forward(src_port)
+                        self.do_remove_remote_forward(src_port, conn_tag)
         elif kind == "share":
             port = identity[1]
             info = next((s for s in self.manager.list_shares()
@@ -2028,6 +2049,7 @@ class SusOpsMacTray(AbstractTrayApp):
     def _create_connection(self, values: dict) -> None:
         tag = (values.get("tag") or "").strip()
         ssh_host = (values.get("ssh_host") or "").strip()
+        jump_host = (values.get("jump_host") or "").strip()
         port_text = str(values.get("socks_port") or "").strip()
         if not tag:
             _show_message("Missing Field", "Connection Tag must not be empty.")
@@ -2054,7 +2076,7 @@ class SusOpsMacTray(AbstractTrayApp):
 
         def _work():
             try:
-                self.manager.add_connection(tag, ssh_host, port_int)
+                self.manager.add_connection(tag, ssh_host, port_int, jump_host=jump_host)
             except Exception as exc:
                 return {"error": str(exc)}
             if autostart:
@@ -2095,10 +2117,6 @@ class SusOpsMacTray(AbstractTrayApp):
         dir_label = values.get("direction") or ""
         direction = self._DIRECTION_FROM_LABEL.get(dir_label, "local")
         remote = direction == "remote"
-        src_addr = (values.get("src_addr") or "localhost").strip()
-        dst_addr = (values.get("dst_addr") or "localhost").strip()
-        src_txt = str(values.get("src_port") or "").strip()
-        dst_txt = str(values.get("dst_port") or "").strip()
         protocols = values.get("protocols") or (False, False)
         tcp, udp = bool(protocols[0]), bool(protocols[1])
         tag = (values.get("tag") or "").strip()
@@ -2110,27 +2128,32 @@ class SusOpsMacTray(AbstractTrayApp):
             _show_message("Protocol Required",
                           "Select at least one protocol (TCP or UDP).")
             return
-        if not src_txt.isdigit() or not validate_port(int(src_txt)):
-            _show_message("Invalid Source Port",
-                          "Source port must be a number between 1 and 65535.")
+        src, err = _forward_endpoint_from_values(values, "src", "Source")
+        if err:
+            _show_message(*err)
             return
-        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
-            _show_message("Invalid Destination Port",
-                          "Destination port must be a number between 1 and "
-                          "65535.")
+        dst, err = _forward_endpoint_from_values(values, "dst", "Destination")
+        if err:
+            _show_message(*err)
             return
-        src_port = int(src_txt)
-        dst_port = int(dst_txt)
-        if not remote and not is_port_free(src_port):
+        src_port, src_socket, src_addr = src
+        dst_port, dst_socket, dst_addr = dst
+        if (src_socket or dst_socket) and udp:
+            _show_message("Invalid Forward", "UDP is not supported for socket forwards.")
+            return
+        # Only a locally-bound TCP port on a known-local address can be checked.
+        if (not remote and not src_socket and src_addr in BIND_ADDRESSES
+                and not is_port_free(src_port, src_addr)):
             _show_message("Port In Use",
                           f"Local port {src_port} is already in use.")
             return
 
-        new_identity = ("forward", conn_tag, direction, src_port)
+        new_identity = ("forward", conn_tag, direction, src_socket or str(src_port))
 
         def _work():
             fw = PortForward(tag=tag, src_addr=src_addr, src_port=src_port,
-                             dst_addr=dst_addr, dst_port=dst_port,
+                             src_socket=src_socket, dst_addr=dst_addr,
+                             dst_port=dst_port, dst_socket=dst_socket,
                              tcp=tcp, udp=udp)
             try:
                 self._add_forward_rpc(conn_tag, fw, direction)
@@ -2239,6 +2262,7 @@ class SusOpsMacTray(AbstractTrayApp):
         old_tag = identity[1]
         tag = (values.get("tag") or "").strip()
         ssh_host = (values.get("ssh_host") or "").strip()
+        jump_host = (values.get("jump_host") or "").strip()
         port_text = str(values.get("socks_port") or "").strip()
         # Pure-input validation on the main thread (no RPC).
         if not tag:
@@ -2264,7 +2288,7 @@ class SusOpsMacTray(AbstractTrayApp):
             try:
                 self.manager.update_connection(
                     old_tag, new_tag=tag, ssh_host=ssh_host,
-                    socks_proxy_port=port_int, restart=True)
+                    socks_proxy_port=port_int, jump_host=jump_host, restart=True)
                 return {"ok": True}
             except Exception as exc:
                 return {"error": str(exc)}
@@ -2279,58 +2303,61 @@ class SusOpsMacTray(AbstractTrayApp):
         self.run_in_background(_work, _done)
 
     def _save_forward(self, identity: tuple, values: dict) -> None:
-        _, old_conn_tag, old_direction, old_src_port = identity
+        _, old_conn_tag, old_direction, old_src_key = identity
         # Pure-input validation on the main thread (no RPC).
         new_conn_tag = (values.get("conn_tag") or old_conn_tag).strip()
         dir_label = values.get("direction") or ""
         new_direction = self._DIRECTION_FROM_LABEL.get(dir_label, old_direction)
-        src_addr = (values.get("src_addr") or "localhost").strip()
-        dst_addr = (values.get("dst_addr") or "localhost").strip()
-        src_txt = str(values.get("src_port") or "").strip()
-        dst_txt = str(values.get("dst_port") or "").strip()
         protocols = values.get("protocols") or (False, False)
         tcp, udp = bool(protocols[0]), bool(protocols[1])
         tag = (values.get("tag") or "").strip()
 
-        if not src_txt.isdigit() or not validate_port(int(src_txt)):
-            _show_message("Invalid Source Port",
-                          "Source port must be a number between 1 and 65535.")
-            return
-        if not dst_txt.isdigit() or not validate_port(int(dst_txt)):
-            _show_message("Invalid Destination Port",
-                          "Destination port must be a number between 1 and 65535.")
-            return
-        new_src_port = int(src_txt)
-        new_dst_port = int(dst_txt)
         if not tcp and not udp:
             _show_message("No Protocol",
                           "Enable at least one protocol (TCP or UDP).")
             return
-        # A locally-bound src port must be free when it changed (or the
-        # direction changed to local) to avoid colliding with another listener.
-        port_changed = (new_src_port != old_src_port
-                        or new_direction != old_direction)
-        if new_direction == "local" and port_changed and not is_port_free(new_src_port):
+        src, err = _forward_endpoint_from_values(values, "src", "Source")
+        if err:
+            _show_message(*err)
+            return
+        dst, err = _forward_endpoint_from_values(values, "dst", "Destination")
+        if err:
+            _show_message(*err)
+            return
+        new_src_port, new_src_socket, src_addr = src
+        new_dst_port, new_dst_socket, dst_addr = dst
+        if (new_src_socket or new_dst_socket) and udp:
+            _show_message("Invalid Forward", "UDP is not supported for socket forwards.")
+            return
+        new_src_key = new_src_socket or str(new_src_port)
+        # A locally-bound TCP src port on a known-local address must be free
+        # when it changed, to avoid colliding with another listener.
+        key_changed = (new_src_key != str(old_src_key)
+                       or new_direction != old_direction)
+        if (new_direction == "local" and not new_src_socket and key_changed
+                and src_addr in BIND_ADDRESSES
+                and not is_port_free(new_src_port, src_addr)):
             _show_message("Port In Use",
                           f"Local port {new_src_port} is already in use.")
             return
 
-        new_identity = ("forward", new_conn_tag, new_direction, new_src_port)
+        new_identity = ("forward", new_conn_tag, new_direction, new_src_key)
 
         def _work():
             # Config lookup is blocking RPC, so it runs here on the worker.
             # The old forward is captured so rollback can restore it verbatim.
             old_fw = self._find_forward(old_conn_tag, old_direction,
-                                        old_src_port)
+                                        old_src_key)
             if old_fw is None:
                 return {"error": "The forward no longer exists. "
                                  "Reopen the window."}
             new_fw = PortForward(tag=tag, src_addr=src_addr,
-                                 src_port=new_src_port, dst_addr=dst_addr,
-                                 dst_port=new_dst_port, tcp=tcp, udp=udp,
+                                 src_port=new_src_port, src_socket=new_src_socket,
+                                 dst_addr=dst_addr, dst_port=new_dst_port,
+                                 dst_socket=new_dst_socket, tcp=tcp, udp=udp,
                                  enabled=bool(old_fw.enabled))
             try:
-                self._remove_forward_rpc(old_direction, old_src_port)
+                self._remove_forward_rpc(old_direction, old_src_key, old_conn_tag)
             except Exception as exc:
                 return {"error": f"Could not remove old forward: {exc}"}
             try:
@@ -2468,11 +2495,12 @@ class SusOpsMacTray(AbstractTrayApp):
 
     # ---- save helpers (RPC + config lookups) ----
 
-    def _remove_forward_rpc(self, direction: str, src_port: int) -> None:
+    def _remove_forward_rpc(self, direction: str, src_key,
+                            conn_tag: str | None = None) -> None:
         if direction == "local":
-            self.manager.remove_local_forward(src_port)
+            self.manager.remove_local_forward(src_key, conn_tag=conn_tag)
         else:
-            self.manager.remove_remote_forward(src_port)
+            self.manager.remove_remote_forward(src_key, conn_tag=conn_tag)
 
     def _add_forward_rpc(self, conn_tag: str, fw: PortForward,
                          direction: str) -> None:
@@ -2481,13 +2509,15 @@ class SusOpsMacTray(AbstractTrayApp):
         else:
             self.manager.add_remote_forward(conn_tag, fw)
 
-    def _find_forward(self, conn_tag: str, direction: str, src_port: int):
+    def _find_forward(self, conn_tag: str, direction: str, src_key):
         cfg = self.manager.list_config()
         conn = next((c for c in cfg.connections if c.tag == conn_tag), None)
         if conn is None:
             return None
         fws = conn.forwards.local if direction == "local" else conn.forwards.remote
-        return next((f for f in fws if f.src_port == src_port), None)
+        wanted = str(src_key)
+        return next((f for f in fws
+                     if (f.src_socket or str(f.src_port)) == wanted), None)
 
     def _is_pac_host_disabled(self, conn_tag: str, host: str) -> bool:
         cfg = self.manager.list_config()
@@ -2667,7 +2697,14 @@ class SusOpsMacTray(AbstractTrayApp):
         """
 
         def _worker():
-            result = fn()
+            try:
+                result = fn()
+            except Exception as exc:
+                # Without this the worker thread dies silently on an RPC/
+                # transport error (e.g. DaemonUnavailableError) and the menu
+                # click looks like it did nothing.
+                _on_main(lambda e=exc: self.show_alert("SusOps error", str(e)))
+                return
             if callback is not None:
                 _on_main(lambda: callback(result))
 

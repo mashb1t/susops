@@ -61,3 +61,8 @@ ModalScreen { align: center middle; background: rgba(0, 0, 0, 0.75); }
 .modal-field Label { margin-top: 0; }
 .modal-field Input { margin-bottom: 0; }
 .modal-field Select { margin-bottom: 0; }
+/* Per-endpoint Port|Socket toggle: keep the mode radio and its swapped
+   sub-groups sized to content so the dialog stays compact and the Add/Cancel
+   row isn't pushed off-screen (Vertical defaults to height:1fr). */
+.endpoint-mode { height: auto; margin-bottom: 1; }
+.endpoint-group { height: auto; }

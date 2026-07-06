@@ -193,6 +193,29 @@ def test_cmd_rm_remote_forward(ws_with_conn):
     assert code == 0
 
 
+def test_cmd_add_tcp_to_unix_socket_forward(ws_with_conn):
+    # local TCP -> remote unix socket (Postgres-style)
+    code, out, _ = run(
+        ["-c", "work", "add", "-l", "5432", "--remote-socket",
+         "/var/run/postgresql/.s.PGSQL.5432"],
+        ws_with_conn,
+    )
+    assert code == 0, out
+    assert "/var/run/postgresql/.s.PGSQL.5432" in out
+
+
+def test_cmd_add_and_rm_unix_socket_forward_by_path(ws_with_conn):
+    # unix -> unix (docker-style), then remove by the socket path
+    code, out, _ = run(
+        ["-c", "work", "add", "-l", "--local-socket", "/tmp/docker.sock",
+         "--remote-socket", "/var/run/docker.sock"],
+        ws_with_conn,
+    )
+    assert code == 0, out
+    code, out, _ = run(["-c", "work", "rm", "-l", "/tmp/docker.sock"], ws_with_conn)
+    assert code == 0, out
+
+
 # ---------------------------------------------------------------------------
 # stop — was broken (missing force kwarg); verify it now works
 # ---------------------------------------------------------------------------

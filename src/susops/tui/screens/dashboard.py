@@ -223,11 +223,11 @@ class DashboardScreen(Screen):
         self.query_one("#domain-section", VerticalScroll).border_title = "Domain / IP / CIDR"
         self.query_one("#forward-content", Static).border_title = "Forwards"
         self.query_one("#share-content", Static).border_title = "Shares"
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        self._prev_on_log = mgr.on_log
-        mgr.on_log = self._on_new_log
-        self._prev_on_error = mgr.on_error
-        mgr.on_error = self._on_new_error
+        # Errors and logs come from the daemon over RPC/SSE, not via the
+        # facade's in-process on_log/on_error callbacks (those never fire on a
+        # SusOpsClient proxy). Log lines arrive by polling get_logs in the
+        # refresh worker; error toasts arrive as SSE "error" events handled in
+        # the listener below.
         self.set_interval(1.0, self._tick_refresh)
         self.refresh_status()
         self._start_sse_listener()
@@ -243,9 +243,6 @@ class DashboardScreen(Screen):
 
     def on_unmount(self) -> None:
         self._sse_active = False
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        mgr.on_log = self._prev_on_log
-        mgr.on_error = self._prev_on_error
 
     def _tick_refresh(self) -> None:
         """Adaptive refresh: every 1s when connections are active, every 10s when idle."""
@@ -282,6 +279,19 @@ class DashboardScreen(Screen):
         except Exception:
             pass
 
+    def _notify_sse_error(self, buf: str) -> None:
+        """Extract the message from an SSE 'error' event block and toast it."""
+        import json
+        for ln in buf.splitlines():
+            if ln.startswith("data:"):
+                try:
+                    msg = json.loads(ln[len("data:"):].strip()).get("message")
+                except Exception:
+                    msg = None
+                if msg:
+                    self._on_new_error(msg)
+                return
+
     @work(thread=True)
     def refresh_status(self) -> None:
         mgr = self.app.manager  # type: ignore[attr-defined]
@@ -309,6 +319,7 @@ class DashboardScreen(Screen):
             shares = mgr.list_shares()
             config = mgr.list_config()
             reconnect = mgr.reconnect_monitor_info()
+            logs = mgr.get_logs(500)
         except Exception as exc:
             # Any RPC failure / YAML parse error / unexpected exception
             # raised here becomes a Textual WorkerFailed that crashes the
@@ -323,7 +334,7 @@ class DashboardScreen(Screen):
             return
         self.app.call_from_thread(
             self._apply_status, result, extras, bw, bw_totals, uptimes, shares,
-            config, reconnect, bw_history_seed,
+            config, reconnect, bw_history_seed, logs,
         )
 
     def _apply_status(
@@ -337,10 +348,13 @@ class DashboardScreen(Screen):
             config,
             reconnect: dict,
             bw_history_seed: dict | None = None,
+            logs: list | None = None,
     ) -> None:
         bw_history_seed = bw_history_seed or {}
         self._last_config = config
         self._last_shares = shares
+        if logs is not None:
+            self._logs = logs
 
         # Build conn_data with forwards from config
         conn_map = {c.tag: c for c in config.connections}
@@ -456,13 +470,14 @@ class DashboardScreen(Screen):
         # and browser proxy config. (127.0.0.1 is what aiohttp binds to, but
         # the display is for humans.) Label column padded to 10 chars so
         # "Daemon RPC" / "Daemon SSE" / "PAC" / "Reconnect" all align.
-        try:
-            rpc_port = int((workspace / "pids" / "susops-services.port").read_text().strip())
+        from susops.client import read_daemon_port
+        rpc_port = read_daemon_port(workspace)
+        if rpc_port is not None:
             rpc_line = (
                 f"[green]●[/green] [bold]Daemon RPC[/bold] "
                 f"[link='http://localhost:{rpc_port}/rpc']localhost:{rpc_port}/rpc[/link]"
             )
-        except (OSError, ValueError):
+        else:
             rpc_line = "[dim]○ [bold]Daemon RPC[/bold] not running[/dim]"
 
         # SSE port is held by mgr._status_server, exposed via get_status_url().
@@ -573,14 +588,18 @@ class DashboardScreen(Screen):
         return "\n".join(lines)
 
     def _update_detail_panel(self, tag: str | None) -> None:
-        # Logs are global (not per-connection) — populate before any
-        # per-tag branch returns. Previously this lived in the per-tag
-        # block so the Logs tab was empty on the default "All" view.
+        # Logs are global (not per-connection). They're fetched off the UI
+        # thread by refresh_status and cached in self._logs — never fetched
+        # here (this runs on the UI thread, and get_logs is a blocking RPC).
+        # Only re-render when the log content actually changed, instead of
+        # clearing and rewriting 500 lines on every tick.
+        logs = getattr(self, "_logs", [])
         log_widget = self.query_one("#detail-logs", RichLog)
-        log_widget.clear()
-        mgr = self.app.manager  # type: ignore[attr-defined]
-        for line in mgr.get_logs(500):
-            log_widget.write(_format_log_line(line))
+        if logs != getattr(self, "_rendered_logs", None):
+            log_widget.clear()
+            for line in logs:
+                log_widget.write(_format_log_line(line))
+            self._rendered_logs = list(logs)
 
         # All view — aggregate stats + combined bandwidth charts
         if tag is None:
@@ -825,6 +844,8 @@ class DashboardScreen(Screen):
                         if buf.endswith("\n\n"):
                             if any(e in buf for e in ("event: state", "event: share", "event: forward")):
                                 self.app.call_from_thread(self.refresh_status)
+                            elif "event: error" in buf:
+                                self._notify_sse_error(buf)
                             buf = ""
             except Exception:
                 for _ in range(max(1, int(backoff * 10))):

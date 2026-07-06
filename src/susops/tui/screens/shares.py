@@ -179,8 +179,23 @@ class SharesScreen(Screen):
         self._reload()
         self.set_interval(2.0, self._reload)
 
+    @work(thread=True, exclusive=True, group="shares-reload")
     def _reload(self) -> None:
-        new_shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
+        # Fetch off the UI thread: list_shares() is a blocking RPC that can
+        # take up to the daemon's timeout, and it raises DaemonUnavailableError
+        # when the daemon is down — running it inline in the set_interval
+        # callback froze and (on error) tore down the whole TUI.
+        try:
+            new_shares = self.app.manager.list_shares()  # type: ignore[attr-defined]
+        except Exception as exc:
+            self.app.call_from_thread(
+                self.query_one("#share-status", Label).update,
+                f"[red]Daemon unavailable: {exc}[/red]",
+            )
+            return
+        self.app.call_from_thread(self._apply_shares, new_shares)
+
+    def _apply_shares(self, new_shares: list) -> None:
         lv = self.query_one("#share-list", ListView)
 
         def _label(info) -> str:
@@ -282,12 +297,12 @@ class SharesScreen(Screen):
             text += (
                 f"\n[bold]Fetch command:[/bold]\n"
                 f"  [dim]susops -c {info.conn_tag} fetch {info.port} {info.password}[/dim]"
-                f"\n\n[dim]Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
+                f"\n\n[dim]Press [bold]x[/bold] to stop · [bold]d[/bold] to delete[/dim]"
             )
         elif info.stopped:
-            text += "\n[dim]Press [bold]s[/bold] to restart · [bold]x[/bold] to delete[/dim]"
+            text += "\n[dim]Press [bold]s[/bold] to restart · [bold]d[/bold] to delete[/dim]"
         else:
-            text += "\n[dim]Will auto-resume when connection starts · Press [bold]d[/bold] to stop · [bold]x[/bold] to delete[/dim]"
+            text += "\n[dim]Will auto-resume when connection starts · Press [bold]x[/bold] to stop · [bold]d[/bold] to delete[/dim]"
         self.query_one("#share-detail", Static).update(text)
 
     def action_open_share(self, file_path: str) -> None:

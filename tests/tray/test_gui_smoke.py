@@ -290,11 +290,43 @@ def test_create_forward_switches_to_edit_form(tray_proc):
     # The detail must have switched to the new forward's editor, not stayed on
     # the create form.
     assert dump["create_kind"] is None
-    assert dump["selected"] == ["forward", "work", "local", 5432]
+    assert dump["selected"] == ["forward", "work", "local", "5432"]
     assert "forward.create" not in dump["detail_actions"], \
         f"still showing the create form: {dump['detail_title']!r}"
     assert "forward.remove" in dump["detail_actions"]
     assert c.list_config().connections[0].forwards.local[0].src_port == 5432
+
+
+def test_create_unix_socket_forward_via_mode_popup(tray_proc):
+    """Creating a unix->unix forward through the Port|Socket mode popups writes
+    a socket forward (src_port 0, socket paths set)."""
+    from susops.client import SusOpsClient
+    c = SusOpsClient(workspace=tray_proc.workspace)
+    c.add_connection("work", "user@bastion")
+
+    assert tray_proc.send("open-config forwards").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("open") and d.get("category") == "forwards",
+    )
+    assert tray_proc.send("add").get("create_kind") == "forward"
+    tray_proc.send("set-field conn_tag work")
+    tray_proc.send("set-field src_mode Socket")
+    tray_proc.send("set-field src_socket /tmp/docker.sock")
+    tray_proc.send("set-field dst_mode Socket")
+    tray_proc.send("set-field dst_socket /var/run/docker.sock")
+
+    assert tray_proc.send("action forward.create").get("ok")
+    _wait_for(
+        lambda: tray_proc.send("dump-window"),
+        lambda d: d.get("create_kind") is None
+        and "forward.create" not in (d.get("detail_actions") or []),
+        timeout=6.0,
+    )
+    fw = c.list_config().connections[0].forwards.local[0]
+    assert fw.src_socket == "/tmp/docker.sock"
+    assert fw.dst_socket == "/var/run/docker.sock"
+    assert fw.src_port == 0 and fw.dst_port == 0
 
 
 def test_inline_edit_connection(tray_proc):

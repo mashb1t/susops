@@ -13,6 +13,20 @@ from susops.client import (
 )
 
 
+def test_abs_path_resolves_relative_against_cwd():
+    from pathlib import Path
+    from susops.client import _abs_path
+    rel = Path("some/rel/file.txt")
+    out = _abs_path(rel)
+    assert out.is_absolute()
+    assert out == Path(os.path.abspath(rel))
+    # Absolute paths and non-Path values pass through unchanged.
+    absolute = Path("/tmp/x")
+    assert _abs_path(absolute) == absolute
+    assert _abs_path("string") == "string"
+    assert _abs_path(5) == 5
+
+
 @pytest.fixture
 def ws(tmp_path):
     return tmp_path

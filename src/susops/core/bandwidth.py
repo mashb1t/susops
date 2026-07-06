@@ -27,6 +27,11 @@ class BandwidthSampler:
     INTERVAL = 1.0
     _HISTORY_MAX = 60
     _HISTORY_FILE = "bandwidth_history.json"
+    # Persist history to disk at most this often. In-memory history stays
+    # current (get_history reads memory); this only bounds disk writes so the
+    # sampler doesn't rewrite the JSON every single second for the daemon's
+    # whole lifetime. A crash loses at most this many seconds of rate history.
+    _SAVE_INTERVAL_S = 15.0
 
     def __init__(
             self,
@@ -50,6 +55,7 @@ class BandwidthSampler:
         self._on_sample = on_sample
         # Per-tag rolling history: tag -> list of [rx_bps, tx_bps] (up to _HISTORY_MAX samples)
         self._history: dict[str, list[list[float]]] = {}
+        self._last_save_t = 0.0
         self._load_history()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="susops-bw-sampler"
@@ -84,6 +90,14 @@ class BandwidthSampler:
             path.write_text(json.dumps(self._history))
         except Exception:
             pass
+
+    def _maybe_save_history(self, now: float) -> None:
+        """Persist at most once per _SAVE_INTERVAL_S to avoid a disk write on
+        every 1 s sample for the daemon's entire lifetime."""
+        if now - self._last_save_t < self._SAVE_INTERVAL_S:
+            return
+        self._last_save_t = now
+        self._save_history()
 
     def _run(self) -> None:
         while True:
@@ -222,7 +236,7 @@ class BandwidthSampler:
             self._rates = new_rates
             self._prev_nettop = per_pid
             self._prev_nettop_t = now
-            self._save_history()
+            self._maybe_save_history(now)
         return True
 
     def _sample(self) -> None:
@@ -320,7 +334,7 @@ class BandwidthSampler:
                         tag_hist.append([rx, tx])
                         if len(tag_hist) > self._HISTORY_MAX:
                             del tag_hist[:-self._HISTORY_MAX]
-                    self._save_history()
+                    self._maybe_save_history(now)
 
             self._prev_net = (sys_rx, sys_tx, now)
             self._prev_chars = dict(proc_chars)

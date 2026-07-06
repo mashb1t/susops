@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,14 +34,20 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     file (SusOpsClient polls the port file every 100 ms).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
+    # Unique tmp name per call (mkstemp) so two threads in the same process
+    # writing the same PID file don't collide on one path — a PID-keyed name
+    # let the loser's chmod/replace hit FileNotFoundError after a peer renamed
+    # it away. (config.save_config was fixed the same way.)
+    fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
     try:
-        os.write(fd, text.encode())
-    finally:
-        os.close(fd)
-    os.chmod(tmp, mode)  # honour mode even if the file pre-existed
-    os.replace(tmp, path)
+        with os.fdopen(fd, "wb") as f:
+            f.write(text.encode())
+        os.chmod(tmp, mode)  # honour mode even if the file pre-existed
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 class ProcessManager:
@@ -213,6 +220,13 @@ class ProcessManager:
     def _wait_for_exit(self, pid: int) -> bool:
         for _ in range(_STOP_WAIT_TRIES):
             time.sleep(_STOP_WAIT_INTERVAL)
+            # Reap first: a signalled child that already exited lingers as a
+            # zombie, and os.kill(pid, 0) reports zombies as alive — so without
+            # reaping, stop() would burn the full 2s window and spuriously
+            # escalate to SIGKILL on a process that's already dead. Reaping our
+            # own child clears the zombie so _alive() sees it gone. No-op for
+            # non-child PIDs (adopted masters).
+            self._reap(pid)
             if not self._alive(pid):
                 return True
         return False

@@ -42,6 +42,9 @@ __all__ = [
     "save_config",
     "get_connection",
     "get_default_connection",
+    "validate_pac_host",
+    "validate_jump_host",
+    "validate_socket_path",
     "WORKSPACE_DEFAULT",
     "CONFIG_FILENAME",
 ]
@@ -69,14 +72,76 @@ def _validate_host_token(value: str, field: str) -> str:
     return value
 
 
+# PAC hosts are interpolated into the generated FindProxyForURL JavaScript
+# (single-quoted string literals), so they must not carry quotes, backslashes,
+# whitespace or control chars that could break or inject into the PAC. Unlike
+# ssh_host they legitimately contain '*' and '?' (shExpMatch wildcards) and '/'
+# (CIDR), so those are allowed here.
+_FORBIDDEN_PAC_HOST_CHARS = frozenset(" \t\r\n;|&$`'\"<>()\\!#")
+
+
+def validate_jump_host(value: str) -> str:
+    """Validate an ssh -J ProxyJump chain (empty = direct). Each comma-separated
+    hop is validated as a host token."""
+    if not value:
+        return value
+    for hop in value.split(","):
+        _validate_host_token(hop, "jump_host")
+    return value
+
+
+def validate_socket_path(value: str) -> str:
+    """Validate a Unix-domain-socket path for an ssh -L/-R forward endpoint.
+
+    Empty is allowed (that endpoint is TCP instead). A non-empty path must be
+    absolute (ssh disambiguates a socket from host:port purely by a leading
+    '/'), must not contain ':' (the forward-spec delimiter), must not contain
+    the shell metacharacters _validate_host_token forbids (except '/'), and
+    must fit the platform sun_path limit (~104 bytes on macOS).
+    """
+    if not value:
+        return value
+    if not value.startswith("/"):
+        raise ValueError(f"socket path {value!r} must be absolute (start with '/')")
+    if ":" in value:
+        raise ValueError(f"socket path {value!r} must not contain ':'")
+    bad = sorted({c for c in value if (c in _FORBIDDEN_HOST_CHARS and c != "/") or ord(c) < 0x20})
+    if bad:
+        raise ValueError(
+            f"socket path {value!r} contains forbidden character(s) {bad!r}"
+        )
+    if len(value.encode()) >= 104:
+        raise ValueError(
+            f"socket path {value!r} is too long (>= 104 bytes; Unix sun_path limit)"
+        )
+    return value
+
+
+def validate_pac_host(value: str) -> str:
+    if not value or not value.strip():
+        raise ValueError("pac_hosts entries must not be empty")
+    bad = sorted({c for c in value if c in _FORBIDDEN_PAC_HOST_CHARS or ord(c) < 0x20})
+    if bad:
+        raise ValueError(
+            f"PAC host {value!r} contains forbidden character(s) {bad!r}: "
+            f"whitespace and shell/JS metacharacters are not allowed"
+        )
+    return value
+
+
 class PortForward(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     tag: str = ""
     src_addr: str = "localhost"
-    src_port: int
+    src_port: int = 0
     dst_addr: str = "localhost"
-    dst_port: int
+    dst_port: int = 0
+    # Optional Unix-domain-socket path per endpoint. Empty = that side is TCP
+    # (uses addr:port). Non-empty = bind/forward a filesystem socket instead of
+    # a port (ssh -L/-R streamlocal), e.g. /var/run/docker.sock.
+    src_socket: str = ""
+    dst_socket: str = ""
     tcp: bool = True
     udp: bool = False
     enabled: bool = True
@@ -96,12 +161,37 @@ class PortForward(BaseModel):
     def _validate_addr(cls, v: str, info) -> str:
         return _validate_host_token(v, info.field_name)
 
+    @field_validator("src_socket", "dst_socket")
+    @classmethod
+    def _validate_socket(cls, v: str) -> str:
+        return validate_socket_path(v)
+
     @model_validator(mode="after")
     def require_at_least_one_protocol(self) -> "PortForward":
         # Runs after handle_legacy_schema has already normalised the dict,
         # so self.tcp and self.udp are already coerced to bool.
         if not self.tcp and not self.udp:
             raise ValueError("At least one of tcp/udp must be True")
+        return self
+
+    @model_validator(mode="after")
+    def validate_endpoints(self) -> "PortForward":
+        # Each endpoint is exactly one of TCP (port > 0) or a Unix socket.
+        for side, port, sock in (
+            ("source", self.src_port, self.src_socket),
+            ("destination", self.dst_port, self.dst_socket),
+        ):
+            has_port = port > 0
+            has_sock = bool(sock)
+            if has_port == has_sock:
+                raise ValueError(
+                    f"{side} must set exactly one of a port (>0) or a socket path"
+                )
+        # Unix sockets are stream-only, so a socket forward is TCP-only.
+        if (self.src_socket or self.dst_socket) and self.udp:
+            raise ValueError("UDP is not supported for Unix-socket forwards")
+        if (self.src_socket or self.dst_socket) and not self.tcp:
+            raise ValueError("Unix-socket forwards must have tcp=True")
         return self
 
 
@@ -124,6 +214,9 @@ class Connection(BaseModel):
     ssh_host: str
     socks_proxy_port: int = 0
     enabled: bool = True
+    # ssh -J jump host(s). Empty = direct. May be a comma-separated chain
+    # (e.g. "user@bastion1,user@bastion2") per ssh ProxyJump syntax.
+    jump_host: str = ""
     forwards: Forwards = Forwards()
     pac_hosts: list[str] = []
     pac_hosts_disabled: list[str] = []
@@ -133,6 +226,16 @@ class Connection(BaseModel):
     @classmethod
     def _validate_ssh_host(cls, v: str) -> str:
         return _validate_host_token(v, "ssh_host")
+
+    @field_validator("jump_host")
+    @classmethod
+    def _validate_jump_host(cls, v: str) -> str:
+        return validate_jump_host(v)
+
+    @field_validator("pac_hosts", "pac_hosts_disabled")
+    @classmethod
+    def _validate_pac_hosts(cls, v: list[str]) -> list[str]:
+        return [validate_pac_host(h) for h in v]
 
 
 class AppConfig(BaseModel):
