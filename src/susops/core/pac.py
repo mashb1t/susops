@@ -1,7 +1,9 @@
 """PAC file generation and Python HTTP server for SusOps."""
 from __future__ import annotations
 
-import re
+import ipaddress
+import os
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -22,20 +24,34 @@ def _is_wildcard(host: str) -> bool:
 
 
 def _is_cidr(host: str) -> bool:
-    return re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', host) is not None
+    # ipaddress does the range validation the old \d+/\d+ regex skipped, so a
+    # value like "10.0.0.0/99" is rejected here instead of crashing
+    # cidr_to_netmask() and aborting PAC generation for every connection.
+    if host.count("/") != 1:
+        return False
+    try:
+        return isinstance(ipaddress.ip_network(host, strict=False), ipaddress.IPv4Network)
+    except ValueError:
+        return False
+
+
+def _js_str(value: str) -> str:
+    """Escape a string for embedding in a single-quoted JS literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _pac_rule(host: str, socks_port: int) -> str:
     """Generate a single PAC rule line for a host/CIDR/wildcard."""
     proxy = f"SOCKS5 127.0.0.1:{socks_port}"
     if _is_wildcard(host):
-        return f"  if (shExpMatch(host, '{host}')) return '{proxy}';"
+        return f"  if (shExpMatch(host, '{_js_str(host)}')) return '{proxy}';"
     if _is_cidr(host):
         net, bits = host.split("/")
         mask = cidr_to_netmask(int(bits))
         return f"  if (isInNet(host, '{net}', '{mask}')) return '{proxy}';"
     # Plain hostname
-    return f"  if (host == '{host}' || dnsDomainIs(host, '.{host}')) return '{proxy}';"
+    esc = _js_str(host)
+    return f"  if (host == '{esc}' || dnsDomainIs(host, '.{esc}')) return '{proxy}';"
 
 
 def generate_pac(config: "SusOpsConfig", active_tags: set[str] | None = None) -> str:
@@ -63,7 +79,16 @@ def write_pac_file(config: "SusOpsConfig", workspace: Path, active_tags: set[str
     """Write the PAC file to <workspace>/susops.pac and return its path."""
     pac_path = workspace / "susops.pac"
     pac_content = generate_pac(config, active_tags=active_tags)
-    pac_path.write_text(pac_content)
+    # Atomic write (temp + rename) so a browser fetching the PAC concurrently
+    # never reads a truncated file — write_text() truncates in place first.
+    fd, tmp_name = tempfile.mkstemp(prefix="susops.pac.", suffix=".tmp", dir=str(workspace))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(pac_content)
+        os.replace(tmp_name, pac_path)
+    except Exception:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return pac_path
 
 

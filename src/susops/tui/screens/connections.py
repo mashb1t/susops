@@ -4,24 +4,44 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen, ModalScreen
+from textual.suggester import SuggestFromList
 from textual.widgets import (
     Button,
     Checkbox,
     DataTable,
     Input,
     Label,
+    RadioButton,
+    RadioSet,
     Select,
     Static,
     TabbedContent,
     TabPane,
 )
 
-from susops.core.config import PortForward
+from susops.core.config import PortForward, validate_socket_path
 from susops.core.ports import is_port_free, validate_port
+from susops.core.ssh import build_fwd_spec
 from susops.core.ssh_config import get_ssh_hosts
 from susops.tui.screens import _CollapsingLabel, compose_footer, fmt_bps, fmt_bytes, proto_label, status_dot
+
+
+_BIND_PRESETS = ["localhost", "172.17.0.1", "0.0.0.0"]
+
+
+def _ep_cols(addr: str, port: int, sock: str) -> tuple[str, str]:
+    """Return (port_col, bind_col) for a forward endpoint: the socket path in
+    the port column (bind blank) for a socket, else the port + bind address."""
+    if sock:
+        return sock, ""
+    return str(port), addr
+
+
+def _src_key(fw: PortForward) -> str:
+    """A forward's source key for row identity / removal: socket path or port."""
+    return fw.src_socket or str(fw.src_port)
 
 
 def _select_str(screen: ModalScreen, selector_id: str, default: str = "") -> str:
@@ -68,6 +88,8 @@ class _AddConnectionDialog(ModalScreen):
             else:
                 yield Label("SSH host (user@host):")
             yield Input(placeholder="user@hostname", id="ssh-host")
+            yield Label("Jump host (ssh -J, optional):")
+            yield Input(placeholder="user@bastion (comma-separated chain)", id="jump-host")
             yield _CollapsingLabel("", id="error", classes="modal-error")
             with Horizontal(classes="modal-btn-row"):
                 yield Button("Add", id="btn-ok", variant="success")
@@ -102,7 +124,8 @@ class _AddConnectionDialog(ModalScreen):
         if port != 0 and not is_port_free(port):
             error_label.update(f"Port {port} is already in use.")
             return
-        self.dismiss({"tag": tag, "host": host, "port": port})
+        jump = self.query_one("#jump-host", Input).value.strip()
+        self.dismiss({"tag": tag, "host": host, "port": port, "jump_host": jump})
 
 
 class _AddPacHostDialog(ModalScreen):
@@ -171,15 +194,42 @@ class _AddPacHostDialog(ModalScreen):
 class _AddForwardDialog(ModalScreen):
     """Modal for adding a local or remote port forward."""
 
-    def __init__(self, direction: str, connections: list[str], **kwargs) -> None:
+    def __init__(self, direction: str, connections: list[str],
+                 binds: list[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._direction = direction
         self._connections = connections
+        # Suggest the common presets first, then any bind address already used
+        # by another forward (so a custom bind typed once autocompletes later).
+        seen: dict[str, None] = dict.fromkeys(_BIND_PRESETS)
+        for b in (binds or []):
+            if b:
+                seen.setdefault(b, None)
+        self._bind_suggestions = list(seen)
+
+    def _endpoint_column(self, prefix: str, header: str, bind_suggester):
+        """One endpoint editor: a Port|Socket toggle that swaps a (bind + port)
+        group for a single socket-path field."""
+        with Vertical(classes="modal-field"):
+            yield Label(header)
+            with RadioSet(id=f"{prefix}-mode", classes="endpoint-mode"):
+                yield RadioButton("Port", value=True, id=f"{prefix}-mode-port")
+                yield RadioButton("Socket", id=f"{prefix}-mode-socket")
+            with Vertical(id=f"{prefix}-port-group", classes="endpoint-group"):
+                yield Label("Bind:")
+                yield Input(value="localhost", id=f"{prefix}-addr", suggester=bind_suggester)
+                yield Label("Port:")
+                yield Input(placeholder="8080", id=f"{prefix}-port")
+            with Vertical(id=f"{prefix}-socket-group", classes="endpoint-group"):
+                yield Label("Socket path:")
+                yield Input(placeholder="/var/run/docker.sock", id=f"{prefix}-socket")
 
     def compose(self) -> ComposeResult:
         d = self._direction
         conn_options = [(tag, tag) for tag in self._connections]
-        bind_options = [("localhost", "localhost"), ("172.17.0.1", "172.17.0.1"), ("0.0.0.0", "0.0.0.0")]
+        bind_suggester = SuggestFromList(self._bind_suggestions, case_sensitive=False)
+        src_hdr = "Source (local listen):" if d == "local" else "Source (remote listen):"
+        dst_hdr = "Destination (remote):" if d == "local" else "Destination (local):"
         with Static(classes="modal-dialog"):
             yield Label(f"[bold]Add {d.capitalize()} Forward[/bold]")
             with Horizontal(classes="modal-form-row"):
@@ -190,19 +240,8 @@ class _AddForwardDialog(ModalScreen):
                     yield Label("Label (optional):")
                     yield Input(placeholder="", id="tag")
             with Horizontal(classes="modal-form-row"):
-                with Static(classes="modal-field"):
-                    yield Label("Forward Local Port *:" if d == "local" else "Forward Remote Port *:")
-                    yield Input(placeholder="8080", id="src-port")
-                with Static(classes="modal-field"):
-                    yield Label("To Remote Port *:" if d == "local" else "To Local Port *:")
-                    yield Input(placeholder="8080", id="dst-port")
-            with Horizontal(classes="modal-form-row"):
-                with Static(classes="modal-field"):
-                    yield Label("Local Bind:" if d == "local" else "Remote Bind:")
-                    yield Select(bind_options, allow_blank=False, id="src-addr")
-                with Static(classes="modal-field"):
-                    yield Label("Remote Bind:" if d == "local" else "Local Bind:")
-                    yield Select(bind_options, allow_blank=False, id="dst-addr")
+                yield from self._endpoint_column("src", src_hdr, bind_suggester)
+                yield from self._endpoint_column("dst", dst_hdr, bind_suggester)
             yield Label("Protocol:")
             with Horizontal(classes="modal-proto-row"):
                 yield Checkbox("TCP", value=True, id="proto-tcp")
@@ -212,13 +251,40 @@ class _AddForwardDialog(ModalScreen):
                 yield Button("Add", id="btn-ok", variant="success")
                 yield Button("Cancel", id="btn-cancel")
 
+    def on_mount(self) -> None:
+        # Start each endpoint in Port mode: hide the socket sub-field.
+        for prefix in ("src", "dst"):
+            self.query_one(f"#{prefix}-socket-group").display = False
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        prefix = "src" if event.radio_set.id == "src-mode" else "dst"
+        is_port = event.radio_set.pressed_index == 0
+        self.query_one(f"#{prefix}-port-group").display = is_port
+        self.query_one(f"#{prefix}-socket-group").display = not is_port
+
+    def _resolve_endpoint(self, prefix: str, label: str):
+        """Read the active (Port or Socket) sub-field for one endpoint.
+        Returns ((port, socket, addr), None) or (None, error_message)."""
+        socket_mode = self.query_one(f"#{prefix}-mode", RadioSet).pressed_index == 1
+        if socket_mode:
+            path = self.query_one(f"#{prefix}-socket", Input).value.strip()
+            if not path:
+                return None, f"{label}: a socket path is required."
+            try:
+                return (0, validate_socket_path(path), "localhost"), None
+            except ValueError as e:
+                return None, str(e)
+        addr = self.query_one(f"#{prefix}-addr", Input).value.strip() or "localhost"
+        port_txt = self.query_one(f"#{prefix}-port", Input).value.strip()
+        if not port_txt or not port_txt.isdigit() or not validate_port(int(port_txt)):
+            return None, f"{label}: port must be a number between 1 and 65535."
+        return (int(port_txt), "", addr), None
+
     def on_button_pressed(self, event) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss(None)
             return
         conn = _select_str(self, "#conn")
-        src_addr = _select_str(self, "#src-addr", "localhost")
-        dst_addr = _select_str(self, "#dst-addr", "localhost")
         tag = self.query_one("#tag", Input).value.strip()
         tcp = self.query_one("#proto-tcp", Checkbox).value
         udp = self.query_one("#proto-udp", Checkbox).value
@@ -226,20 +292,31 @@ class _AddForwardDialog(ModalScreen):
         if not tcp and not udp:
             error_label.update("Select at least one protocol (TCP or UDP).")
             return
-        try:
-            src = int(self.query_one("#src-port", Input).value.strip())
-            dst = int(self.query_one("#dst-port", Input).value.strip())
-        except ValueError:
-            error_label.update("Ports must be valid numbers.")
+
+        src_ep, err = self._resolve_endpoint("src", "Source")
+        if err:
+            error_label.update(err)
             return
-        if not validate_port(src) or not validate_port(dst):
-            error_label.update("Ports must be between 1 and 65535.")
+        dst_ep, err = self._resolve_endpoint("dst", "Destination")
+        if err:
+            error_label.update(err)
             return
-        if self._direction == "local" and not is_port_free(src):
+        src, src_sock, src_addr = src_ep
+        dst, dst_sock, dst_addr = dst_ep
+        if (src_sock or dst_sock) and udp:
+            error_label.update("UDP is not supported for socket forwards.")
+            return
+        # Only a locally-bound TCP port on a known-local address can be
+        # reliably checked (a custom/non-local bind makes socket.bind fail with
+        # EADDRNOTAVAIL, which would read as a false "in use").
+        if (self._direction == "local" and not src_sock
+                and src_addr in _BIND_PRESETS
+                and not is_port_free(src, src_addr)):
             error_label.update(f"Local port {src} is already in use.")
             return
         self.dismiss({
             "conn": conn, "src": src, "dst": dst,
+            "src_socket": src_sock, "dst_socket": dst_sock,
             "src_addr": src_addr, "dst_addr": dst_addr,
             "tag": tag, "dir": self._direction,
             "tcp": tcp, "udp": udp,
@@ -398,10 +475,12 @@ class ConnectionsScreen(Screen):
             conn_running = _running(conn.tag)
             for fw in conn.forwards.local:
                 dot = _fw_dot(mgr, fw, conn.tag, "local", conn_running)
+                s_port, s_bind = _ep_cols(fw.src_addr, fw.src_port, fw.src_socket)
+                d_port, d_bind = _ep_cols(fw.dst_addr, fw.dst_port, fw.dst_socket)
                 local_rows.append((
-                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
-                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
-                    f"{conn.tag}:L:{fw.src_port}",
+                    (dot, conn.tag, s_port, s_bind,
+                     d_port, d_bind, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:L:{_src_key(fw)}",
                 ))
         self._reload_table(self.query_one("#tbl-local", DataTable), local_rows)
 
@@ -410,15 +489,31 @@ class ConnectionsScreen(Screen):
             conn_running = _running(conn.tag)
             for fw in conn.forwards.remote:
                 dot = _fw_dot(mgr, fw, conn.tag, "remote", conn_running)
+                s_port, s_bind = _ep_cols(fw.src_addr, fw.src_port, fw.src_socket)
+                d_port, d_bind = _ep_cols(fw.dst_addr, fw.dst_port, fw.dst_socket)
                 remote_rows.append((
-                    (dot, conn.tag, str(fw.src_port), fw.src_addr,
-                     str(fw.dst_port), fw.dst_addr, proto_label(fw), fw.tag or ""),
-                    f"{conn.tag}:R:{fw.src_port}",
+                    (dot, conn.tag, s_port, s_bind,
+                     d_port, d_bind, proto_label(fw), fw.tag or ""),
+                    f"{conn.tag}:R:{_src_key(fw)}",
                 ))
         self._reload_table(self.query_one("#tbl-remote", DataTable), remote_rows)
 
     def _conn_tags(self) -> list[str]:
         return [c.tag for c in self.app.manager.list_config().connections]  # type: ignore[attr-defined]
+
+    def _existing_binds(self) -> list[str]:
+        """Distinct bind addresses already used by any forward, so the add
+        dialog can autocomplete a custom bind typed once before."""
+        binds: dict[str, None] = {}
+        try:
+            for conn in self.app.manager.list_config().connections:  # type: ignore[attr-defined]
+                for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+                    for addr in (fw.src_addr, fw.dst_addr):
+                        if addr and not (addr in _BIND_PRESETS):
+                            binds.setdefault(addr, None)
+        except Exception:
+            pass
+        return list(binds)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         active = self.query_one("#editor-tabs", TabbedContent).active
@@ -497,31 +592,34 @@ class ConnectionsScreen(Screen):
                 return
             try:
                 row = tbl.get_row_at(tbl.cursor_row)
-                # row: Status, Connection, src_port, src_addr, dst_port, dst_addr, Protocol, Label
+                # row: Status, Connection, src(port|socket), src_bind, dst(port|socket), dst_bind, Protocol, Label
                 conn_tag = str(row[1])
-                src_port, src_addr = int(str(row[2])), str(row[3])
-                dst_port, dst_addr = int(str(row[4])), str(row[5])
+                src_key = str(row[2])
                 proto = str(row[6])
                 label = str(row[7])
                 conn = conn_map.get(conn_tag)
 
-                enabled_fwds = (conn.forwards.local if direction == "local" else conn.forwards.remote) if conn else []
-                fw = next((f for f in enabled_fwds if f.src_port == src_port), None)
-                enabled = fw.enabled if fw else False
+                fwds = (conn.forwards.local if direction == "local" else conn.forwards.remote) if conn else []
+                fw = next((f for f in fwds if _src_key(f) == src_key), None)
+                if fw is None:
+                    preview.update("")
+                    return
+                enabled = fw.enabled
                 state = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
 
-                port_free = is_port_free(src_port)
-                port_status = "[green]✓ free[/green]" if port_free else "[red]✗ in use[/red]"
-
-                fwd_spec = f"{src_addr}:{src_port}:{dst_addr}:{dst_port}"
+                src_disp = fw.src_socket or f"{fw.src_addr}:{fw.src_port}"
+                dst_disp = fw.dst_socket or f"{fw.dst_addr}:{fw.dst_port}"
                 flag = "-L" if direction == "local" else "-R"
-
                 lines = [
                     f"[bold]{label or conn_tag}[/bold]   {state}   {proto}   via {conn_tag}",
-                    f"Bind     {src_addr}:{src_port}  →  {dst_addr}:{dst_port}",
-                    f"Port {src_port}  {port_status}",
-                    f"Forward  ssh -O forward {flag} {fwd_spec}",
+                    f"Bind     {src_disp}  →  {dst_disp}",
                 ]
+                # Only a locally-bound TCP source port has a meaningful free/in-use check.
+                if direction == "local" and not fw.src_socket:
+                    port_free = is_port_free(fw.src_port, fw.src_addr or "localhost")
+                    status = "[green]✓ free[/green]" if port_free else "[red]✗ in use[/red]"
+                    lines.append(f"Port {fw.src_port}  {status}")
+                lines.append(f"Forward  ssh -O forward {flag} {build_fwd_spec(fw, direction)}")
                 preview.update("\n".join(lines))
             except Exception:
                 preview.update("")
@@ -790,7 +888,9 @@ class ConnectionsScreen(Screen):
             if not data:
                 return
             try:
-                self.app.manager.add_connection(data["tag"], data["host"], data["port"])  # type: ignore[attr-defined]
+                self.app.manager.add_connection(  # type: ignore[attr-defined]
+                    data["tag"], data["host"], data["port"],
+                    jump_host=data.get("jump_host", ""))
                 self._bg_reload()
             except ValueError as e:
                 self.app.notify(str(e), title="SusOps", severity="error")
@@ -847,8 +947,10 @@ class ConnectionsScreen(Screen):
             fw = PortForward(
                 src_addr=data["src_addr"],
                 src_port=data["src"],
+                src_socket=data.get("src_socket", ""),
                 dst_addr=data["dst_addr"],
                 dst_port=data["dst"],
+                dst_socket=data.get("dst_socket", ""),
                 tag=data["tag"],
                 tcp=data["tcp"],
                 udp=data["udp"],
@@ -862,7 +964,10 @@ class ConnectionsScreen(Screen):
             except ValueError as e:
                 self.app.notify(str(e), title="SusOps", severity="error")
 
-        self.app.push_screen(_AddForwardDialog(direction, self._conn_tags()), _on_result)
+        self.app.push_screen(
+            _AddForwardDialog(direction, self._conn_tags(), self._existing_binds()),
+            _on_result,
+        )
 
     def _do_rm_forward(self, direction: str) -> None:
         tbl_id = "#tbl-local" if direction == "local" else "#tbl-remote"
@@ -870,12 +975,15 @@ class ConnectionsScreen(Screen):
         if tbl.row_count == 0:
             return
         row = tbl.get_row_at(tbl.cursor_row)
-        port = int(str(row[2]))
+        conn_tag = str(row[1])
+        # Column 2 is the source endpoint: a socket path or a port number.
+        raw = str(row[2])
+        key: int | str = raw if raw.startswith("/") else int(raw)
         try:
             if direction == "local":
-                self.app.manager.remove_local_forward(port)  # type: ignore[attr-defined]
+                self.app.manager.remove_local_forward(key, conn_tag=conn_tag)  # type: ignore[attr-defined]
             else:
-                self.app.manager.remove_remote_forward(port)  # type: ignore[attr-defined]
+                self.app.manager.remove_remote_forward(key, conn_tag=conn_tag)  # type: ignore[attr-defined]
             self._bg_reload()
         except ValueError as e:
             self.app.notify(str(e), title="SusOps", severity="error")

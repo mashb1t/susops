@@ -2190,7 +2190,8 @@ class ConfigWindow:
         if kind == "domain":
             return build_domain_form(conn_tags, conn_tag=preselect)
         if kind == "forward":
-            return build_forward_form(conn_tags, conn_tag=preselect)
+            return build_forward_form(conn_tags, conn_tag=preselect,
+                                      binds=self._existing_binds())
         if kind == "share":
             return build_share_form(conn_tags, conn_tag=preselect)
         if kind == "fetch":
@@ -2243,6 +2244,20 @@ class ConfigWindow:
             return None
         return next((c for c in self._cfg.connections if c.tag == tag), None)
 
+    def _existing_binds(self):
+        """Distinct bind addresses already used by any forward, for the forward
+        form's bind autocomplete."""
+        from susops.tray.config_window_model import _BIND_PRESETS
+        binds: dict = {}
+        if self._cfg is None:
+            return []
+        for conn in self._cfg.connections:
+            for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+                for addr in (fw.src_addr, fw.dst_addr):
+                    if addr and addr not in _BIND_PRESETS:
+                        binds.setdefault(addr, None)
+        return list(binds)
+
     def _build_detail_spec(self, identity: tuple):
         """Route an identity tuple to its DetailSpec builder. Returns None when
         the referenced item has vanished from config."""
@@ -2274,17 +2289,19 @@ class ConfigWindow:
             return build_domain_form(conn_tags, conn_tag=conn_tag, host=host,
                                      status=st, conn=conn)
         if kind == "forward":
-            _, conn_tag, direction, src_port = identity
+            from susops.tray.config_window_model import _fw_src_key
+            _, conn_tag, direction, src_key = identity
             conn = self._conn_by_tag(conn_tag)
             if conn is None:
                 return None
             fws = conn.forwards.local if direction == "local" \
                 else conn.forwards.remote
-            fw = next((f for f in fws if f.src_port == src_port), None)
+            fw = next((f for f in fws if _fw_src_key(f) == str(src_key)), None)
             if fw is None:
                 return None
             return build_forward_form(conn_tags, fw=fw, direction=direction,
-                                      conn_tag=conn_tag, statuses=self._statuses)
+                                      conn_tag=conn_tag, statuses=self._statuses,
+                                      binds=self._existing_binds())
         if kind == "share":
             port = identity[1]
             info = next((s for s in self._shares if s.port == port), None)
@@ -2699,11 +2716,16 @@ class ConfigWindow:
             if f.key in consumed:
                 continue
             if f.key == "src_addr" and "src_port" in by_key:
-                rows.append({"label": "Source",
+                # When a Port|Socket mode popup gates this endpoint, the popup
+                # row is labeled "Source"/"Destination"; the bind+port pair is
+                # just "Port".
+                label = "Port" if "src_mode" in by_key else "Source"
+                rows.append({"label": label,
                              "fields": [f, by_key["src_port"]]})
                 consumed.add("src_port")
             elif f.key == "dst_addr" and "dst_port" in by_key:
-                rows.append({"label": "Destination",
+                label = "Port" if "dst_mode" in by_key else "Destination"
+                rows.append({"label": label,
                              "fields": [f, by_key["dst_port"]]})
                 consumed.add("dst_port")
             else:
@@ -2781,7 +2803,36 @@ class ConfigWindow:
                 self._render_row_controls(card, row, value_x, ry, value_w)
             else:
                 self._render_row_static(card, row, value_x, ry, value_w)
+        # Apply initial enabled/disabled state for any gating popups now that
+        # all sibling widgets exist.
+        if spec.editable:
+            for f in spec.fields:
+                if getattr(f, "enables", None):
+                    self._apply_field_enables(f)
         return card
+
+    def _apply_field_enables(self, f) -> None:
+        """Enable the fields listed for the gating popup's current selection and
+        disable the rest of its `enables` union (Port|Socket toggle)."""
+        popup = self._field_widgets.get(f.key)
+        if popup is None:
+            return
+        try:
+            selected = str(popup.titleOfSelectedItem() or "")
+        except Exception:
+            return
+        all_keys: set = set()
+        for keys in f.enables.values():
+            all_keys.update(keys)
+        enabled = set(f.enables.get(selected, []))
+        for key in all_keys:
+            w = self._field_widgets.get(key)
+            if w is None:
+                continue
+            try:
+                w.setEnabled_(key in enabled)
+            except Exception:
+                pass
 
     def _row_has_tall_control(self, row) -> bool:
         """True when the row renders a bezeled control (text/secure/combo/popup/
@@ -2896,8 +2947,17 @@ class ConfigWindow:
                 popup.addItemWithTitle_(str(opt))
             if f.value:
                 popup.selectItemWithTitle_(str(f.value))
-            handler = _get_action_handler_cls().alloc().initWithCallback_(
-                lambda _s: self._mark_dirty())
+            enables = getattr(f, "enables", None)
+            if enables:
+                # A gating popup (e.g. Port|Socket): on change, re-apply which
+                # sibling fields are enabled, plus the usual dirty mark.
+                def _cb(_s, ff=f):
+                    self._mark_dirty()
+                    self._apply_field_enables(ff)
+                handler = _get_action_handler_cls().alloc().initWithCallback_(_cb)
+            else:
+                handler = _get_action_handler_cls().alloc().initWithCallback_(
+                    lambda _s: self._mark_dirty())
             self._handlers.append(handler)
             popup.setTarget_(handler)
             popup.setAction_("fire:")

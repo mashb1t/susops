@@ -29,6 +29,20 @@ def test_add_connection(mgr):
     assert len(cfg.connections) == 1
 
 
+def test_add_connection_with_jump_host(mgr):
+    conn = mgr.add_connection("work", "user@target", jump_host="user@bastion")
+    assert conn.jump_host == "user@bastion"
+    assert mgr.list_config().connections[0].jump_host == "user@bastion"
+
+
+def test_update_connection_sets_and_clears_jump_host(mgr):
+    mgr.add_connection("work", "user@target")
+    mgr.update_connection("work", jump_host="user@bastion", restart=False)
+    assert mgr.list_config().connections[0].jump_host == "user@bastion"
+    mgr.update_connection("work", jump_host="", restart=False)
+    assert mgr.list_config().connections[0].jump_host == ""
+
+
 def test_add_duplicate_connection_raises(mgr):
     mgr.add_connection("work", "user@work.example.com")
     with pytest.raises(ValueError, match="already exists"):
@@ -170,6 +184,90 @@ def test_remove_local_forward(mgr):
     mgr.remove_local_forward(3306)
     conn = mgr.list_config().connections[0]
     assert conn.forwards.local == []
+
+
+def test_import_ssh_config_forwards(mgr, tmp_path, monkeypatch):
+    ssh_cfg = tmp_path / "ssh_config"
+    ssh_cfg.write_text(
+        "Host target\n"
+        "    LocalForward 5432 db:5432\n"
+        "    RemoteForward 8080 localhost:8080\n"
+        "    DynamicForward 1080\n"
+    )
+    import susops.core.ssh_config as sc
+    monkeypatch.setattr(sc, "_SSH_CONFIG", ssh_cfg)
+    mgr.add_connection("c", "target")  # ssh_host must match the Host token
+    counts = mgr.import_ssh_config_forwards("c")
+    assert counts == {"local": 1, "remote": 1, "dynamic": 1}
+    conn = mgr.list_config().connections[0]
+    assert conn.forwards.local[0].src_port == 5432
+    assert conn.forwards.remote[0].src_port == 8080
+    assert conn.socks_proxy_port == 1080
+
+
+def test_remove_forward_ambiguous_port_requires_conn_tag(mgr):
+    # Same remote src_port on two connections must not be silently wiped from
+    # both when no conn_tag is given.
+    mgr.add_connection("a", "user@a.com")
+    mgr.add_connection("b", "user@b.com")
+    mgr.add_remote_forward("a", PortForward(src_port=8080, dst_port=8080))
+    mgr.add_remote_forward("b", PortForward(src_port=8080, dst_port=8080))
+    with pytest.raises(ValueError, match="multiple connections"):
+        mgr.remove_remote_forward(8080)
+    # Both still present.
+    cfg = mgr.list_config()
+    assert all(len(c.forwards.remote) == 1 for c in cfg.connections)
+    # Scoped removal only touches the named connection.
+    mgr.remove_remote_forward(8080, conn_tag="a")
+    by_tag = {c.tag: c for c in mgr.list_config().connections}
+    assert by_tag["a"].forwards.remote == []
+    assert len(by_tag["b"].forwards.remote) == 1
+
+
+def test_add_and_remove_unix_socket_forward(mgr):
+    mgr.add_connection("c", "user@host")
+    # unix→unix (docker), tagged
+    mgr.add_local_forward("c", PortForward(
+        src_socket="/tmp/docker.sock", dst_socket="/var/run/docker.sock", tag="docker"))
+    # TCP→unix (postgres)
+    mgr.add_local_forward("c", PortForward(
+        src_port=5432, dst_socket="/var/run/pg.sock"))
+    local = mgr.list_config().connections[0].forwards.local
+    assert len(local) == 2
+    # dedup by source key (socket path)
+    with pytest.raises(ValueError, match="already exists"):
+        mgr.add_local_forward("c", PortForward(src_socket="/tmp/docker.sock", dst_socket="/x"))
+    # remove by socket path
+    mgr.remove_local_forward("/tmp/docker.sock", conn_tag="c")
+    # remove the TCP→unix one by its src port
+    mgr.remove_local_forward(5432, conn_tag="c")
+    assert mgr.list_config().connections[0].forwards.local == []
+
+
+def test_socket_forward_add_skips_port_validation(mgr):
+    # A socket side has src_port 0 — _add_forward must not reject it as an
+    # invalid port (the pre-socket code did `validate_port(0)` → error).
+    mgr.add_connection("c", "user@host")
+    mgr.add_local_forward("c", PortForward(src_socket="/tmp/x.sock", dst_addr="h", dst_port=80))
+    assert mgr.list_config().connections[0].forwards.local[0].src_socket == "/tmp/x.sock"
+
+
+def test_update_config_rejects_invalid_value(mgr):
+    with pytest.raises(Exception):
+        mgr.update_config(pac_server_port="not-a-port")
+    # Config file still loads (wasn't bricked).
+    assert mgr.list_config() is not None
+
+
+def test_update_connection_rename_while_running_does_not_raise(mgr):
+    # Regression: renaming persisted the new tag before stop(old) ran, so
+    # stop(old) raised "not found" and orphaned the master. Not running here,
+    # so restart is a no-op, but the reorder must not break the plain rename.
+    mgr.add_connection("work", "user@host.com", socks_port=1080)
+    updated = mgr.update_connection("work", new_tag="prod")
+    assert updated.tag == "prod"
+    tags = [c.tag for c in mgr.list_config().connections]
+    assert tags == ["prod"]
 
 
 # ------------------------------------------------------------------ #
@@ -1022,7 +1120,7 @@ def test_test_forward_tcp_local_port_bound(tmp_path, monkeypatch):
     """test_forward returns tcp=True for a local TCP forward when src_port is bound."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": False)
 
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "user@host.com")
@@ -1037,7 +1135,7 @@ def test_test_forward_tcp_local_port_free(tmp_path, monkeypatch):
     """test_forward returns tcp=False for a local TCP forward when src_port is free."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: True)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": True)
 
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "user@host.com")
@@ -1084,7 +1182,7 @@ def test_test_forward_tcp_and_udp(tmp_path, monkeypatch):
     """test_forward returns both 'tcp' and 'udp' keys for a dual-protocol forward."""
     import susops.facade as facade_mod
 
-    monkeypatch.setattr(facade_mod, "is_port_free", lambda port: False)
+    monkeypatch.setattr(facade_mod, "is_port_free", lambda port, host="127.0.0.1": False)
     monkeypatch.setattr(facade_mod, "_is_udp_forward_running",
                         lambda conn_tag, fw, direction, pm: True)
 
@@ -1352,15 +1450,23 @@ def test_stopped_marker_path_rejects_traversal(tmp_path):
 def test_add_forward_validates_ports(tmp_path):
     """Port validation: src/dst must be 1-65535."""
     import pytest
+    from pydantic import ValidationError
     from susops.facade import SusOpsManager
     from susops.core.config import PortForward
     mgr = SusOpsManager(workspace=tmp_path)
     mgr.add_connection("work", "u@h")
-    for bad in [-1, 0, 65536, 99999]:
+    # Out-of-range but positive: passes the model's endpoint XOR (port > 0),
+    # caught by the facade's range check.
+    for bad in [65536, 99999]:
         with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
             mgr.add_local_forward("work", PortForward(src_port=bad, dst_port=80))
         with pytest.raises(ValueError, match="Invalid (src_port|dst_port)"):
             mgr.add_local_forward("work", PortForward(src_port=8080, dst_port=bad))
+    # <= 0 with no socket: rejected by the model (each endpoint must be exactly
+    # one of a positive port or a socket path).
+    for bad in [-1, 0]:
+        with pytest.raises(ValidationError):
+            PortForward(src_port=bad, dst_port=80)
 
 
 def test_start_raises_on_unknown_tag(tmp_path):

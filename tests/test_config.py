@@ -57,6 +57,29 @@ def test_port_forward_backward_compat_no_protocol_fields():
     assert fw.udp is False
 
 
+def test_port_forward_unix_socket_endpoints():
+    from susops.core.config import validate_socket_path
+    # valid combos
+    PortForward(src_port=5432, dst_socket="/var/run/pg.sock")
+    PortForward(src_socket="/tmp/a.sock", dst_socket="/var/run/docker.sock")
+    PortForward(src_socket="/tmp/a.sock", dst_addr="h", dst_port=80)
+    # a side with both a port and a socket is rejected
+    with pytest.raises(ValidationError, match="exactly one"):
+        PortForward(src_port=5432, src_socket="/tmp/a.sock", dst_port=80)
+    # a side with neither is rejected
+    with pytest.raises(ValidationError, match="exactly one"):
+        PortForward(src_port=0, dst_port=80)
+    # socket forwards are TCP-only
+    with pytest.raises(ValidationError, match="UDP is not supported"):
+        PortForward(src_socket="/tmp/a.sock", dst_port=80, udp=True, tcp=True)
+    # path validation
+    for bad in ["relative.sock", "/tmp/a:b.sock", "/tmp/" + "x" * 110]:
+        with pytest.raises(ValueError):
+            validate_socket_path(bad)
+    assert validate_socket_path("") == ""
+    assert validate_socket_path("/var/run/docker.sock") == "/var/run/docker.sock"
+
+
 def test_connection_defaults():
     conn = Connection(tag="work", ssh_host="user@host")
     assert conn.socks_proxy_port == 0

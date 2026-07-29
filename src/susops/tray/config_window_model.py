@@ -54,6 +54,10 @@ class FormField:
     # URL row (Copy) and the share password row (Reveal + Copy). Reveal is a
     # local toggle handled by the renderer, the rest dispatch via the tray.
     trailing: tuple = ()
+    # For a popup that gates other fields: maps each option value to the set of
+    # field keys enabled when it's selected (all other keys in the union are
+    # disabled). Used by the forward form's Source/Dest "Port | Socket" toggle.
+    enables: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -142,12 +146,26 @@ def _disabled_hosts(conn) -> set:
     return set(getattr(conn, "pac_hosts_disabled", []) or [])
 
 
+_BIND_PRESETS = ["localhost", "172.17.0.1", "0.0.0.0"]
+
+
+def _fw_src_key(fw) -> str:
+    """A forward's source key (socket path or port) — its stable identity."""
+    return getattr(fw, "src_socket", "") or str(fw.src_port)
+
+
+def _fw_endpoint(addr, port, sock) -> str:
+    return sock if sock else f"{addr}:{port}"
+
+
 def _forward_title(fw) -> str:
-    return fw.tag or f":{fw.src_port}"
+    return fw.tag or (getattr(fw, "src_socket", "") or f":{fw.src_port}")
 
 
 def _forward_subtitle(fw) -> str:
-    return f":{fw.src_port} → {fw.dst_addr}:{fw.dst_port}"
+    src = getattr(fw, "src_socket", "") or f":{fw.src_port}"
+    dst = _fw_endpoint(fw.dst_addr, fw.dst_port, getattr(fw, "dst_socket", ""))
+    return f"{src} → {dst}"
 
 
 def _share_dot(info) -> str:
@@ -244,7 +262,7 @@ def _forward_items(cfg, statuses, direction) -> list[ListRow]:
                 dot="green" if (running and fw.enabled) else "gray",
                 badge=conn.tag,
                 dimmed=not fw.enabled,
-                identity=("forward", conn.tag, direction, fw.src_port),
+                identity=("forward", conn.tag, direction, _fw_src_key(fw)),
             ))
     return rows
 
@@ -315,6 +333,9 @@ def build_connection_detail(conn, status, ssh_hosts=()) -> DetailSpec:
         FormField(key="ssh_host", label="SSH Host", kind="combo",
                   value=conn.ssh_host, options=list(ssh_hosts),
                   placeholder="hostname, IP, or ssh alias"),
+        FormField(key="jump_host", label="Jump Host", kind="text",
+                  value=getattr(conn, "jump_host", "") or "",
+                  placeholder="user@bastion (ssh -J, optional)"),
         FormField(key="socks_port", label="SOCKS Port", kind="text",
                   value=str(_socks_port(conn) or ""), placeholder="auto"),
     ]
@@ -350,6 +371,8 @@ def build_connection_form(ssh_hosts) -> DetailSpec:
         FormField(key="ssh_host", label="SSH Host", kind="combo", value="",
                   options=list(ssh_hosts),
                   placeholder="hostname, IP, or ssh alias"),
+        FormField(key="jump_host", label="Jump Host", kind="text", value="",
+                  placeholder="user@bastion (ssh -J, optional)"),
         FormField(key="socks_port", label="SOCKS Port", kind="text", value="",
                   placeholder="auto", note="leave empty for auto"),
     ]
@@ -402,10 +425,35 @@ def build_domain_form(conn_tags, *, conn_tag=None, host=None,
 
 
 def build_forward_form(conn_tags, *, fw=None, direction=None,
-                       conn_tag=None, statuses=()) -> DetailSpec:
+                       conn_tag=None, statuses=(), binds=()) -> DetailSpec:
     is_edit = fw is not None
     default_tag = conn_tag or (conn_tags[0] if conn_tags else "")
     dir_value = DIRECTION_LABELS.get(direction or "local", "Local (-L)")
+    # Bind autocomplete: presets first, then addresses used by other forwards.
+    bind_opts = list(dict.fromkeys(list(_BIND_PRESETS) + [b for b in binds if b]))
+
+    def _port_str(port) -> str:
+        return str(port) if port else ""
+
+    def _endpoint_fields(prefix, mode_label, addr, port, socket):
+        """A Port|Socket mode popup that gates a (bind + port) pair vs a socket
+        path field. The popup's `enables` map drives which fields the renderer
+        keeps enabled per mode."""
+        socket = socket or ""
+        return [
+            FormField(key=f"{prefix}_mode", label=mode_label, kind="popup",
+                      value=("Socket" if socket else "Port"),
+                      options=["Port", "Socket"],
+                      enables={"Port": [f"{prefix}_addr", f"{prefix}_port"],
+                               "Socket": [f"{prefix}_socket"]}),
+            FormField(key=f"{prefix}_addr", label="Bind", kind="combo",
+                      value=addr, options=bind_opts),
+            FormField(key=f"{prefix}_port", label="Port", kind="text",
+                      value=_port_str(port), placeholder="e.g. 8080"),
+            FormField(key=f"{prefix}_socket", label="Socket", kind="text",
+                      value=socket, placeholder="/var/run/docker.sock"),
+        ]
+
     if is_edit:
         fields = [
             FormField(key="tag", label="Tag", kind="text",
@@ -415,14 +463,10 @@ def build_forward_form(conn_tags, *, fw=None, direction=None,
             FormField(key="direction", label="Direction", kind="popup",
                       value=dir_value,
                       options=["Local (-L)", "Remote (-R)"]),
-            FormField(key="src_addr", label="Source", kind="text",
-                      value=fw.src_addr),
-            FormField(key="src_port", label="Port", kind="text",
-                      value=str(fw.src_port), placeholder="port"),
-            FormField(key="dst_addr", label="Destination", kind="text",
-                      value=fw.dst_addr),
-            FormField(key="dst_port", label="Port", kind="text",
-                      value=str(fw.dst_port), placeholder="port"),
+            *_endpoint_fields("src", "Source", fw.src_addr, fw.src_port,
+                              getattr(fw, "src_socket", "")),
+            *_endpoint_fields("dst", "Destination", fw.dst_addr, fw.dst_port,
+                              getattr(fw, "dst_socket", "")),
             FormField(key="protocols", label="Protocols", kind="check_pair",
                       value=(bool(fw.tcp), bool(fw.udp))),
         ]
@@ -448,14 +492,8 @@ def build_forward_form(conn_tags, *, fw=None, direction=None,
                   value=default_tag, options=list(conn_tags)),
         FormField(key="direction", label="Direction", kind="popup",
                   value=dir_value, options=["Local (-L)", "Remote (-R)"]),
-        FormField(key="src_addr", label="Source", kind="text",
-                  value="localhost"),
-        FormField(key="src_port", label="Port", kind="text", value="",
-                  placeholder="port"),
-        FormField(key="dst_addr", label="Destination", kind="text",
-                  value="localhost"),
-        FormField(key="dst_port", label="Port", kind="text", value="",
-                  placeholder="port"),
+        *_endpoint_fields("src", "Source", "localhost", 0, ""),
+        *_endpoint_fields("dst", "Destination", "localhost", 0, ""),
         FormField(key="protocols", label="Protocols", kind="check_pair",
                   value=(True, False)),
     ]

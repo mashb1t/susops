@@ -1,9 +1,51 @@
 # tests/test_rpc_server.py
+import inspect
+import re
+from pathlib import Path
+
 import pytest
 
 from susops.core.rpc_protocol import InvocationRequest, InvocationResponse
-from susops.core.rpc_server import build_app
+from susops.core.rpc_server import build_app, _ALLOWED_METHODS
 from susops.facade import SusOpsManager
+
+
+def test_allowlist_only_names_real_methods():
+    """Every allowlisted name must be a real public SusOpsManager method —
+    catches typos and methods removed without updating the allowlist."""
+    for name in _ALLOWED_METHODS:
+        attr = getattr(SusOpsManager, name, None)
+        assert attr is not None and callable(attr), \
+            f"_ALLOWED_METHODS has {name!r} which is not a SusOpsManager method"
+
+
+def test_allowlist_covers_every_facade_method_frontends_call():
+    """Statically scan the frontends for manager.<method>() / m.<method>()
+    calls and assert each real facade method is allowlisted. This catches the
+    drift where a frontend starts calling a new facade method that then 404s
+    over RPC — without anyone having to hand-maintain a list here."""
+    src = Path(__file__).resolve().parent.parent / "src" / "susops"
+    roots = [src / "tui", src / "tray"]
+    call_re = re.compile(r"(?:self\.manager|self\.app\.manager|manager|mgr|m)\."
+                         r"([a-z_][a-z0-9_]*)\s*\(")
+    # Properties on the client proxy handled without RPC _invoke.
+    non_rpc = {"app_config", "config", "workspace"}
+    called: set[str] = set()
+    for root in roots:
+        for path in root.rglob("*.py"):
+            for name in call_re.findall(path.read_text()):
+                called.add(name)
+    facade_methods = {
+        n for n, a in inspect.getmembers(SusOpsManager, callable)
+        if not n.startswith("_")
+    }
+    missing = sorted(
+        n for n in called
+        if n in facade_methods and n not in non_rpc and n not in _ALLOWED_METHODS
+    )
+    assert not missing, (
+        f"frontends call facade methods missing from RPC _ALLOWED_METHODS: {missing}"
+    )
 
 
 @pytest.fixture

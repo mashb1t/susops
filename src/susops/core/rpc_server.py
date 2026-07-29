@@ -34,10 +34,10 @@ _ALLOWED_METHODS: set[str] = {
     "add_local_forward", "add_remote_forward",
     "remove_local_forward", "remove_remote_forward",
     "toggle_forward_enabled", "set_forward_enabled",
-    "is_udp_forward_running",
+    "is_udp_forward_running", "import_ssh_config_forwards",
     # File sharing
     "share", "stop_share", "delete_share", "list_shares",
-    "share_is_running", "fetch",
+    "fetch",
     # Testing
     "test", "test_all", "test_connection", "test_domain", "test_forward",
     "test_ssh",

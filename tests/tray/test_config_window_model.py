@@ -201,7 +201,7 @@ def test_forward_rows_sections_info_ordering():
     assert rows[2].title == "postgres"
     assert rows[2].subtitle == ":5432 → db.internal:5432"
     assert rows[2].badge == "work"
-    assert rows[2].identity == ("forward", "work", "local", 5432)
+    assert rows[2].identity == ("forward", "work", "local", "5432")
     # Remote section follows all local rows
     assert rows[3] == ListRow(kind="section", title="Remote")
     assert rows[4].kind == "info"
@@ -439,7 +439,8 @@ def test_connection_form_create_mode():
     assert spec.status_dot == ""
     assert spec.toggle is None
     by_key = {f.key: f for f in spec.fields}
-    assert set(by_key) == {"tag", "ssh_host", "socks_port"}
+    assert set(by_key) == {"tag", "ssh_host", "jump_host", "socks_port"}
+    assert by_key["jump_host"].kind == "text"
     assert by_key["tag"].kind == "text"
     assert by_key["tag"].value == ""
     assert by_key["ssh_host"].kind == "combo"
@@ -527,14 +528,17 @@ def test_forward_form_edit_mode_fields():
     assert by_key["src_port"].value == "5432"
     assert by_key["dst_addr"].value == "db.internal"
     assert by_key["dst_port"].value == "5432"
-    # Labels carry no "Source Addr"/"Source Port" text. Paired rows are
-    # labeled "Source"/"Destination" by the renderer, the bare addr fields
-    # become the row label and the port fields collapse to "Port".
-    labels = {f.label for f in spec.fields}
-    assert "Source Addr" not in labels and "Source Port" not in labels
-    assert "Dest Addr" not in labels and "Dest Port" not in labels
-    assert by_key["src_addr"].label == "Source"
-    assert by_key["dst_addr"].label == "Destination"
+    # Each endpoint has a Port|Socket mode popup that gates its fields. A
+    # port-based forward defaults the popup to "Port".
+    assert by_key["src_mode"].kind == "popup"
+    assert by_key["src_mode"].options == ["Port", "Socket"]
+    assert by_key["src_mode"].value == "Port"
+    assert by_key["src_mode"].label == "Source"
+    assert by_key["src_mode"].enables == {
+        "Port": ["src_addr", "src_port"], "Socket": ["src_socket"]}
+    assert by_key["dst_mode"].value == "Port"
+    assert by_key["src_socket"].value == ""
+    assert by_key["src_addr"].kind == "combo"
     assert by_key["protocols"].kind == "check_pair"
     assert by_key["protocols"].value == (True, False)
     assert spec.status_text == "active · local forward on work"

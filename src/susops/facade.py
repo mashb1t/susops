@@ -22,6 +22,8 @@ from susops.core.config import (
     get_default_connection,
     load_config,
     save_config,
+    validate_pac_host,
+    validate_jump_host,
 )
 from susops.core.bandwidth import BandwidthSampler
 from susops.core.pac import PacServer, write_pac_file
@@ -29,7 +31,9 @@ from susops.core.ports import get_random_free_port, is_port_free, validate_port
 from susops.core.process import ProcessManager
 from susops.core.share import ShareServer, fetch_file, generate_password
 from susops.core.socat import (
+    source_key as _fw_source_key,
     UDP_PROCESS_PREFIX,
+    fw_tag as _compute_fw_tag,
     start_udp_forward,
     stop_udp_forward,
     stop_all_udp_forwards_for_connection,
@@ -42,6 +46,7 @@ from susops.core.ssh import (
     find_master_pid,
     is_socket_alive,
     is_tunnel_running,
+    socket_forward_active as _socket_forward_active,
     socket_path,
     start_forward,
     start_master,
@@ -330,6 +335,10 @@ class SusOpsManager:
                 self.on_error(msg)
             except Exception:
                 pass
+        # Also push over SSE: frontends run through the RPC daemon, where the
+        # in-process on_error callback is never set, so the error toast would
+        # otherwise never reach them.
+        self._emit("error", {"message": msg})
 
     def _debug(self, msg: str) -> None:
         """Log a debug message. Only active when verbose=True.
@@ -410,6 +419,12 @@ class SusOpsManager:
     def _emit_state(self, state: ProcessState) -> None:
         if self.on_state_change:
             self.on_state_change(state)
+        # Also push over SSE so config CRUD (add/remove connection, PAC host
+        # changes) that only calls _emit_state still reaches cross-process
+        # frontends instantly instead of waiting for their next poll. An extra
+        # aggregate "state" event on paths that already emit one just triggers
+        # a harmless idempotent refresh.
+        self._emit("state", {"aggregate": state.value})
 
     def _reload_config(self) -> None:
         with self._config_lock:
@@ -559,7 +574,7 @@ class SusOpsManager:
                 start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
             self._emit("forward", {
                 "tag": conn_tag,
-                "fw_tag": fw.tag or f"{direction}-{fw.src_port}",
+                "fw_tag": _compute_fw_tag(fw, direction),
                 "direction": direction,
                 "running": True,
             })
@@ -612,10 +627,18 @@ class SusOpsManager:
     def _ensure_socks_port(self, conn: Connection) -> Connection:
         if conn.socks_proxy_port != 0:
             return conn
-        port = get_random_free_port()
-        updated = conn.model_copy(update={"socks_proxy_port": port})
-        self._replace_connection(updated)
-        self._save()
+        # Hold the (reentrant) config lock across modify+save so a concurrent
+        # locked mutator (e.g. add_pac_host) can't have its write clobbered by
+        # this port assignment landing from a stale snapshot. _replace_connection
+        # merges into the *current* self.config, preserving the other change.
+        with self._config_lock:
+            existing = get_connection(self.config, conn.tag)
+            if existing is not None and existing.socks_proxy_port != 0:
+                return existing  # another thread already assigned one
+            port = get_random_free_port()
+            updated = conn.model_copy(update={"socks_proxy_port": port})
+            self._replace_connection(updated)
+            self._save()
         self._log(f"[{conn.tag}] Assigned SOCKS port {port}")
         return updated
 
@@ -661,9 +684,12 @@ class SusOpsManager:
     def _ensure_pac_port(self) -> int:
         if self.config.pac_server_port != 0:
             return self.config.pac_server_port
-        port = get_random_free_port()
-        self.config = self.config.model_copy(update={"pac_server_port": port})
-        self._save()
+        with self._config_lock:
+            if self.config.pac_server_port != 0:
+                return self.config.pac_server_port
+            port = get_random_free_port()
+            self.config = self.config.model_copy(update={"pac_server_port": port})
+            self._save()
         return port
 
     def _compute_state(
@@ -985,6 +1011,17 @@ class SusOpsManager:
         connections are signaled before the Python process exits, regardless
         of how many connections are configured.
         """
+        # Mark every configured connection as intentionally stopped BEFORE
+        # killing processes: write the shared stopped-marker (so another
+        # process's monitor won't reconnect) and clear the reconnect monitor's
+        # intended set. Without this the daemon never reports idle (is_idle
+        # checks _intended) and a later start() would revive these tunnels.
+        try:
+            for conn in self.config.connections:
+                _write_stopped_marker(self.workspace, conn.tag)
+                self._reconnect_monitor.mark_stopped(conn.tag)
+        except Exception:
+            pass
         self._reconnect_monitor.stop()
         self._process_mgr.kill_all()
         for _p, server, _info in self._share_pop_all():
@@ -1287,12 +1324,18 @@ class SusOpsManager:
                 # this, _intended still contains the tag and the monitor
                 # keeps reviving the connection after stop.
                 self._reconnect_monitor.mark_stopped(conn.tag)
-                if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
-                    self._log(f"[{conn.tag}] Stopped")
-                    self._bw_sampler.reset_totals(conn.tag)
-                    self._start_times.pop(conn.tag, None)
-                    self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
-                stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
+                try:
+                    if stop_tunnel(conn.tag, self._process_mgr, self.workspace, conn.ssh_host):
+                        self._log(f"[{conn.tag}] Stopped")
+                        self._bw_sampler.reset_totals(conn.tag)
+                        self._start_times.pop(conn.tag, None)
+                        self._emit("state", {"tag": conn.tag, "running": False, "pid": None})
+                finally:
+                    # Always clean up UDP socat processes even if stop_tunnel
+                    # raised (e.g. os.kill hit PermissionError on a recycled
+                    # PID) — socat can outlive a crashed master and would
+                    # otherwise leak its bound UDP ports.
+                    stop_all_udp_forwards_for_connection(conn.tag, self._process_mgr)
                 if not keep_ports and ephemeral and conn.socks_proxy_port != 0:
                     self._replace_connection(conn.model_copy(update={"socks_proxy_port": 0}))
             except Exception as exc:
@@ -1355,8 +1398,28 @@ class SusOpsManager:
 
     def restart(self, tag: str | None = None) -> StartResult:
         self.stop(keep_ports=True, tag=tag)
-        time.sleep(0.5)
+        self._wait_for_teardown(tag, deadline=3.0)
         return self.start(tag)
+
+    def _wait_for_teardown(self, tag: str | None, deadline: float) -> None:
+        """Wait (bounded) for stopped masters to release their socket + SOCKS
+        port before start() rebinds — replaces a blind sleep that was both too
+        long on fast machines and too short when many forwards slow teardown.
+        Uses cheap filesystem/bind checks (no ssh -O check subprocess spam)."""
+        conns = ([get_connection(self.config, tag)] if tag
+                 else list(self.config.connections))
+        conns = [c for c in conns if c is not None]
+        if not conns:
+            return
+        end = time.monotonic() + deadline
+        while time.monotonic() < end:
+            if all(
+                not socket_path(c.tag, self.workspace).exists()
+                and (c.socks_proxy_port == 0 or is_port_free(c.socks_proxy_port))
+                for c in conns
+            ):
+                return
+            time.sleep(0.05)
 
     def status(self) -> StatusResult:
         self._reload_config()
@@ -1379,7 +1442,8 @@ class SusOpsManager:
     # Connection CRUD
     # ------------------------------------------------------------------ #
 
-    def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0) -> Connection:
+    def add_connection(self, tag: str, ssh_host: str, socks_port: int = 0,
+                       jump_host: str = "") -> Connection:
         _validate_tag(tag)
         if not (isinstance(ssh_host, str) and ssh_host.strip()):
             raise ValueError("ssh_host must be a non-empty string")
@@ -1389,7 +1453,8 @@ class SusOpsManager:
             self._reload_config()
             if get_connection(self.config, tag) is not None:
                 raise ValueError(f"Connection '{tag}' already exists")
-            conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port)
+            conn = Connection(tag=tag, ssh_host=ssh_host, socks_proxy_port=socks_port,
+                              jump_host=(jump_host or ""))
             self.config = self.config.model_copy(
                 update={"connections": list(self.config.connections) + [conn]}
             )
@@ -1459,6 +1524,7 @@ class SusOpsManager:
             new_tag: str | None = None,
             ssh_host: str | None = None,
             socks_proxy_port: int | None = None,
+            jump_host: str | None = None,
             restart: bool = True,
     ) -> Connection:
         """Edit a connection's tag / ssh_host / socks_proxy_port in place.
@@ -1500,11 +1566,23 @@ class SusOpsManager:
                     or is_socket_alive(tag, self.workspace)
             )
 
+            new_jump = conn.jump_host if jump_host is None else validate_jump_host(jump_host.strip())
             updated = conn.model_copy(update={
                 "tag": target_tag,
                 "ssh_host": new_host,
                 "socks_proxy_port": new_port,
+                "jump_host": new_jump,
             })
+
+        # Tear down under the OLD tag BEFORE persisting the rename — stop()
+        # reloads config and looks the connection up by tag, so if the new tag
+        # were already saved stop(tag=old) would raise "not found" and orphan
+        # the old master. stop/start acquire their own locks.
+        if was_running and restart:
+            self.stop(tag=tag)
+
+        with self._config_lock:
+            self._reload_config()
             self.config = self.config.model_copy(update={
                 "connections": [updated if c.tag == tag else c for c in self.config.connections]
             })
@@ -1512,10 +1590,6 @@ class SusOpsManager:
 
         self._update_pac()
         if was_running and restart:
-            # Tear down under the OLD tag (its PID/socket/shares/forwards), then
-            # bring it back up under the NEW config. Outside the config lock —
-            # stop/start acquire their own locks.
-            self.stop(tag=tag)
             self.start(tag=target_tag)
         self._log(f"[{tag}] Updated → tag={target_tag} host={new_host} socks={new_port}")
         self._emit_state(self._compute_state())
@@ -1558,6 +1632,7 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def add_pac_host(self, host: str, conn_tag: str | None = None) -> None:
+        host = validate_pac_host(host)
         with self._config_lock:
             self._reload_config()
             default = get_default_connection(self.config)
@@ -1634,30 +1709,28 @@ class SusOpsManager:
     # ------------------------------------------------------------------ #
 
     def _add_forward(self, conn_tag: str, fw: PortForward, direction: str) -> None:
-        if not validate_port(fw.src_port):
+        # Validate each endpoint's port only when that side is TCP (a Unix
+        # socket has port 0 and is validated by the model's socket validator).
+        if not fw.src_socket and not validate_port(fw.src_port):
             raise ValueError(f"Invalid src_port {fw.src_port}: must be 1-65535")
-        if not validate_port(fw.dst_port):
+        if not fw.dst_socket and not validate_port(fw.dst_port):
             raise ValueError(f"Invalid dst_port {fw.dst_port}: must be 1-65535")
+        key = _fw_source_key(fw)
         with self._config_lock:
             self._reload_config()
             conn = get_connection(self.config, conn_tag)
             if conn is None:
                 raise ValueError(f"Connection '{conn_tag}' not found")
-            if direction == "local":
-                if any(f.src_port == fw.src_port for f in conn.forwards.local):
-                    raise ValueError(f"Local forward on port {fw.src_port} already exists")
-                new_fwds = conn.forwards.model_copy(
-                    update={"local": list(conn.forwards.local) + [fw]}
-                )
-            else:
-                if any(f.src_port == fw.src_port for f in conn.forwards.remote):
-                    raise ValueError(f"Remote forward on port {fw.src_port} already exists")
-                new_fwds = conn.forwards.model_copy(
-                    update={"remote": list(conn.forwards.remote) + [fw]}
-                )
+            existing = conn.forwards.local if direction == "local" else conn.forwards.remote
+            if any(_fw_source_key(f) == key for f in existing):
+                raise ValueError(f"{direction.capitalize()} forward '{key}' already exists")
+            new_fwds = conn.forwards.model_copy(
+                update={direction: list(existing) + [fw]}
+            )
             self._replace_connection(conn.model_copy(update={"forwards": new_fwds}))
             self._save()
-        self._log(f"[{conn_tag}] Added {direction} forward {fw.src_port}→{fw.dst_port}")
+        self._log(f"[{conn_tag}] Added {direction} forward {key}→"
+                  f"{fw.dst_socket or fw.dst_port}")
 
     def add_local_forward(self, conn_tag: str, fw: PortForward) -> None:
         self._add_forward(conn_tag, fw, "local")
@@ -1667,21 +1740,80 @@ class SusOpsManager:
         self._add_forward(conn_tag, fw, "remote")
         self._maybe_start_forward_live(conn_tag, fw, "remote")
 
-    def _remove_forward(self, src_port: int, direction: str) -> None:
+    def import_ssh_config_forwards(self, conn_tag: str) -> dict:
+        """Import LocalForward/RemoteForward/DynamicForward directives from
+        ~/.ssh/config for this connection's ssh_host into its forward list.
+
+        Returns {"local": n, "remote": n, "dynamic": n} counts of what was
+        added. Existing forwards on the same src_port are skipped (the per-
+        connection duplicate check in _add_forward). A DynamicForward becomes
+        the connection's socks_proxy_port if it doesn't already have one.
+        """
+        from susops.core.ssh_config import parse_ssh_forwards
+        conn = get_connection(self.config, conn_tag)
+        if conn is None:
+            raise ValueError(f"Connection '{conn_tag}' not found")
+        parsed = parse_ssh_forwards(conn.ssh_host)
+        counts = {"local": 0, "remote": 0, "dynamic": 0}
+        for spec in parsed["local"]:
+            try:
+                self.add_local_forward(conn_tag, PortForward(**spec))
+                counts["local"] += 1
+            except ValueError:
+                pass  # duplicate / invalid — skip
+        for spec in parsed["remote"]:
+            try:
+                self.add_remote_forward(conn_tag, PortForward(**spec))
+                counts["remote"] += 1
+            except ValueError:
+                pass
+        if parsed["dynamic"] and conn.socks_proxy_port == 0:
+            self.update_connection(conn_tag, socks_proxy_port=parsed["dynamic"][0],
+                                   restart=False)
+            counts["dynamic"] = 1
+        self._log(f"[{conn_tag}] Imported forwards from ssh config: {counts}")
+        return counts
+
+    def _remove_forward(self, src_key: int | str, direction: str, conn_tag: str | None = None) -> None:
+        # src_key identifies a forward's source endpoint: a socket path
+        # ("/path.sock") or a port (int or its string). Matched via source_key
+        # so TCP and Unix-socket forwards are addressed uniformly.
+        wanted = str(src_key)
+
+        def _matches(f: PortForward) -> bool:
+            return _fw_source_key(f) == wanted
+
         with self._config_lock:
             self._reload_config()
+            # Guard against wiping the same source across unrelated connections:
+            # if no conn_tag is given and more than one connection has it, the
+            # caller must disambiguate.
+            if conn_tag is None:
+                owners = [
+                    c.tag for c in self.config.connections
+                    if any(_matches(f) for f in (
+                        c.forwards.local if direction == "local" else c.forwards.remote))
+                ]
+                if len(owners) > 1:
+                    raise ValueError(
+                        f"{direction.capitalize()} forward '{wanted}' exists on "
+                        f"multiple connections {owners}; specify a connection"
+                    )
             found = False
             new_conns = []
             for conn in self.config.connections:
+                if conn_tag is not None and conn.tag != conn_tag:
+                    new_conns.append(conn)
+                    continue
                 fwds = conn.forwards.local if direction == "local" else conn.forwards.remote
-                updated_fwds = [f for f in fwds if f.src_port != src_port]
+                updated_fwds = [f for f in fwds if not _matches(f)]
                 if len(updated_fwds) != len(fwds):
                     found = True
-                    removed_fw = next(f for f in fwds if f.src_port == src_port)
+                    removed_fw = next(f for f in fwds if _matches(f))
                     key = "local" if direction == "local" else "remote"
                     new_fwds = conn.forwards.model_copy(update={key: updated_fwds})
                     new_conns.append(conn.model_copy(update={"forwards": new_fwds}))
-                    fw_tag = removed_fw.tag or f"{direction}-{src_port}"
+                    fw_tag = _compute_fw_tag(removed_fw, direction)
                     if removed_fw.tcp:
                         cancel_forward(conn, removed_fw, direction, self.workspace)
                     stop_udp_forward(conn.tag, fw_tag, self._process_mgr)
@@ -1692,23 +1824,25 @@ class SusOpsManager:
                 else:
                     new_conns.append(conn)
             if not found:
-                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found")
+                raise ValueError(f"{direction.capitalize()} forward '{wanted}' not found")
             self.config = self.config.model_copy(update={"connections": new_conns})
             self._save()
-        self._log(f"Removed {direction} forward on port {src_port}")
+        self._log(f"Removed {direction} forward '{wanted}'")
 
-    def remove_local_forward(self, src_port: int) -> None:
-        self._remove_forward(src_port, "local")
+    def remove_local_forward(self, src_key: int | str, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_key, "local", conn_tag)
 
-    def remove_remote_forward(self, src_port: int) -> None:
-        self._remove_forward(src_port, "remote")
+    def remove_remote_forward(self, src_key: int | str, conn_tag: str | None = None) -> None:
+        self._remove_forward(src_key, "remote", conn_tag)
 
-    def set_forward_enabled(self, conn_tag: str, src_port: int, direction: str, enabled: bool) -> None:
+    def set_forward_enabled(self, conn_tag: str, src_port: int | str, direction: str, enabled: bool) -> None:
         """Set the enabled flag on a forward and start/stop the live process accordingly.
 
+        src_port is the forward's source key: a port (int) or a socket path.
         If enabling and the connection is running, the forward slave is started immediately.
         If disabling, the forward slave is stopped (if running).
         """
+        wanted = str(src_port)
         with self._config_lock:
             self._reload_config()
             conn = get_connection(self.config, conn_tag)
@@ -1716,19 +1850,19 @@ class SusOpsManager:
                 raise ValueError(f"Connection {conn_tag!r} not found")
             forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
             for fw in forwards:
-                if fw.src_port == src_port:
+                if _fw_source_key(fw) == wanted:
                     fw.enabled = enabled
                     self._save()
                     break
             else:
-                raise ValueError(f"{direction.capitalize()} forward on port {src_port} not found in '{conn_tag}'")
+                raise ValueError(f"{direction.capitalize()} forward '{wanted}' not found in '{conn_tag}'")
         # Re-bind conn/fw for the live-start path below (they're now stale references to
         # objects under self.config which may have been replaced by reload).
         conn = get_connection(self.config, conn_tag)
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
-            if fw.src_port == src_port:
-                fw_tag = fw.tag or f"{direction}-{src_port}"
+            if _fw_source_key(fw) == wanted:
+                fw_tag = _compute_fw_tag(fw, direction)
                 self._log(f"[{conn_tag}] Forward {fw_tag} {'enabled' if enabled else 'disabled'}")
                 if enabled and (
                         is_tunnel_running(conn_tag, self._process_mgr) or is_socket_alive(conn_tag, self.workspace)):
@@ -1738,41 +1872,43 @@ class SusOpsManager:
                         if fw.udp:
                             start_udp_forward(conn, fw, direction, self._process_mgr, self.workspace)
                     except Exception as exc:
-                        self._error(f"[{conn_tag}] Forward {src_port} failed to start: {exc}")
+                        self._error(f"[{conn_tag}] Forward {wanted} failed to start: {exc}")
                 elif not enabled:
                     if fw.tcp:
                         cancel_forward(conn, fw, direction, self.workspace)
                     stop_udp_forward(conn_tag, fw_tag, self._process_mgr)
                 self._emit("forward", {
-                    "conn_tag": conn_tag,
-                    "src_port": src_port,
+                    "tag": conn_tag,
+                    "fw_tag": fw_tag,
                     "direction": direction,
-                    "enabled": enabled,
+                    "running": enabled,
                 })
                 return
-        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
 
-    def toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> bool:
+    def toggle_forward_enabled(self, conn_tag: str, src_port: int | str, direction: str) -> bool:
         """Toggle enabled on a forward. Returns the new enabled state."""
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection {conn_tag!r} not found")
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
         for fw in forwards:
-            if fw.src_port == src_port:
+            if _fw_source_key(fw) == wanted:
                 new_enabled = not fw.enabled
                 self.set_forward_enabled(conn_tag, src_port, direction, new_enabled)
                 return new_enabled
-        raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+        raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
 
-    def is_udp_forward_running(self, conn_tag: str, src_port: int, direction: str) -> bool:
+    def is_udp_forward_running(self, conn_tag: str, src_port: int | str, direction: str) -> bool:
         """Return True if the UDP socat process for this forward is alive."""
         self._reload_config()
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             return False
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
-        fw = next((f for f in forwards if f.src_port == src_port), None)
+        fw = next((f for f in forwards if _fw_source_key(f) == wanted), None)
         if fw is None or not fw.udp:
             return False
         return _is_udp_forward_running(conn_tag, fw, direction, self._process_mgr)
@@ -1914,6 +2050,9 @@ class SusOpsManager:
                     if conn:
                         fw = PortForward(src_port=p, dst_port=p, src_addr="localhost", dst_addr="localhost")
                         cancel_forward(conn, fw, "remote", self.workspace)
+                # Mark stopped so the share isn't auto-restarted on the next
+                # start()/restore cycle (matches the per-port branch above).
+                self._set_file_share_stopped(p, True)
                 self._emit("share", {
                     "port": p,
                     "file": Path(info.file_path).name,
@@ -1971,9 +2110,6 @@ class SusOpsManager:
                         ))
 
         return result
-
-    def share_is_running(self) -> bool:
-        return self._share_any()
 
     def fetch(
             self,
@@ -2104,26 +2240,33 @@ class SusOpsManager:
         success, message, latency = self._http_probe_via_socks(clean_host, conn.socks_proxy_port)
         return TestResult(target=host, success=success, message=message, latency_ms=latency)
 
-    def test_forward(self, conn_tag: str, src_port: int, direction: str) -> dict[str, bool]:
+    def test_forward(self, conn_tag: str, src_port: int | str, direction: str) -> dict[str, bool]:
         """Check if a port forward is active.
 
+        src_port is the forward's source key: a port (int) or a socket path.
         Returns a dict with keys "tcp" and/or "udp" mapped to True/False.
-        For local TCP: checks whether src_port is bound (not free).
-        For remote TCP: checks whether the ControlMaster socket is alive.
-        For UDP (either direction): checks whether the socat lsocat process is alive.
+        For a local TCP forward: checks whether the local port is bound.
+        For a local Unix-socket forward: checks the local socket file exists and
+        is a socket. For remote TCP: checks the ControlMaster socket is alive.
+        For UDP (either direction): checks the socat lsocat process is alive.
         """
         self._reload_config()
+        wanted = str(src_port)
         conn = get_connection(self.config, conn_tag)
         if conn is None:
             raise ValueError(f"Connection '{conn_tag}' not found")
         forwards = conn.forwards.local if direction == "local" else conn.forwards.remote
-        fw = next((f for f in forwards if f.src_port == src_port), None)
+        fw = next((f for f in forwards if _fw_source_key(f) == wanted), None)
         if fw is None:
-            raise ValueError(f"Forward {src_port} not found in {conn_tag} {direction}")
+            raise ValueError(f"Forward '{wanted}' not found in {conn_tag} {direction}")
         results: dict[str, bool] = {}
         if fw.tcp:
             if direction == "local":
-                results["tcp"] = not is_port_free(src_port)
+                local_sock = fw.src_socket
+                if local_sock:
+                    results["tcp"] = _socket_forward_active(local_sock)
+                else:
+                    results["tcp"] = not is_port_free(fw.src_port, fw.src_addr or "localhost")
             else:
                 results["tcp"] = is_socket_alive(conn_tag, self.workspace)
         if fw.udp:
@@ -2142,7 +2285,20 @@ class SusOpsManager:
         self.stop()
         self.stop_share()
         import shutil
-        shutil.rmtree(self.workspace, ignore_errors=True)
+        # Preserve the running services daemon's own discovery files — reset()
+        # runs *inside* that daemon over RPC, so blindly rmtree'ing the whole
+        # workspace would delete susops-services.{pid,port} out from under the
+        # live process, and the next frontend would spawn a second daemon.
+        preserve = {"susops-services.pid", "susops-services.port"}
+        for child in self.workspace.iterdir():
+            if child.name == "pids" and child.is_dir():
+                for pid_file in child.iterdir():
+                    if pid_file.name not in preserve:
+                        pid_file.unlink(missing_ok=True)
+            elif child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.config = SusOpsConfig()
         self._save()
@@ -2172,12 +2328,16 @@ class SusOpsManager:
         """Return persisted [rx_bps, tx_bps] samples for *tag* (oldest → newest)."""
         return self._bw_sampler.get_history(tag)
 
-    def sse_client_count(self) -> int:
+    def sse_client_count(self, exclude_pid: int | None = None) -> int:
         """Live SSE subscriber count. Used by frontends to decide whether
         a stop-on-quit should actually stop, or skip because another
-        frontend is still attached to the same daemon."""
+        frontend is still attached to the same daemon.
+
+        Pass exclude_pid=<own pid> to count only *other* frontends — robust
+        against the caller's own SSE connection being mid-reconnect (in which
+        case a plain count-minus-one would subtract a different client)."""
         try:
-            return int(self._status_server.client_count())
+            return int(self._status_server.client_count(exclude_pid=exclude_pid))
         except Exception:
             return 0
 
@@ -2256,9 +2416,12 @@ class SusOpsManager:
     def update_app_config(self, **kwargs) -> None:
         with self._config_lock:
             self._reload_config()
-            self.config = self.config.model_copy(
+            merged = self.config.model_copy(
                 update={"susops_app": self.config.susops_app.model_copy(update=kwargs)}
             )
+            # model_copy skips validation — re-validate so a bad RPC value is
+            # rejected here instead of bricking every subsequent config load.
+            self.config = SusOpsConfig.model_validate(merged.model_dump(mode="python"))
             self._save()
 
     def update_config(self, **kwargs) -> None:
@@ -2273,5 +2436,8 @@ class SusOpsManager:
         """
         with self._config_lock:
             self._reload_config()
-            self.config = self.config.model_copy(update=kwargs)
+            merged = self.config.model_copy(update=kwargs)
+            # model_copy skips validation — re-validate so a bad RPC value is
+            # rejected here instead of bricking every subsequent config load.
+            self.config = SusOpsConfig.model_validate(merged.model_dump(mode="python"))
             self._save()

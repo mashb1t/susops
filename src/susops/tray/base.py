@@ -7,9 +7,51 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
+from susops.core.config import validate_socket_path
+from susops.core.ports import validate_port
 from susops.core.types import ProcessState
 
 _ASSETS_DIR = Path(__file__).parent.parent / "assets" / "icons"
+
+BIND_PRESETS = ["localhost", "172.17.0.1", "0.0.0.0"]
+
+
+def resolve_forward_endpoint(port_txt, socket_txt, label: str):
+    """Resolve a forward endpoint from form text to ((port:int, socket:str)).
+
+    Returns (endpoint, None) on success or (None, (title, message)) on error.
+    Exactly one of a port (>0) or a socket path must be given. Shared by the
+    macOS and Linux tray forward editors.
+    """
+    socket_txt = (socket_txt or "").strip()
+    port_txt = (port_txt or "").strip()
+    if socket_txt:
+        if port_txt:
+            return None, ("Invalid Forward",
+                          f"{label}: set a port OR a socket, not both.")
+        try:
+            return (0, validate_socket_path(socket_txt)), None
+        except ValueError as exc:
+            return None, ("Invalid Socket", str(exc))
+    if not port_txt:
+        return None, ("Invalid Forward",
+                      f"{label}: a port or a socket path is required.")
+    if not port_txt.isdigit() or not validate_port(int(port_txt)):
+        return None, (f"Invalid {label} Port",
+                      f"{label} port must be a number between 1 and 65535.")
+    return (int(port_txt), ""), None
+
+
+def existing_forward_binds(config) -> list[str]:
+    """Distinct non-preset bind addresses already used by any forward, for the
+    forward editors' bind autocomplete."""
+    binds: dict = {}
+    for conn in config.connections:
+        for fw in list(conn.forwards.local) + list(conn.forwards.remote):
+            for addr in (fw.src_addr, fw.dst_addr):
+                if addr and addr not in BIND_PRESETS:
+                    binds.setdefault(addr, None)
+    return list(binds)
 
 _STATE_FILENAMES = {
     ProcessState.RUNNING: "running",
@@ -44,23 +86,9 @@ def get_icon_path(
     return None
 
 
-def get_ssh_hosts() -> list[str]:
-    """Return non-wildcard Host entries from ~/.ssh/config."""
-    cfg = Path.home() / ".ssh" / "config"
-    if not cfg.exists():
-        return []
-    hosts = []
-    pattern = re.compile(r"^\s*Host\s+(.*)$", re.IGNORECASE)
-    for line in cfg.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = pattern.match(line)
-        if m:
-            for h in m.group(1).split():
-                if "*" not in h and "?" not in h:
-                    hosts.append(h)
-    return hosts
+# Re-exported from core so the tray, the mac config window, and the TUI all
+# parse ~/.ssh/config the same (sorted, de-duplicated) way.
+from susops.core.ssh_config import get_ssh_hosts  # noqa: E402,F401
 
 
 from susops.client import SusOpsClient
@@ -309,18 +337,15 @@ class AbstractTrayApp(ABC):
             lines.append("")
             lines.append("DAEMON")
             workspace = self.manager.workspace
-            try:
-                rpc_port = int((workspace / "pids" / "susops-services.port")
-                               .read_text().strip())
+            from susops.client import read_daemon_port, read_daemon_pid
+            rpc_port = read_daemon_port(workspace)
+            if rpc_port is not None:
                 lines.append(f"  ●  RPC      http://localhost:{rpc_port}/rpc")
-            except (OSError, ValueError):
+            else:
                 lines.append("  ○  RPC      (port file unavailable)")
-            try:
-                pid = int((workspace / "pids" / "susops-services.pid")
-                          .read_text().strip())
+            pid = read_daemon_pid(workspace)
+            if pid is not None:
                 lines.append(f"     PID      {pid}")
-            except (OSError, ValueError):
-                pass
             # Parse the SSE URL the facade exposes — same daemon process,
             # different port (status_server_port from config).
             try:
@@ -348,9 +373,10 @@ class AbstractTrayApp(ABC):
 
         self.show_live_logs(_get_text, title="Logs")
 
-    def do_add_connection(self, tag: str, host: str, port: int = 0) -> None:
+    def do_add_connection(self, tag: str, host: str, port: int = 0,
+                          jump_host: str = "") -> None:
         try:
-            conn = self.manager.add_connection(tag, host, port)
+            conn = self.manager.add_connection(tag, host, port, jump_host=jump_host)
         except ValueError as e:
             self.show_alert("Error", str(e))
             return
@@ -389,9 +415,9 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_pac_host(self, host: str) -> None:
+    def do_remove_pac_host(self, host: str, conn_tag: str | None = None) -> None:
         try:
-            self.manager.remove_pac_host(host)
+            self.manager.remove_pac_host(host, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
@@ -451,13 +477,15 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, _done)
 
-    def do_toggle_pac_host_enabled(self, host: str) -> None:
+    def do_toggle_pac_host_enabled(self, host: str, conn_tag: str | None = None) -> None:
         def _run():
             try:
                 cfg = self.manager.list_config()
-                all_disabled = [h for c in cfg.connections for h in c.pac_hosts_disabled]
+                conns = cfg.connections if conn_tag is None else [
+                    c for c in cfg.connections if c.tag == conn_tag]
+                all_disabled = [h for c in conns for h in c.pac_hosts_disabled]
                 currently_disabled = host in all_disabled
-                self.manager.set_pac_host_enabled(host, currently_disabled)  # flip
+                self.manager.set_pac_host_enabled(host, currently_disabled, conn_tag=conn_tag)  # flip
                 return None, True
             except Exception as e:
                 return f"Error: {e}", False
@@ -469,7 +497,7 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, _done)
 
-    def do_toggle_forward_enabled(self, conn_tag: str, src_port: int, direction: str) -> None:
+    def do_toggle_forward_enabled(self, conn_tag: str, src_port: "int | str", direction: str) -> None:
         def _run():
             try:
                 self.manager.toggle_forward_enabled(conn_tag, src_port, direction)
@@ -502,7 +530,7 @@ class AbstractTrayApp(ABC):
 
         self.run_in_background(_run, lambda msg: self.show_output_dialog(f"Test: {host}", msg))
 
-    def do_test_forward(self, conn_tag: str, src_port: int, direction: str) -> None:
+    def do_test_forward(self, conn_tag: str, src_port: "int | str", direction: str) -> None:
         def _run():
             try:
                 results = self.manager.test_forward(conn_tag, src_port, direction)
@@ -535,16 +563,16 @@ class AbstractTrayApp(ABC):
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_local_forward(self, port: int) -> None:
+    def do_remove_local_forward(self, port: int, conn_tag: str | None = None) -> None:
         try:
             # Facade kills the slave immediately — no restart needed.
-            self.manager.remove_local_forward(port)
+            self.manager.remove_local_forward(port, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
-    def do_remove_remote_forward(self, port: int) -> None:
+    def do_remove_remote_forward(self, port: int, conn_tag: str | None = None) -> None:
         try:
-            self.manager.remove_remote_forward(port)
+            self.manager.remove_remote_forward(port, conn_tag=conn_tag)
         except ValueError as e:
             self.show_alert("Error", str(e))
 
@@ -699,7 +727,8 @@ class AbstractTrayApp(ABC):
             # is still attached, otherwise it ends up with its SSH
             # masters / PAC / reconnect torn out from under it.
             try:
-                other_clients = int(self.manager.sse_client_count()) - 1
+                import os
+                other_clients = int(self.manager.sse_client_count(exclude_pid=os.getpid()))
             except Exception:
                 other_clients = 0
             if other_clients <= 0:

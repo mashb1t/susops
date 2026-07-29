@@ -23,6 +23,8 @@ from susops.core.ssh import socket_path
 
 __all__ = [
     "UDP_PROCESS_PREFIX",
+    "fw_tag",
+    "source_key",
     "start_udp_forward",
     "stop_udp_forward",
     "stop_all_udp_forwards_for_connection",
@@ -32,9 +34,30 @@ __all__ = [
 UDP_PROCESS_PREFIX = "susops-udp"
 
 
-def _fw_tag(fw: PortForward, direction: str) -> str:
-    """Return the identifying tag for a forward (tag field or direction-port)."""
-    return fw.tag or f"{direction}-{fw.src_port}"
+def source_key(fw: PortForward) -> str:
+    """Stable identity for a forward's source endpoint: the socket path when
+    set, else the source port as a string. Unique per connection+direction, so
+    it keys dedup / remove / test uniformly for both TCP and Unix-socket
+    forwards (a socket forward has src_port==0, which would otherwise collide)."""
+    return fw.src_socket or str(fw.src_port)
+
+
+def fw_tag(fw: PortForward, direction: str) -> str:
+    """Return the identifying tag for a forward (tag field or direction-source).
+
+    This is the process-name key for susops-udp-* PID files, so every place
+    that computes a forward's tag (facade start/stop/remove included) must use
+    this one function or stop_udp_forward will fail to match the processes.
+    Socket paths are sanitized ('/'->'-') so they're safe in process/SSE names.
+    """
+    if fw.tag:
+        return fw.tag
+    key = source_key(fw).strip("/").replace("/", "-")
+    return f"{direction}-{key}"
+
+
+# Back-compat alias for existing imports/tests.
+_fw_tag = fw_tag
 
 
 def _udp_process_name(conn_tag: str, fw_tag: str, suffix: str) -> str:

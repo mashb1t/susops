@@ -126,7 +126,8 @@ class SusOpsTuiApp(App):
             # finds its SSH masters / PAC / reconnect monitor torn out
             # from under it and looks broken until it's restarted.
             try:
-                other_clients = int(self.manager.sse_client_count()) - 1
+                import os
+                other_clients = int(self.manager.sse_client_count(exclude_pid=os.getpid()))
             except Exception:
                 other_clients = 0
             if other_clients <= 0:

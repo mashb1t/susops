@@ -48,6 +48,7 @@ def compute_resource_shas() -> dict[str, dict[str, str]]:
     packages = {p["name"].lower(): p["version"] for p in json.loads(out.stdout)}
 
     resources: dict[str, dict[str, str]] = {}
+    failures: list[str] = []
     for name, version in sorted(packages.items()):
         if name in _DEV_PACKAGES:
             continue
@@ -55,7 +56,10 @@ def compute_resource_shas() -> dict[str, dict[str, str]]:
         if sdist:
             resources[name] = {"version": version, **sdist}
         else:
-            print(f"WARNING: no sdist for {name}=={version}", file=sys.stderr)
+            failures.append(f"{name}=={version}")
+
+    if failures:
+        raise SystemExit("ERROR: no sdist found for: " + ", ".join(failures))
     return resources
 
 

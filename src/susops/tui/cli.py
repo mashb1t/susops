@@ -128,18 +128,15 @@ def cmd_ps(args, m) -> int:
     print()
     print("SERVICES")
     workspace = m.workspace
-    try:
-        rpc_port = int((workspace / "pids" / "susops-services.port")
-                       .read_text().strip())
+    from susops.client import read_daemon_port, read_daemon_pid
+    rpc_port = read_daemon_port(workspace)
+    if rpc_port is not None:
         print(f"  ●  Daemon     RPC  http://localhost:{rpc_port}/rpc")
-    except (OSError, ValueError):
+    else:
         print("  ○  Daemon     RPC  (port file unavailable)")
-    try:
-        pid = int((workspace / "pids" / "susops-services.pid")
-                  .read_text().strip())
+    pid = read_daemon_pid(workspace)
+    if pid is not None:
         print(f"     Daemon     PID  {pid}")
-    except (OSError, ValueError):
-        pass
     try:
         sse_url = m.get_status_url() or ""
     except Exception:
@@ -167,21 +164,28 @@ def cmd_ls(args, m) -> int:
     for conn in config.connections:
         print(f"\nconnection: {conn.tag}")
         print(f"  ssh_host: {conn.ssh_host}")
+        if conn.jump_host:
+            print(f"  jump_host: {conn.jump_host}")
         print(f"  socks_port: {conn.socks_proxy_port}")
         if conn.pac_hosts:
             print(f"  pac_hosts:")
             for host in conn.pac_hosts:
                 print(f"    - {host}")
+        def _ep(addr: str, port: int, sock: str) -> str:
+            return sock if sock else f"{addr}:{port}"
+
         if conn.forwards.local:
             print(f"  local_forwards:")
-            for forward in conn.forwards.local:
-                print(f"    - {forward.src_addr}:{forward.src_port} → {forward.dst_addr}:{forward.dst_port}" +
-                      (f" [{forward.tag}]" if forward.tag else ""))
+            for fwd in conn.forwards.local:
+                print(f"    - {_ep(fwd.src_addr, fwd.src_port, fwd.src_socket)} → "
+                      f"{_ep(fwd.dst_addr, fwd.dst_port, fwd.dst_socket)}" +
+                      (f" [{fwd.tag}]" if fwd.tag else ""))
         if conn.forwards.remote:
             print(f"  remote_forwards:")
-            for forward in conn.forwards.remote:
-                print(f"    - {forward.src_addr}:{forward.src_port} → {forward.dst_addr}:{forward.dst_port}" +
-                      (f" [{forward.tag}]" if forward.tag else ""))
+            for fwd in conn.forwards.remote:
+                print(f"    - {_ep(fwd.src_addr, fwd.src_port, fwd.src_socket)} → "
+                      f"{_ep(fwd.dst_addr, fwd.dst_port, fwd.dst_socket)}" +
+                      (f" [{fwd.tag}]" if fwd.tag else ""))
         if conn.file_shares:
             print("  file_shares:")
             for share in conn.file_shares:
@@ -194,8 +198,12 @@ def cmd_ls(args, m) -> int:
 
 def cmd_add_connection(args, m) -> int:
     try:
-        conn = m.add_connection(args.tag, args.ssh_host, socks_port=args.socks_port or 0)
-        print(f"Added connection '{conn.tag}' → {conn.ssh_host}")
+        conn = m.add_connection(args.tag, args.ssh_host, socks_port=args.socks_port or 0,
+                                jump_host=getattr(args, "jump_host", "") or "")
+        msg = f"Added connection '{conn.tag}' → {conn.ssh_host}"
+        if conn.jump_host:
+            msg += f" via {conn.jump_host}"
+        print(msg)
         return 0
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -212,39 +220,61 @@ def cmd_rm_connection(args, m) -> int:
         return 1
 
 
+def cmd_import_forwards(args, m) -> int:
+    try:
+        counts = m.import_ssh_config_forwards(args.tag)
+        print(f"Imported into '{args.tag}': "
+              f"{counts['local']} local, {counts['remote']} remote, "
+              f"{counts['dynamic']} dynamic (SOCKS)")
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_add(args, m) -> int:
     try:
         if args.local or args.remote:
             # argparse fills positionals left-to-right, so 'host' grabs the
             # first integer; shift everything back when adding forwards.
             from susops.core.config import PortForward
+            local_socket = getattr(args, "local_socket", None) or ""
+            remote_socket = getattr(args, "remote_socket", None) or ""
             try:
                 local_port = int(args.host) if args.local_port is None else args.local_port
                 remote_port = args.local_port if args.remote_port is None and args.local_port != local_port else args.remote_port
             except (TypeError, ValueError):
                 local_port = args.local_port
                 remote_port = args.remote_port
+            # A side backed by a Unix socket takes no port (0); a TCP side with
+            # no explicit remote port mirrors the local port.
+            local_port = 0 if local_socket else (local_port or 0)
+            if remote_socket:
+                remote_port = 0
+            elif remote_port is None:
+                remote_port = local_port
             conn_tag = args.connection or m.config.connections[0].tag
+            # local endpoint = source for -L, destination for -R (and vice versa
+            # for the remote endpoint) — mirrors the addr/port mapping.
+            local_ep = dict(port=local_port, socket=local_socket, addr=args.local_addr or "localhost")
+            remote_ep = dict(port=remote_port, socket=remote_socket, addr=args.remote_addr or "localhost")
             if args.local:
-                fw = PortForward(
-                    src_port=local_port,
-                    dst_port=remote_port if remote_port is not None else local_port,
-                    src_addr=args.local_addr or "localhost",
-                    dst_addr=args.remote_addr or "localhost",
-                    tag=args.forward_tag or "",
-                )
-                m.add_local_forward(conn_tag, fw)
-                print(f"Added local forward {fw.src_port} → {fw.dst_port}")
+                src, dst = local_ep, remote_ep
             else:
-                fw = PortForward(
-                    src_port=remote_port if remote_port is not None else local_port,
-                    dst_port=local_port,
-                    src_addr=args.remote_addr or "localhost",
-                    dst_addr=args.local_addr or "localhost",
-                    tag=args.forward_tag or "",
-                )
+                src, dst = remote_ep, local_ep
+            fw = PortForward(
+                src_port=src["port"], src_socket=src["socket"], src_addr=src["addr"],
+                dst_port=dst["port"], dst_socket=dst["socket"], dst_addr=dst["addr"],
+                tag=args.forward_tag or "",
+            )
+            if args.local:
+                m.add_local_forward(conn_tag, fw)
+                print(f"Added local forward {fw.src_socket or fw.src_port} → "
+                      f"{fw.dst_socket or fw.dst_port}")
+            else:
                 m.add_remote_forward(conn_tag, fw)
-                print(f"Added remote forward {fw.src_port} → {fw.dst_port}")
+                print(f"Added remote forward {fw.src_socket or fw.src_port} → "
+                      f"{fw.dst_socket or fw.dst_port}")
         else:
             m.add_pac_host(args.host, conn_tag=args.connection)
             print(f"Added PAC host '{args.host}'")
@@ -257,19 +287,25 @@ def cmd_add(args, m) -> int:
 def cmd_rm(args, m) -> int:
     try:
         if args.local or args.remote:
-            # 'host' positional grabs the port value; shift back
-            try:
-                port = int(args.host) if args.port is None else args.port
-            except (TypeError, ValueError):
-                port = args.port
-            if args.local:
-                m.remove_local_forward(port)
-                print(f"Removed local forward on port {port}")
+            # The source key is a port (int) or a socket path (absolute, starts
+            # with '/'). 'host' positional grabs whichever was given.
+            key: int | str
+            raw = args.host if args.port is None else args.port
+            if isinstance(raw, str) and raw.startswith("/"):
+                key = raw
             else:
-                m.remove_remote_forward(port)
-                print(f"Removed remote forward on port {port}")
+                try:
+                    key = int(raw)
+                except (TypeError, ValueError):
+                    key = raw
+            if args.local:
+                m.remove_local_forward(key, conn_tag=args.connection)
+                print(f"Removed local forward '{key}'")
+            else:
+                m.remove_remote_forward(key, conn_tag=args.connection)
+                print(f"Removed remote forward '{key}'")
         else:
-            m.remove_pac_host(args.host)
+            m.remove_pac_host(args.host, conn_tag=args.connection)
             print(f"Removed PAC host '{args.host}'")
         return 0
     except ValueError as e:
@@ -592,12 +628,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ssh_host", metavar="SSH_HOST", help="SSH host string (user@host)")
     p.add_argument("socks_port", metavar="SOCKS_PORT", type=int, nargs="?", default=0,
                    help="SOCKS port (0 = auto-assign)")
+    p.add_argument("-J", "--jump", dest="jump_host", default="",
+                   help="ssh ProxyJump host(s), e.g. user@bastion (comma-separated chain)")
     p.set_defaults(func=cmd_add_connection)
 
     # rm-connection
     p = sub.add_parser("rm-connection", help="Remove an SSH connection")
     p.add_argument("tag", help="Connection tag to remove")
     p.set_defaults(func=cmd_rm_connection)
+
+    # import-forwards
+    p = sub.add_parser("import-forwards",
+                       help="Import forwards from ~/.ssh/config for a connection")
+    p.add_argument("tag", help="Connection tag to import into")
+    p.set_defaults(func=cmd_import_forwards)
 
     # add (PAC host or port forward)
     p = sub.add_parser("add", help="Add PAC host or port forward")
@@ -609,6 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("forward_tag", nargs="?", metavar="TAG", help="Forward label")
     p.add_argument("local_addr", nargs="?", metavar="LOCAL_ADDR", default=None)
     p.add_argument("remote_addr", nargs="?", metavar="REMOTE_ADDR", default=None)
+    p.add_argument("--local-socket", dest="local_socket", default=None,
+                   help="Local endpoint is a Unix socket at this absolute path")
+    p.add_argument("--remote-socket", dest="remote_socket", default=None,
+                   help="Remote endpoint is a Unix socket at this absolute path")
     p.set_defaults(func=cmd_add)
 
     # rm (PAC host or port forward)
