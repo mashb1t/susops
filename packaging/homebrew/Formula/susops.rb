@@ -7,6 +7,7 @@ class Susops < Formula
   sha256 "76c387b268234b796d208aa4eea829e3287c1738dd2f29b7e96d42abd8231644"
   license "AGPL-3.0-or-later"
 
+  depends_on "rust" => :build
   depends_on "socat"
   depends_on "python@3.14"
 
