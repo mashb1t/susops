@@ -180,6 +180,9 @@ class Susops < Formula
     <<~EOS
       The macOS tray app is distributed separately as a Cask:
         brew install --cask susops
+
+      If you install both, Homebrew won't symlink the CLI (same name as the cask), so `susops` won't be on your PATH. Link it with:
+        brew link susops
     EOS
   end
 
