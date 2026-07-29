@@ -13,7 +13,7 @@ cask "susops" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
   depends_on arch: :arm64
   # socat is required for UDP port forwarding (core/socat.py shells out to it);
   # the bundled .app can't ship a system binary, so pull it as a hard dep.
