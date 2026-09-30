@@ -210,7 +210,7 @@ The tray icon reflects the current state (running / partial-or-pending / stopped
     <img src="docs/tray/macos/tray-settings.png" alt="Menu" height="500" />
 </p>
 
-When activating the benu bar bandwidth option, the total bandwidth of all connections is outout next to the SusOps status indicator. 
+When activating the menu bar bandwidth option, the total bandwidth of all connections is output next to the SusOps status indicator. 
 
 ### Linux
 
